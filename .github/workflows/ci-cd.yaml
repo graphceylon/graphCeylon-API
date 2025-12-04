@@ -101,7 +101,11 @@ jobs:
       - name: Run black
         run: black --check services/
       - name: Run mypy
-        run: mypy services/ --ignore-missing-imports
+        run: |
+          mypy services/language_service/src --ignore-missing-imports
+          mypy services/kg_service/src --ignore-missing-imports
+          mypy services/recommender_service/src --ignore-missing-imports
+          mypy services/orchestrator/src --ignore-missing-imports
 
   docker-build:
     runs-on: ubuntu-latest
@@ -118,4 +122,4 @@ jobs:
         uses: docker/setup-buildx-action@v2
       - name: Build Docker images
         run: |
-          docker-compose -f infra/docker-compose.yaml build
+          docker compose -f infra/docker-compose.yaml build
