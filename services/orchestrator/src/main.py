@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI(
     title="GraphCeylon Orchestrator",
     description="Multi-agent orchestrator and API gateway",
-    version="0.1.0"
+    version="0.1.0",
 )
 
 # CORS middleware
@@ -22,22 +22,16 @@ app.add_middleware(
 @app.get("/")
 async def root():
     """Health check endpoint."""
-    return {
-        "service": "orchestrator",
-        "status": "running",
-        "version": "0.1.0"
-    }
+    return {"service": "orchestrator", "status": "running", "version": "0.1.0"}
 
 
 @app.get("/health")
 async def health():
     """Detailed health check."""
-    return {
-        "status": "healthy",
-        "service": "orchestrator"
-    }
+    return {"status": "healthy", "service": "orchestrator"}
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8002)
