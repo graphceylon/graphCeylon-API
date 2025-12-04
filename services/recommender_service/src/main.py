@@ -22,7 +22,11 @@ app.add_middleware(
 @app.get("/")
 async def root():
     """Health check endpoint."""
-    return {"service": "recommender_service", "status": "running", "version": "0.1.0"}
+    return {
+        "service": "recommender_service",
+        "status": "running",
+        "version": "0.1.0",
+    }
 
 
 @app.get("/health")

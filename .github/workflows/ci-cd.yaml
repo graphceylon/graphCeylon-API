@@ -21,7 +21,7 @@ jobs:
         working-directory: ./services/language_service
         run: |
           uv pip install --system -r requirements.txt
-          uv pip install --system pytest pytest-asyncio
+          uv pip install --system pytest pytest-asyncio fastapi httpx
       - name: Run tests
         working-directory: ./services/language_service
         run: pytest
@@ -40,7 +40,7 @@ jobs:
         working-directory: ./services/kg_service
         run: |
           uv pip install --system -r requirements.txt
-          uv pip install --system pytest pytest-asyncio
+          uv pip install --system pytest pytest-asyncio fastapi httpx
       - name: Run tests
         working-directory: ./services/kg_service
         run: pytest
@@ -59,7 +59,7 @@ jobs:
         working-directory: ./services/recommender_service
         run: |
           uv pip install --system -r requirements.txt
-          uv pip install --system pytest pytest-asyncio
+          uv pip install --system pytest pytest-asyncio fastapi httpx
       - name: Run tests
         working-directory: ./services/recommender_service
         run: pytest
@@ -78,7 +78,7 @@ jobs:
         working-directory: ./services/orchestrator
         run: |
           uv pip install --system -r requirements.txt
-          uv pip install --system pytest pytest-asyncio
+          uv pip install --system pytest pytest-asyncio fastapi httpx
       - name: Run tests
         working-directory: ./services/orchestrator
         run: pytest
