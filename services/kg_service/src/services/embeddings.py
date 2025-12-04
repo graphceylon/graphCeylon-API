@@ -3,7 +3,7 @@
 import logging
 from typing import List
 from sentence_transformers import SentenceTransformer
-from ..core.config import settings
+from core.config import settings
 
 logger = logging.getLogger(__name__)
 
