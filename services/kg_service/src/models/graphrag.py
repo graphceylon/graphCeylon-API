@@ -77,5 +77,11 @@ class GraphRelationship(BaseModel):
 
 class GraphExtraction(BaseModel):
     """Container for extracted graph elements."""
-    nodes: List[GraphNode]
-    relationships: List[GraphRelationship]
+    nodes: List[GraphNode] = Field(
+        default_factory=list,
+        description="List of nodes extracted from the text"
+    )
+    relationships: List[GraphRelationship] = Field(
+        default_factory=list,
+        description="List of relationships between nodes"
+    )
