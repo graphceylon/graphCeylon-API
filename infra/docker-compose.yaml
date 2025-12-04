@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  # Component 1: Language Service
+  language_service:
+    build:
+      context: ../services/language_service
+      dockerfile: ../../docker/language_service/Dockerfile
+    container_name: graphceylon-language-service
+    ports:
+      - "8001:8001"
+    environment:
+      - SERVICE_NAME=language_service
+      - SERVICE_PORT=8001
+    volumes:
+      - ../services/language_service:/app
+      - ../models/language_service:/models
+    networks:
+      - graphceylon-network
+    restart: unless-stopped
+
+  # Component 2: Knowledge Graph Service
+  kg_service:
+    build:
+      context: ../services/kg_service
+      dockerfile: ../../docker/kg_service/Dockerfile
+    container_name: graphceylon-kg-service
+    ports:
+      - "8000:8000"
+    environment:
+      - SERVICE_NAME=kg_service
+      - SERVICE_PORT=8000
+    volumes:
+      - ../services/kg_service:/app
+      - ../models/kg_service:/models
+    networks:
+      - graphceylon-network
+    restart: unless-stopped
+
+  # Component 3: Recommender Service
+  recommender_service:
+    build:
+      context: ../services/recommender_service
+      dockerfile: ../../docker/recommender_service/Dockerfile
+    container_name: graphceylon-recommender-service
+    ports:
+      - "8003:8003"
+    environment:
+      - SERVICE_NAME=recommender_service
+      - SERVICE_PORT=8003
+    volumes:
+      - ../services/recommender_service:/app
+      - ../models/recommender_service:/models
+    networks:
+      - graphceylon-network
+    restart: unless-stopped
+
+  # Component 4: Orchestrator
+  orchestrator:
+    build:
+      context: ../services/orchestrator
+      dockerfile: ../../docker/orchestrator/Dockerfile
+    container_name: graphceylon-orchestrator
+    ports:
+      - "8002:8002"
+    environment:
+      - SERVICE_NAME=orchestrator
+      - SERVICE_PORT=8002
+      - LANGUAGE_SERVICE_URL=http://language_service:8001
+      - KG_SERVICE_URL=http://kg_service:8000
+      - RECOMMENDER_SERVICE_URL=http://recommender_service:8003
+    volumes:
+      - ../services/orchestrator:/app
+    depends_on:
+      - language_service
+      - kg_service
+      - recommender_service
+    networks:
+      - graphceylon-network
+    restart: unless-stopped
+
+networks:
+  graphceylon-network:
+    driver: bridge

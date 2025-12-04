@@ -1,0 +1,10 @@
+# Orchestrator Service Dependencies
+# Add your required packages here with versions
+# 
+# Example:
+# fastapi==0.104.1
+# uvicorn[standard]==0.24.0
+# httpx==0.25.2
+# python-jose[cryptography]==3.3.0
+# 
+# Install with: uv pip install -r requirements.txt

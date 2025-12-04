@@ -1,0 +1,10 @@
+# Knowledge Graph Service Dependencies
+# Add your required packages here with versions
+# 
+# Example:
+# fastapi==0.104.1
+# uvicorn[standard]==0.24.0
+# networkx==3.2.1
+# pandas==2.1.4
+# 
+# Install with: uv pip install -r requirements.txt
