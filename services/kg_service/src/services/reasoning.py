@@ -135,8 +135,8 @@ class ReasoningOrchestrator:
     def vector_reason_similar(self, query: str, top_k: int = 5) -> Dict[str, Any]:
         """Find similar attractions using vector search."""
         try:
-            from .embeddings import embedding_service
-            from ..core.config import settings
+            from services.embeddings import embedding_service
+            from core.config import settings
             
             logger.info(f"Starting vector reasoning for query: '{query}'")
             
