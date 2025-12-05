@@ -40,10 +40,6 @@ class GraphRAGConfig:
     # Vector index configuration
     VECTOR_INDEX_NAME: str = "economic_policy_chunk_embeddings"
     
-    # LLM configuration
-    LLM_MODEL: str = "gpt-4o-mini"
-    LLM_TEMPERATURE: float = 0
-    
     # Text splitting configuration
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 100
