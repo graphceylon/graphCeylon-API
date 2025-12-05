@@ -4,8 +4,8 @@ import logging
 from fastapi import APIRouter, HTTPException, Depends
 from typing import Dict, Any, List
 
-from ..database.manager import DatabaseManager
-from ..models.schemas import (
+from database.manager import DatabaseManager
+from models.schemas import (
     WriteResponse,
     NewsQueryRequest,
     NewsResponse,
