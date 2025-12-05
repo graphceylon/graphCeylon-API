@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, Any, List
 import logging
 
-from ..database.manager import DatabaseManager
+from database.manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
