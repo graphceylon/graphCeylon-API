@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, Any, List, Optional
 import logging
 
-from ..database.manager import DatabaseManager
-from ..models.schemas import (
+from database.manager import DatabaseManager
+from models.schemas import (
     HolidayQueryRequest, HolidayResponse, CreateHolidayRequest,
     TemporalStructureResponse
 )
