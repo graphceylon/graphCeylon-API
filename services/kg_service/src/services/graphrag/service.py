@@ -1,7 +1,7 @@
 """Main GraphRAG service orchestrating all components."""
 
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from neo4j import Driver
 
 from .vector_indexer import VectorIndexer
@@ -17,21 +17,19 @@ logger = logging.getLogger(__name__)
 class GraphRAGService:
     """Main service coordinating GraphRAG operations."""
     
-    def __init__(self, driver: Driver, openai_api_key: Optional[str] = None):
+    def __init__(self, driver: Driver):
         """Initialize GraphRAG service with all components.
         
         Args:
             driver: Neo4j driver instance
-            openai_api_key: OpenAI API key for LLM operations
         """
         self.driver = driver
-        self.openai_api_key = openai_api_key
         
-        # Initialize components
+        # Initialize components (they now get their LLM config from settings)
         self.vector_indexer = VectorIndexer(driver)
-        self.entity_extractor = EntityExtractor(openai_api_key)
+        self.entity_extractor = EntityExtractor()
         self.chunk_processor = ChunkProcessor()
-        self.rag_query_engine = RAGQueryEngine(driver, openai_api_key)
+        self.rag_query_engine = RAGQueryEngine(driver)
         self.data_ingestion = DataIngestionService(
             driver,
             self.entity_extractor,
