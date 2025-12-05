@@ -3,12 +3,11 @@
 import logging
 from typing import List, Dict, Any, Optional
 from neo4j import Driver
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from sentence_transformers import SentenceTransformer
 
-from ...core.config import settings
-from .config import graphrag_config
+from core.config import settings
+from services.graphrag.config import graphrag_config
+from services.llm import LLMFactory
 
 logger = logging.getLogger(__name__)
 
@@ -16,39 +15,55 @@ logger = logging.getLogger(__name__)
 class RAGQueryEngine:
     """Executes RAG queries against the knowledge graph."""
     
-    def __init__(self, driver: Driver, openai_api_key: Optional[str] = None):
-        """Initialize RAG query engine.
+    def __init__(self, driver: Driver):
+        """Initialize RAG query engine with configured query LLM.
         
         Args:
             driver: Neo4j driver instance
-            openai_api_key: OpenAI API key for LLM access
         """
         self.driver = driver
-        self.openai_api_key = openai_api_key
         self.llm = None
         
         # Initialize embedding model
         try:
-            self.embedding_model = SentenceTransformer(settings.embedding_model)
-            logger.info(f"Embedding model '{settings.embedding_model}' initialized")
+            self.embedding_model = SentenceTransformer(
+                settings.embedding_model_name,
+                device="cpu"  # Explicitly set device to avoid PyTorch meta tensor issues
+            )
+            logger.info(f"Embedding model '{settings.embedding_model_name}' initialized")
         except Exception as e:
             logger.error(f"Failed to initialize embedding model: {e}")
             raise
         
+        # Get API key based on configured provider
+        api_key = None
+        if settings.query_llm_provider == "openai":
+            api_key = settings.openai_api_key
+        elif settings.query_llm_provider == "groq":
+            api_key = settings.groq_api_key
+        
         # Initialize LLM if API key provided
-        if openai_api_key:
+        if api_key:
             try:
-                self.llm = ChatOpenAI(
-                    model=graphrag_config.LLM_MODEL,
-                    temperature=graphrag_config.LLM_TEMPERATURE,
-                    api_key=openai_api_key
+                # Create provider using factory
+                provider = LLMFactory.create_from_config(
+                    settings.query_llm_provider,
+                    api_key
                 )
-                logger.info("RAG query LLM initialized successfully")
+                
+                if provider:
+                    self.llm = provider.get_chat_model(
+                        model=settings.query_llm_model,
+                        temperature=settings.llm_temperature
+                    )
+                    logger.info(f"RAG query engine initialized with {settings.query_llm_provider} ({settings.query_llm_model})")
+                else:
+                    logger.error(f"Failed to create provider: {settings.query_llm_provider}")
             except Exception as e:
                 logger.error(f"Failed to initialize LLM: {e}")
                 self.llm = None
         else:
-            logger.warning("No OpenAI API key provided. RAG queries will be unavailable.")
+            logger.warning(f"No API key provided for {settings.query_llm_provider}. RAG queries will be unavailable.")
     
     def query(
         self, 
@@ -70,7 +85,7 @@ class RAGQueryEngine:
             ValueError: If LLM is not initialized
         """
         if not self.llm:
-            raise ValueError("LLM not initialized. Provide OpenAI API key.")
+            raise ValueError(f"LLM not initialized. Provide API key for {settings.query_llm_provider}.")
         
         try:
             # 1. Generate query embedding
@@ -199,6 +214,7 @@ class RAGQueryEngine:
             ])
             
             # Create prompt
+            from langchain_core.prompts import ChatPromptTemplate
             prompt = ChatPromptTemplate.from_messages([
                 ("system", self._get_system_prompt()),
                 ("user", "Context:\n{context}\n\nQuestion: {question}")
