@@ -3,8 +3,8 @@
 import logging
 from fastapi import APIRouter, HTTPException, Depends
 
-from ..database.manager import DatabaseManager
-from ..models.schemas import (
+from database.manager import DatabaseManager
+from models.schemas import (
     WriteResponse,
     AttractionQueryRequest,
     AttractionResponse,
@@ -90,6 +90,30 @@ def initialize_attractions(db: DatabaseManager = Depends(get_db_manager)):
     except Exception as e:
         logger.error(f"Failed to initialize attractions: {e}")
         raise HTTPException(status_code=500, detail=f"Attraction initialization failed: {str(e)}")
+
+
+@router.post("/vector-index/create", response_model=dict)
+def create_vector_index(db: DatabaseManager = Depends(get_db_manager)):
+    """Create vector index for attraction embeddings."""
+    try:
+        logger.info("Creating vector index...")
+        result = db.create_vector_index()
+        return result
+    except Exception as e:
+        logger.error(f"Failed to create vector index: {e}")
+        raise HTTPException(status_code=500, detail=f"Vector index creation failed: {str(e)}")
+
+
+@router.post("/embeddings/update", response_model=dict)
+def update_embeddings(db: DatabaseManager = Depends(get_db_manager)):
+    """Update embeddings for attractions that don't have them."""
+    try:
+        logger.info("Updating embeddings...")
+        result = db.update_embeddings()
+        return result
+    except Exception as e:
+        logger.error(f"Failed to update embeddings: {e}")
+        raise HTTPException(status_code=500, detail=f"Embedding update failed: {str(e)}")
 
 
 @router.post("", response_model=WriteResponse)
