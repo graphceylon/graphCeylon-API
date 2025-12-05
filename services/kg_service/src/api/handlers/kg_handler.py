@@ -6,9 +6,9 @@ import datetime
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 
-from ...database.manager import DatabaseManager
-from ...services.reasoning import ReasoningOrchestrator
-from ...models.knowledge_graph import (
+from database.manager import DatabaseManager
+from services.reasoning import ReasoningOrchestrator
+from models.knowledge_graph import (
     QueryRequest,
     QueryResponse,
     ReasonRequest,

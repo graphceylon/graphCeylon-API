@@ -3,9 +3,9 @@
 import logging
 from fastapi import APIRouter, HTTPException, Depends
 
-from ...database.manager import DatabaseManager
-from ...core.config import settings
-from ...models.base import StatisticsResponse
+from database.manager import DatabaseManager
+from core.config import settings
+from models.base import StatisticsResponse
 
 logger = logging.getLogger(__name__)
 
