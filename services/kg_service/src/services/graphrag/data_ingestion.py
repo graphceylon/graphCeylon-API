@@ -5,11 +5,11 @@ from typing import Dict, Any
 from pathlib import Path
 from neo4j import Driver
 
-from ..embeddings import embedding_service
-from ...models.graphrag import GraphExtraction
-from .config import graphrag_config
-from .entity_extractor import EntityExtractor
-from .chunk_processor import ChunkProcessor
+from services.embeddings import embedding_service
+from models.graphrag import GraphExtraction
+from services.graphrag.config import graphrag_config
+from services.graphrag.entity_extractor import EntityExtractor
+from services.graphrag.chunk_processor import ChunkProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +221,17 @@ class DataIngestionService:
             Overall processing statistics
         """
         try:
+            # Resolve path relative to kg_service directory
+            if not Path(data_dir).is_absolute():
+                # Try relative to current working directory first
+                data_path = Path(data_dir)
+                if not data_path.exists():
+                    # Try relative to project root (services/kg_service)
+                    project_root = Path(__file__).parent.parent.parent.parent
+                    data_path = project_root / data_dir
+                    logger.info(f"Resolved path: {data_path} (exists: {data_path.exists()})")
+                data_dir = str(data_path)
+            
             logger.info(f"Processing immigration data from: {data_dir}")
             
             # Get all JSON files
