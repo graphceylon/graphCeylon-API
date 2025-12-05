@@ -1,13 +1,14 @@
 """GraphRAG API endpoints for entity extraction and RAG-based querying."""
 
 import logging
+import threading
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 
-from ..database.manager import DatabaseManager
-from ..services.graphrag import GraphRAGService
-from ..core.config import settings
-from ..models.graphrag import (
+from database.manager import DatabaseManager
+from services.graphrag import GraphRAGService
+from core.config import settings
+from models.graphrag import (
     IngestImmigrationDataRequest,
     IngestImmigrationDataResponse,
     RAGQueryRequest,
@@ -20,8 +21,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/graphrag", tags=["GraphRAG"])
 
-# Global GraphRAG service instance
+# Global GraphRAG service instance with thread-safe initialization
 _graphrag_service: Optional[GraphRAGService] = None
+_service_lock = threading.Lock()
 
 
 def get_db_manager() -> DatabaseManager:
@@ -30,24 +32,41 @@ def get_db_manager() -> DatabaseManager:
 
 
 def get_graphrag_service(db: DatabaseManager = Depends(get_db_manager)) -> GraphRAGService:
-    """Get or create GraphRAG service instance."""
+    """Get or create GraphRAG service instance (thread-safe singleton)."""
     global _graphrag_service
     
+    # Double-checked locking pattern for thread-safe singleton
     if _graphrag_service is None:
-        # Get OpenAI API key from settings
-        openai_api_key = settings.openai_api_key
-        
-        if not openai_api_key:
-            raise HTTPException(
-                status_code=503, 
-                detail="OPENAI_API_KEY not configured. Set KG_OPENAI_API_KEY in .env file to use GraphRAG."
-            )
-        
-        _graphrag_service = GraphRAGService(
-            driver=db.driver,
-            openai_api_key=openai_api_key
-        )
-        logger.info("GraphRAG service initialized")
+        with _service_lock:
+            # Check again inside the lock
+            if _graphrag_service is None:
+                # Validate that required API keys are configured
+                if settings.ingestion_llm_provider == "openai" and not settings.openai_api_key:
+                    raise HTTPException(
+                        status_code=503, 
+                        detail="OpenAI API key not configured for ingestion. Set KG_OPENAI_API_KEY in .env file."
+                    )
+                
+                if settings.ingestion_llm_provider == "groq" and not settings.groq_api_key:
+                    raise HTTPException(
+                        status_code=503, 
+                        detail="Groq API key not configured for ingestion. Set KG_GROQ_API_KEY in .env file."
+                    )
+                
+                if settings.query_llm_provider == "openai" and not settings.openai_api_key:
+                    raise HTTPException(
+                        status_code=503, 
+                        detail="OpenAI API key not configured for queries. Set KG_OPENAI_API_KEY in .env file."
+                    )
+                
+                if settings.query_llm_provider == "groq" and not settings.groq_api_key:
+                    raise HTTPException(
+                        status_code=503, 
+                        detail="Groq API key not configured for queries. Set KG_GROQ_API_KEY in .env file."
+                    )
+                
+                _graphrag_service = GraphRAGService(driver=db.driver)
+                logger.info("GraphRAG service initialized")
     
     return _graphrag_service
 
