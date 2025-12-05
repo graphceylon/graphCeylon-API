@@ -8,17 +8,18 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from neo4j import GraphDatabase
 
-from ..core.config import settings
-from ..database.manager import DatabaseManager, create_driver
-from ..services.reasoning import ReasoningOrchestrator
-from ..models.schemas import (
+from core.config import settings
+from core.dependencies import create_driver
+from database.manager import DatabaseManager
+from services.reasoning import ReasoningOrchestrator
+from models.schemas import (
     QueryRequest, ReasonRequest, PredictRequest,
     HealthResponse, QueryResponse, ReasonResponse, 
     PredictResponse, ValidationResponse, ExportResponse,
     ExplainResponse, StatisticsResponse, ErrorResponse,
     ConstraintReasonRequest, ConstraintReasonResponse, WriteRequest, WriteResponse
 )
-from . import attractions
+from api import attractions
 
 # Configure logging
 logging.basicConfig(
@@ -113,37 +114,37 @@ app.include_router(attractions.router)
 app.dependency_overrides[attractions.get_db_manager] = get_db_manager
 
 # Import and include domain router
-from . import domains
+from api import domains
 app.include_router(domains.router)
 app.dependency_overrides[domains.get_db_manager] = get_db_manager
 
 # Import and include holidays router
-from . import holidays
+from api import holidays
 app.include_router(holidays.router)
 app.dependency_overrides[holidays.get_db_manager] = get_db_manager
 
 # Import and include projects router
-from . import projects
+from api import projects
 app.include_router(projects.router)
 app.dependency_overrides[projects.get_db_manager] = get_db_manager
 
 # Import and include news router
-from . import news
+from api import news
 app.include_router(news.router)
 app.dependency_overrides[news.get_db_manager] = get_db_manager
 
 # Import and include semantic web router
-from . import semantic
+from api import semantic
 app.include_router(semantic.router)
 
 # Import and include agent router
-from . import agent
+from api import agent
 app.include_router(agent.router)
 app.dependency_overrides[agent.get_reasoning_orchestrator] = get_reasoning_orchestrator
 app.dependency_overrides[agent.get_db_manager] = get_db_manager
 
 # Import and include GraphRAG router
-from . import graphrag
+from api import graphrag
 app.include_router(graphrag.router)
 app.dependency_overrides[graphrag.get_db_manager] = get_db_manager
 
