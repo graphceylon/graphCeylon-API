@@ -1,15 +1,19 @@
 # orchestrator_core/orchestrator_service.py
 
+# orchestrator_core/orchestrator_service.py
+
 from typing import List
 
-from api.schemas import (
+from ..api.schemas import (
     OrchestrateRequest,
     OrchestrateResponse,
     ParsedIntent,
     TaskSummary,
 )
-from orchestrator_core.intent_parser.agent import IntentParserAgent
-from orchestrator_core.task_graph_builder import TaskGraphBuilder
+
+from .intent_parser.agent import IntentParserAgent
+from .task_graph_builder import TaskGraphBuilder
+
 
 
 class OrchestratorService:

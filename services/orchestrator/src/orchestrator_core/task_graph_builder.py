@@ -1,8 +1,8 @@
 # orchestrator_core/task_graph_builder.py
 
 from typing import List
-from api.schemas import ParsedIntent, TaskSummary
-from orchestrator_core.intent_parser.intent_routing import INTENT_TO_AGENT, INTENT_TO_ACTION
+from ..api.schemas import ParsedIntent, TaskSummary
+from .intent_parser.intent_routing import INTENT_TO_AGENT, INTENT_TO_ACTION
 
 
 class TaskGraphBuilder:

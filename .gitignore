@@ -78,6 +78,7 @@ models/**/*.h5
 models/**/*.ckpt
 !models/*/.gitkeep
 !models/*/README.md
+models/orchestrator/
 
 # Logs
 *.log

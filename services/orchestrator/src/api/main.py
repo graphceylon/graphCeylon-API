@@ -1,10 +1,12 @@
-# api/main.py
-
 from fastapi import FastAPI
-from api.schemas import OrchestrateRequest, OrchestrateResponse
-from orchestrator_core.orchestrator_service import OrchestratorService
-from orchestrator_core.intent_parser.agent import IntentParserAgent
-from orchestrator_core.task_graph_builder import TaskGraphBuilder
+
+from .schemas import OrchestrateRequest, OrchestrateResponse
+from ..orchestrator_core.orchestrator_service import OrchestratorService
+from ..orchestrator_core.intent_parser.agent import IntentParserAgent
+from ..orchestrator_core.task_graph_builder import TaskGraphBuilder
+
+
+
 
 app = FastAPI(
     title="GraphCeylon Orchestrator",
@@ -14,7 +16,7 @@ app = FastAPI(
 
 # 1) Instantiate the intent parser (DistilBERT multi-label model)
 intent_parser_agent = IntentParserAgent(
-    model_dir="models/intent_multilabel_final",  # <-- change if needed
+    model_dir="/Users/dev/Desktop/graphCeylon-API/models/orchestrator/intent_multilabel_final",  # <-- change if needed
     threshold=0.2,
     top_k_if_empty=2,
 )

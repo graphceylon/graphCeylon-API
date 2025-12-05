@@ -6,8 +6,7 @@ import torch
 from scipy.special import expit
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-
-from orchestrator_core.entity_extractor import extract_entities_and_prefs
+from ..entity_extractor import extract_entities_and_prefs
 
 
 # Keep this synced with your training code
