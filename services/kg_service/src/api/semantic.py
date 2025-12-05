@@ -16,7 +16,7 @@ from typing import Optional, List, Dict, Any
 from enum import Enum
 import logging
 
-from ..database.manager import DatabaseManager
+from database.manager import DatabaseManager
 
 # Configure logging
 logger = logging.getLogger(__name__)
