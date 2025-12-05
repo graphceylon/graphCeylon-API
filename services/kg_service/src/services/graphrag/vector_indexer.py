@@ -4,8 +4,8 @@ import logging
 from typing import Dict, Any
 from neo4j import Driver
 
-from ...core.config import settings
-from .config import graphrag_config
+from core.config import settings
+from services.graphrag.config import graphrag_config
 
 logger = logging.getLogger(__name__)
 
