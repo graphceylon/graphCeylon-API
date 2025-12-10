@@ -1,67 +1,89 @@
-# src/ingestion/location_loader.py
-
 import json
-import re
-from pathlib import Path
 from typing import List, Dict
+from pathlib import Path
 
-from src.config import KG_ATTRACTIONS_FILE
+from configs.recommender_service.config import KG_ATTRACTIONS_FILE
 
 
-def slugify(text: str) -> str:
-    """Create a simple ID from the attraction title."""
-    text = text.strip().lower()
-    text = re.sub(r"[^a-z0-9]+", "_", text)
-    return text.strip("_")
+def _slugify(text: str) -> str:
+    """Create a simple, stable id from the title (e.g. 'Anuradhapura' -> 'anuradhapura')."""
+    return (
+        text.strip()
+        .lower()
+        .replace(" ", "_")
+        .replace("/", "_")
+        .replace("'", "")
+    )
 
 
 def load_locations_from_kg(max_locations: int | None = None) -> List[Dict]:
     """
-    Load attraction locations from the KG JSON file.
-
-    Returns a list of dicts:
-      [
-        {"id": "anuradhapura", "name": "Anuradhapura", "lat": 8.334985, "lon": 80.4106096},
+    Load attraction locations from the KG JSON:
+    {
+      "total_attractions": ...,
+      "scrape_metadata": {...},
+      "attractions": [
+        {
+          "title": "...",
+          "geolocation": {
+            "coordinates": {
+              "latitude": ...,
+              "longitude": ...
+            }
+          },
+          ...
+        },
         ...
       ]
+    }
+
+    Returns a list of dicts with keys: id, name, lat, lon
     """
     path: Path = KG_ATTRACTIONS_FILE
+
     if not path.exists():
         raise FileNotFoundError(f"KG attractions file not found: {path}")
 
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
+    # Expect top-level dict with "attractions" list
     attractions = data.get("attractions", [])
+    if not isinstance(attractions, list):
+        raise TypeError(
+            f"Expected 'attractions' to be a list in {path}, got {type(attractions)}"
+        )
+
     locations: List[Dict] = []
 
-    for attr in attractions:
-        title = attr.get("title")
-        geo = attr.get("geolocation", {}) or {}
-        coords = geo.get("coordinates", {}) or {}
+    for node in attractions:
+        title = node.get("title")
+        geo = (node.get("geolocation") or {}).get("coordinates") or {}
+        lat = geo.get("latitude")
+        lon = geo.get("longitude")
 
-        lat = coords.get("latitude")
-        lon = coords.get("longitude")
-
-        # Skip if anything is missing
         if title is None or lat is None or lon is None:
+            # Skip incomplete entries; you can log if needed
             continue
 
-        loc_id = slugify(title)
+        loc_id = _slugify(title)
+
         locations.append(
             {
-                "id": loc_id,
-                "name": title,
+                "id": loc_id,        # e.g. "anuradhapura"
+                "name": title,       # e.g. "Anuradhapura"
                 "lat": float(lat),
                 "lon": float(lon),
             }
         )
 
-    # Optionally limit for testing
-    if max_locations is not None:
-        locations = locations[: max_locations]
+        if max_locations is not None and len(locations) >= max_locations:
+            break
 
     if not locations:
-        raise ValueError("No valid locations found in KG attractions JSON.")
+        raise ValueError(
+            f"No valid locations found in KG file {path}. "
+            f"Check 'title' and geolocation.coordinates.latitude/longitude fields."
+        )
 
     return locations

@@ -6,8 +6,9 @@ from pathlib import Path
 
 import requests
 
-from src.config import OPENWEATHER_API_KEY, WEATHER_RAW_DIR
-from src.ingestion.location_loader import load_locations_from_kg
+from configs.recommender_service.config import OPENWEATHER_API_KEY, WEATHER_RAW_DIR
+from .location_loader import load_locations_from_kg
+
 
 
 def fetch_weather_for_location(name: str, lat: float, lon: float) -> dict:
