@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies and uv
+# System deps + uv
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
@@ -12,15 +12,23 @@ RUN apt-get update && apt-get install -y \
 
 ENV PATH="/root/.local/bin:$PATH"
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+# ---- Python deps for THIS service ----
+COPY services/recommender_service/requirements.txt .
 RUN uv pip install --system -r requirements.txt
 
-# Copy application code
-COPY src/ ./src/
+# ---- Copy application code ----
+# This creates /app/src/...
+COPY services/recommender_service/src ./src
 
-# Expose port
+# If you have local models/data for this service:
+# COPY models/recommender_service ./models
+# COPY data/recommender_service ./data
+
+# So that the top-level /app is on sys.path and "src.*" imports work
+ENV PYTHONPATH=/app
+
 EXPOSE 8003
 
-# Run the application
-CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8003"]
+# IMPORTANT: use the full module path to your app
+# your file is src/api/main.py → module "src.api.main"
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8003"]
