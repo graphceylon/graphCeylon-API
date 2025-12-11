@@ -51,6 +51,7 @@ coverage.xml
 *~
 .DS_Store
 Thumbs.db
+services/orchestrator/.venv_orchestrator/
 
 # Jupyter Notebook
 .ipynb_checkpoints
