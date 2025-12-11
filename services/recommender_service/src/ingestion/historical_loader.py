@@ -3,11 +3,33 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from src.config import DATA_DIR, WEATHER_RAW_DIR
+# from src.config import DATA_DIR, WEATHER_RAW_DIR
 
-# --- CONFIGURATION ---
-HISTORY_DIR = DATA_DIR / "history"
-HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+
+# --- PATHS BASED ON REPO STRUCTURE ---
+
+# This file:
+# /Users/dev/Desktop/graphCeylon-API/services/recommender_service/src/ingestion/historical_loader.py
+# parents[0] = .../src/ingestion
+# parents[1] = .../src
+# parents[2] = .../recommender_service
+# parents[3] = .../services
+# parents[4] = .../graphCeylon-API  <-- repo root
+# locating repo root: .../graphCeylon-API
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
+# This is your target folder:
+# /Users/dev/Desktop/graphCeylon-API/data/recommender_service/raw/data_raw/weather
+WEATHER_BASE_DIR = REPO_ROOT / "data" / "recommender_service" / "raw" / "data_raw" / "weather"
+
+# Input CSVs
+rf_main_path  = WEATHER_BASE_DIR / "rainfall_main.csv"
+rf_other_path = WEATHER_BASE_DIR / "rainfall_other.csv"
+tem_path      = WEATHER_BASE_DIR / "temperature.csv"
+
+# Output directory (same folder now)
+OUTPUT_DIR = WEATHER_BASE_DIR
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # 1. Map CSV Station Names to your Knowledge Graph IDs
 STATION_TO_KG_ID = {
@@ -102,10 +124,7 @@ def process_wide_format(df, value_name, col_map=None):
 def load_real_history():
     print("=== Loading Real Historical Data (2021-2025) ===")
     
-    # 1. Define SIMPLE file paths
-    rf_main_path = WEATHER_RAW_DIR / "rainfall_main.csv"
-    rf_other_path = WEATHER_RAW_DIR / "rainfall_other.csv"
-    tem_path = WEATHER_RAW_DIR / "temperature.csv"
+  
     
     # --- DEBUG: CHECK FILES EXIST ---
     # This block prints what files Python ACTUALLY sees if your file is missing
@@ -117,9 +136,9 @@ def load_real_history():
             missing_flag = True
     
     if missing_flag:
-        print(f"\n📂 Contents of {WEATHER_RAW_DIR}:")
+        print(f"\n📂 Contents of {WEATHER_BASE_DIR}:")
         # List all files in the directory to help you debug
-        found_files = list(WEATHER_RAW_DIR.glob("*"))
+        found_files = list(WEATHER_BASE_DIR.glob("*"))
         if not found_files:
             print("   (The folder is empty!)")
         else:
@@ -210,15 +229,18 @@ def load_real_history():
         merged = pd.concat([merged, fallback_df], ignore_index=True)
 
     # --- 8. FINALIZE ---
-    merged['weather_main'] = merged['rainfall'].apply(lambda x: 'Rain' if x > 50 else 'Clouds')
-    merged['risk_level'] = merged['weather_main'].apply(lambda x: 'High' if x == 'Rain' else 'Low')
+    # merged['weather_main'] = merged['rainfall'].apply(lambda x: 'Rain' if x > 50 else 'Clouds')
+    # merged['risk_level'] = merged['weather_main'].apply(lambda x: 'High' if x == 'Rain' else 'Low')
     
-    final_df = merged[['date', 'location_id', 'avg_temp', 'rainfall', 'weather_main', 'risk_level']]
+    # final_df = merged[['date', 'location_id', 'avg_temp', 'rainfall', 'weather_main', 'risk_level']]
+    # final_df = final_df.sort_values(['location_id', 'date'])
+
+    final_df = merged[['date', 'location_id', 'avg_temp', 'rainfall']].copy()
     final_df = final_df.sort_values(['location_id', 'date'])
     
-    output_path = HISTORY_DIR / "cleaned_history.csv"
+    output_path = OUTPUT_DIR / "cleaned_history.csv"   # or WEATHER_BASE_DIR / "cleaned_history.csv"
     final_df.to_csv(output_path, index=False)
-    
+
     print(f"✅ Successfully processed {len(final_df)} records.")
     print(f"✅ Saved to: {output_path}")
     
