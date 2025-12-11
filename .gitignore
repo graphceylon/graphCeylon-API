@@ -54,7 +54,7 @@ Thumbs.db
 
 # Jupyter Notebook
 .ipynb_checkpoints
-*.ipynb
+# *.ipynb
 
 # Data files (keep structure, ignore large data files)
 data/**/raw/*
