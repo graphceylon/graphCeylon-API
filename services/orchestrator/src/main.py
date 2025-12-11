@@ -2,6 +2,9 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+load_dotenv()
+
 
 # 👇 relative import from src.api.main
 from .api.main import app as orchestrator_app

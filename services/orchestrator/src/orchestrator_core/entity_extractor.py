@@ -5,11 +5,25 @@ from __future__ import annotations
 import json
 import logging
 import re
+import os
 import subprocess
+import requests
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
+from dotenv import load_dotenv
+
+load_dotenv() 
 
 logger = logging.getLogger(__name__)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+ENTITY_LLM_PROVIDER = os.getenv("ENTITY_LLM_PROVIDER", "groq")
+logger.warning(f"GROQ_API_KEY loaded? {bool(GROQ_API_KEY)}")
+logger.warning(f"ENTITY_LLM_PROVIDER={ENTITY_LLM_PROVIDER}")
+print("GROQ_API_KEY loaded?", bool(GROQ_API_KEY))
+print("GROQ_API_KEY repr:", repr(GROQ_API_KEY))
+print("ENTITY_LLM_PROVIDER:", ENTITY_LLM_PROVIDER)
+
+
 
 # ---- 1. Base prompt for Mistral via Ollama ----
 
@@ -147,22 +161,56 @@ def _safe_json_extract(raw: str) -> Dict[str, Any]:
             "entities": {},
             "preference_overrides": {},
         }
+def _run_groq_chat_completion(prompt: str) -> str:
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY is not set in environment")
+
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",   # <<< IMPORTANT
+    }
+    payload = {
+    "model": "llama-3.3-70b-versatile",  # ✅ updated model name
+    "messages": [{"role": "user", "content": prompt}],
+    "temperature": 0,
+}
+
+    r = requests.post(url, json=payload, headers=headers)
+
+    # temporary debug
+    if r.status_code != 200:
+        logger.error(
+            "Groq API error %s: %s",
+            r.status_code,
+            r.text,
+        )
+
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
 
 
 def llm_extract_entities(text: str) -> Dict[str, Any]:
-    """
-    Call Mistral via Ollama to get the raw entities + preference_overrides JSON.
-    """
     prompt = f"{BASE_PROMPT}\n\nUser query:\n{text.strip()}"
-    raw = _run_ollama_mistral(prompt)
-    data = _safe_json_extract(raw)
 
-    # Ensure keys exist
+    provider = ENTITY_LLM_PROVIDER.lower()
+
+    if provider == "ollama":
+        raw = _run_ollama_mistral(prompt)
+    elif provider == "groq":
+        raw = _run_groq_chat_completion(prompt)
+    elif provider == "openai":
+        raw = _run_openai_chat_completion(prompt)  # TODO
+    else:
+        raise ValueError(f"Unknown ENTITY_LLM_PROVIDER={ENTITY_LLM_PROVIDER}")
+
+    data = _safe_json_extract(raw)
     data.setdefault("domain_category", None)
     data.setdefault("entities", {})
     data.setdefault("preference_overrides", {})
-
     return data
+
 
 
 # ---- 3. Rule-based overrides (Pattern B: LLM first, then rules) ----
@@ -171,7 +219,9 @@ RELATIVE_DATE_PATTERNS = {
     "today": re.compile(r"\btoday\b", re.IGNORECASE),
     "tomorrow": re.compile(r"\btomorrow\b", re.IGNORECASE),
     "this_weekend": re.compile(r"\bthis\s+weekend\b", re.IGNORECASE),
+    "next_week": re.compile(r"\bnext\s+week\b", re.IGNORECASE),
 }
+
 
 TIME_OF_DAY_PATTERNS = {
     "morning": re.compile(r"\bmorning\b", re.IGNORECASE),
@@ -179,6 +229,21 @@ TIME_OF_DAY_PATTERNS = {
     "evening": re.compile(r"\bevening\b", re.IGNORECASE),
     "night": re.compile(r"\bnight\b|\btonight\b", re.IGNORECASE),
 }
+WEEKDAY_NAME_TO_NUM = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
+WEEKDAY_RELATIVE_PATTERN = re.compile(
+    r"\b(?:(next|this)\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.IGNORECASE,
+)
+
 PRICE_UNDER_PATTERN = re.compile(
     r'(?:under|below|less than|up to|upto|max(?:imum)?)\s+(\d[\d, ]*[kK]?)',
     re.IGNORECASE,
@@ -311,7 +376,6 @@ def _detect_currency(text: str) -> Optional[str]:
 
 
 
-
 def _override_relative_dates(
     data: Dict[str, Any],
     text: str,
@@ -323,13 +387,13 @@ def _override_relative_dates(
     """
     entities = data.setdefault("entities", {})
 
-    # Only override if we detect relative expressions
     t = text.lower()
 
     start_date: Optional[str] = entities.get("start_date")
     end_date: Optional[str] = entities.get("end_date")
     travel_month: Optional[str] = entities.get("travel_month")
 
+    # --- today / tomorrow / this weekend / next week ---
     if RELATIVE_DATE_PATTERNS["tomorrow"].search(t):
         d = now + timedelta(days=1)
         iso = d.strftime("%Y-%m-%d")
@@ -354,14 +418,26 @@ def _override_relative_dates(
         end_date = sunday.strftime("%Y-%m-%d")
         travel_month = saturday.strftime("%B")
 
-    if start_date is not None:
-        entities["start_date"] = start_date
-    if end_date is not None:
-        entities["end_date"] = end_date
-    if travel_month is not None:
-        entities["travel_month"] = travel_month
+    elif RELATIVE_DATE_PATTERNS["next_week"].search(t):
+        # Interpret "next week" as Monday–Sunday of the upcoming week
+        today = now.date()
+        weekday = today.weekday()  # Monday=0 ... Sunday=6
+
+        # days until next Monday (always in the future)
+        days_until_next_monday = (7 - weekday) % 7
+        if days_until_next_monday == 0:
+            days_until_next_monday = 7
+
+        start_dt = today + timedelta(days=days_until_next_monday)
+        end_dt = start_dt + timedelta(days=6)
+
+        start_date = start_dt.strftime("%Y-%m-%d")
+        end_date = end_dt.strftime("%Y-%m-%d")
+        travel_month = start_dt.strftime("%B")
+
+    # --- explicit month/day like "January 12 to 15" OR weekday like "next Monday" ---
+
     # If still no explicit year in text, handle patterns like "January 12 to 15"
-    # We ignore whatever year the LLM guessed and recompute from `now`.
     m = MONTH_DAY_RANGE_PATTERN.search(t)
     if m:
         month_name = m.group(1).lower()
@@ -371,7 +447,6 @@ def _override_relative_dates(
         month_num = MONTH_NAME_TO_NUM.get(month_name)
         if month_num:
             year = now.year
-
             try:
                 start_dt = datetime(year, month_num, day_start)
                 end_dt = datetime(year, month_num, day_end)
@@ -382,12 +457,54 @@ def _override_relative_dates(
                     start_dt = datetime(year, month_num, day_start)
                     end_dt = datetime(year, month_num, day_end)
 
-                entities["start_date"] = start_dt.strftime("%Y-%m-%d")
-                entities["end_date"] = end_dt.strftime("%Y-%m-%d")
-                entities["travel_month"] = month_name.capitalize()
+                start_date = start_dt.strftime("%Y-%m-%d")
+                end_date = end_dt.strftime("%Y-%m-%d")
+                travel_month = month_name.capitalize()
             except ValueError:
                 # Invalid day/month (e.g. Feb 30) – just ignore
                 pass
+    else:
+        # Handle phrases like "next Monday", "this Friday", "on Monday"
+        m_w = WEEKDAY_RELATIVE_PATTERN.search(t)
+        if m_w:
+            modifier = m_w.group(1)  # "next", "this" or None
+            weekday_name = m_w.group(2).lower()
+            target_wd = WEEKDAY_NAME_TO_NUM[weekday_name]
+
+            today = now.date()
+            current_wd = today.weekday()  # Monday=0 ... Sunday=6
+
+            days_ahead = (target_wd - current_wd) % 7
+
+            if modifier == "next":
+                # Always move to the next occurrence in the *future*
+                if days_ahead == 0:
+                    days_ahead = 7
+            elif modifier == "this":
+                # "this Monday": if it's already passed this week, jump to next week
+                if days_ahead < 0:
+                    days_ahead += 7
+            else:
+                # No modifier: nearest upcoming occurrence (including today)
+                if days_ahead < 0:
+                    days_ahead += 7
+
+            target_date = today + timedelta(days=days_ahead)
+            iso = target_date.strftime("%Y-%m-%d")
+            month = target_date.strftime("%B")
+
+            start_date = iso
+            end_date = iso
+            travel_month = month
+
+    # --- finally, write back into entities ---
+    if start_date is not None:
+        entities["start_date"] = start_date
+    if end_date is not None:
+        entities["end_date"] = end_date
+    if travel_month is not None:
+        entities["travel_month"] = travel_month
+
 
 
 def _override_time_of_day(data: Dict[str, Any], text: str) -> None:
@@ -452,6 +569,7 @@ def extract_entities_and_prefs(
     # 1) Rule-based overrides you already had
     _override_relative_dates(data, text, now)
     _override_time_of_day(data, text)
+    _override_weather_tags_and_prefs(data, text)
 
     # 1b) Hotel-specific constraints: star rating & price cap
     entities = data.setdefault("entities", {})
@@ -557,4 +675,39 @@ def extract_entities_and_prefs(
     data["entities"] = entities
     data["preference_overrides"] = prefs
     return data
+def _override_weather_tags_and_prefs(data: Dict[str, Any], text: str) -> None:
+    """
+    Add simple weather-related tags and preferences based on keywords.
+    We *do not* set rain_preference just because the word 'rain' appears.
+    Only set preferences when user clearly expresses like/dislike.
+    """
+    entities = data.setdefault("entities", {})
+    prefs = data.setdefault("preference_overrides", {})
+
+    t = text.lower()
+
+    # Ensure tags list exists
+    tags = entities.get("tags")
+    if not isinstance(tags, list):
+        tags = [] if tags is None else [tags]
+
+    # Basic 'rain' topic tagging
+    if "rain" in t or "raining" in t:
+        if "rain" not in tags:
+            tags.append("rain")
+
+    # Optional: detect explicit avoidance preferences
+    # e.g. "I want to avoid rain", "I don't like rain"
+    avoid_patterns = [
+        r"\bavoid rain\b",
+        r"\bdon't like rain\b",
+        r"\bhate rain\b",
+        r"\bwant to skip rainy days\b",
+    ]
+    if any(re.search(p, t) for p in avoid_patterns):
+        prefs["rain_preference"] = "avoid_rain"
+
+    entities["tags"] = tags
+    data["entities"] = entities
+    data["preference_overrides"] = prefs
 
