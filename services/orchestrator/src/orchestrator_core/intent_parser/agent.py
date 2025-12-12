@@ -1,6 +1,9 @@
 # orchestrator_core/intent_parser/agent.py
 
 from typing import Dict, List
+import os
+from pathlib import Path
+
 import numpy as np
 import torch
 from scipy.special import expit
@@ -32,7 +35,7 @@ INTENT_LABELS: List[str] = [
     "explanation_request",
 
     # General fallback
-    "generic_fact_query"
+    "generic_fact_query",
 ]
 
 id2label = {i: lbl for i, lbl in enumerate(INTENT_LABELS)}
@@ -43,7 +46,7 @@ class IntentParserAgent:
     Wraps the DistilBERT multi-label model used for intent parsing.
     - Predicts primary + secondary intents
     - Applies rule-based boost for obvious recommendation queries
-    - Optionally extracts entities + preference_overrides via Ollama + rules
+    - Optionally extracts entities + preference_overrides via LLM + rules
     """
 
     def __init__(
@@ -54,14 +57,31 @@ class IntentParserAgent:
         enable_entity_extraction: bool = True,
     ) -> None:
         """
-        :param model_dir: Folder where you saved the final model
-                          (SAVE_DIR = 'intent_multilabel_final')
+        :param model_dir: Folder name of the final model (relative in local dev),
+                          e.g. 'intent_multilabel_final'
         :param threshold: Probability threshold for selecting labels
         :param top_k_if_empty: Fallback number of labels if none exceed threshold
         :param enable_entity_extraction: If True, call LLM+rules to fill entities and preference_overrides
         """
-        self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_dir)
+
+        # --------- Resolve model path (Docker + local) ---------
+        env_dir = os.getenv("INTENT_MODEL_DIR")
+
+        if env_dir:
+            # In Docker we set INTENT_MODEL_DIR=/models/orchestrator/intent_multilabel_final
+            model_path = env_dir
+        else:
+            # Local dev: interpret model_dir as a folder under models/orchestrator/
+            # Project root: .../graphCeylon-API/
+            # This file:   .../services/orchestrator/src/orchestrator_core/intent_parser/agent.py
+            project_root = Path(__file__).resolve().parents[6]  # adjust if your depth changes
+            model_path = project_root / "models" / "orchestrator" / model_dir
+
+        model_path = str(model_path)
+        print(f"[IntentParserAgent] Loading model from: {model_path}")
+
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_path)
         self.model.eval()
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -82,6 +102,7 @@ class IntentParserAgent:
             "secondary_intents": [str],
             "scores": {intent: prob},
             "raw_text": str,
+            "domain_category": str | None,
             "entities": {...},
             "preference_overrides": {...}
           }
@@ -152,12 +173,13 @@ class IntentParserAgent:
         # ---- 4) Entity + preference extraction (LLM + rules) ----
         entities: Dict = {}
         preference_overrides: Dict = {}
+        domain_category = None  # default so we don't get UnboundLocalError
 
         if self.enable_entity_extraction:
             extracted = extract_entities_and_prefs(text)
             domain_category = extracted.get("domain_category")
-            entities = extracted.get("entities", {})
-            preference_overrides = extracted.get("preference_overrides", {})
+            entities = extracted.get("entities", {}) or {}
+            preference_overrides = extracted.get("preference_overrides", {}) or {}
 
         return {
             "primary_intent": primary_intent,

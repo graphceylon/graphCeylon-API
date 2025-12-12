@@ -69,8 +69,10 @@ services:
       - LANGUAGE_SERVICE_URL=http://language_service:8001
       - KG_SERVICE_URL=http://kg_service:8000
       - RECOMMENDER_SERVICE_URL=http://recommender_service:8003
+      - INTENT_MODEL_DIR=/models/orchestrator/intent_multilabel_final
     volumes:
       - ../services/orchestrator:/app
+      - ../models/orchestrator:/models/orchestrator
     depends_on:
       - language_service
       - kg_service

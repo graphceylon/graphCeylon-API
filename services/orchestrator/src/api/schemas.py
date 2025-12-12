@@ -1,6 +1,7 @@
 # api/schemas.py
 from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
+from ..orchestrator_core.contracts.weather import WeatherForecastResponse
 
 class PreferenceOverrides(BaseModel):
     travel_style: List[str] = []           # ["nature", "culture"]
@@ -85,13 +86,13 @@ class TaskSummary(BaseModel):
     assigned_agent: Optional[str] = None
 
 
-# what the orchestrator returns
 class OrchestrateResponse(BaseModel):
-    status: str = "ok"
-    message: str = "orchestration completed"
+    status: str
+    message: str
     parsed_intent: ParsedIntent
-    tasks: List[TaskSummary] = []
-    protocol_mode: Optional[str] = "direct"  # later: MCP / A2A / blackboard
+    tasks: list[TaskSummary]
+    protocol_mode: str
+    weather_result: Optional[WeatherForecastResponse] = None
 
 
 
