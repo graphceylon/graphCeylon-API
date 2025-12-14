@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 from dotenv import load_dotenv
 import calendar
+from datetime import datetime, timedelta
 
 
 load_dotenv() 
@@ -24,6 +25,7 @@ logger.warning(f"ENTITY_LLM_PROVIDER={ENTITY_LLM_PROVIDER}")
 print("GROQ_API_KEY loaded?", bool(GROQ_API_KEY))
 print("GROQ_API_KEY repr:", repr(GROQ_API_KEY))
 print("ENTITY_LLM_PROVIDER:", ENTITY_LLM_PROVIDER)
+
 
 
 
@@ -629,6 +631,20 @@ def extract_entities_and_prefs(
 
     # 1) Rule-based overrides you already had
     _override_relative_dates(data, text, now)
+    entities = data.setdefault("entities", {})
+
+    # If user asked for N days and we have a start_date but end_date is missing/same, compute it
+    try:
+        days = entities.get("days")
+        start_date = entities.get("start_date")
+        end_date = entities.get("end_date")
+
+        if days and start_date and (not end_date or end_date == start_date):
+            sd = datetime.strptime(start_date, "%Y-%m-%d").date()
+            ed = sd + timedelta(days=int(days) - 1)
+            entities["end_date"] = ed.strftime("%Y-%m-%d")
+    except Exception:
+        pass
     _override_time_of_day(data, text)
     _override_weather_tags_and_prefs(data, text)
 
