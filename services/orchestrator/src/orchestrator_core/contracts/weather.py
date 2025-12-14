@@ -1,18 +1,13 @@
 # src/orchestrator_core/contracts/weather.py
 
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
+from .common import BaseLocationTimeRequest
 
-class WeatherForecastRequest(BaseModel):
-    intent: str
-    user_id: Optional[str] = None
-    session_id: Optional[str] = None
-    raw_text: str
-    city: Optional[str] = None
-    country: Optional[str] = None
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-    time_of_day: Optional[str] = None
+
+class WeatherForecastRequest(BaseLocationTimeRequest):
+    intent: str = "forecast_weather"
+
 
 class WeatherForecastResponse(BaseModel):
     city: str
@@ -20,4 +15,4 @@ class WeatherForecastResponse(BaseModel):
     end_date: str
     time_of_day: Optional[str] = None
     forecast_summary: str
-    daily: List[dict]
+    daily: List[Dict[str, Any]]

@@ -2,6 +2,8 @@
 from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
 from ..orchestrator_core.contracts.weather import WeatherForecastResponse
+from ..orchestrator_core.contracts.crowd import CrowdForecastResponse
+from ..orchestrator_core.contracts.price import PriceForecastResponse
 
 class PreferenceOverrides(BaseModel):
     travel_style: List[str] = []           # ["nature", "culture"]
@@ -93,6 +95,8 @@ class OrchestrateResponse(BaseModel):
     tasks: list[TaskSummary]
     protocol_mode: str
     weather_result: Optional[WeatherForecastResponse] = None
+    crowd_result: Optional[CrowdForecastResponse] = None
+    price_result : Optional[PriceForecastResponse] = None
 
 
 

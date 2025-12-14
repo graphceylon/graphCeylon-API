@@ -11,6 +11,8 @@ import requests
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 from dotenv import load_dotenv
+import calendar
+
 
 load_dotenv() 
 
@@ -220,6 +222,7 @@ RELATIVE_DATE_PATTERNS = {
     "tomorrow": re.compile(r"\btomorrow\b", re.IGNORECASE),
     "this_weekend": re.compile(r"\bthis\s+weekend\b", re.IGNORECASE),
     "next_week": re.compile(r"\bnext\s+week\b", re.IGNORECASE),
+    "next_weekend": re.compile(r"\bnext\s+weekend\b", re.IGNORECASE),
 }
 
 
@@ -262,6 +265,14 @@ STAR_SINGLE_PATTERN = re.compile(
 CURRENCY_PATTERN = re.compile(
     r'\b(rs|lkr|rupees?|usd|dollars?)\b',
     re.IGNORECASE,
+)
+NEXT_MONTH_PATTERN = re.compile(
+    r"\bnext\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b",
+    re.IGNORECASE
+)
+THIS_MONTH_PATTERN = re.compile(
+    r"\bthis\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b",
+    re.IGNORECASE
 )
 
 PRICE_CONTEXT_PATTERN = re.compile(
@@ -383,61 +394,119 @@ def _override_relative_dates(
 ) -> None:
     """
     Override start_date, end_date, travel_month when relative phrases exist.
-    We trust backend 'now' more than LLM's guesses.
+    Deterministic > LLM guesses.
     """
     entities = data.setdefault("entities", {})
-
     t = text.lower()
 
     start_date: Optional[str] = entities.get("start_date")
     end_date: Optional[str] = entities.get("end_date")
     travel_month: Optional[str] = entities.get("travel_month")
 
-    # --- today / tomorrow / this weekend / next week ---
+    today = now.date()
+    wd = today.weekday()  # Mon=0 ... Sun=6
+
+
     if RELATIVE_DATE_PATTERNS["tomorrow"].search(t):
-        d = now + timedelta(days=1)
-        iso = d.strftime("%Y-%m-%d")
-        month = d.strftime("%B")
-        start_date = end_date = iso
-        travel_month = month
+        d = today + timedelta(days=1)
+        start_date = end_date = d.strftime("%Y-%m-%d")
+        travel_month = d.strftime("%B")
 
     elif RELATIVE_DATE_PATTERNS["today"].search(t):
-        d = now
-        iso = d.strftime("%Y-%m-%d")
-        month = d.strftime("%B")
-        start_date = end_date = iso
-        travel_month = month
+        start_date = end_date = today.strftime("%Y-%m-%d")
+        travel_month = today.strftime("%B")
 
     elif RELATIVE_DATE_PATTERNS["this_weekend"].search(t):
-        # Simple heuristic: assume Saturday/Sunday of the same week.
-        weekday = now.weekday()  # Monday=0 ... Sunday=6
-        days_until_saturday = (5 - weekday) % 7
-        saturday = now + timedelta(days=days_until_saturday)
-        sunday = saturday + timedelta(days=1)
-        start_date = saturday.strftime("%Y-%m-%d")
-        end_date = sunday.strftime("%Y-%m-%d")
-        travel_month = saturday.strftime("%B")
+        days_until_sat = (5 - wd) % 7
+        sat = today + timedelta(days=days_until_sat)
+        sun = sat + timedelta(days=1)
+        start_date = sat.strftime("%Y-%m-%d")
+        end_date = sun.strftime("%Y-%m-%d")
+        travel_month = sat.strftime("%B")
 
     elif RELATIVE_DATE_PATTERNS["next_week"].search(t):
-        # Interpret "next week" as Monday–Sunday of the upcoming week
-        today = now.date()
-        weekday = today.weekday()  # Monday=0 ... Sunday=6
-
-        # days until next Monday (always in the future)
-        days_until_next_monday = (7 - weekday) % 7
-        if days_until_next_monday == 0:
-            days_until_next_monday = 7
-
+        days_until_next_monday = (7 - wd) % 7 or 7
         start_dt = today + timedelta(days=days_until_next_monday)
         end_dt = start_dt + timedelta(days=6)
-
         start_date = start_dt.strftime("%Y-%m-%d")
         end_date = end_dt.strftime("%Y-%m-%d")
         travel_month = start_dt.strftime("%B")
 
-    # --- explicit month/day like "January 12 to 15" OR weekday like "next Monday" ---
+    m_next = NEXT_MONTH_PATTERN.search(t)
+    m_this = THIS_MONTH_PATTERN.search(t)
 
-    # If still no explicit year in text, handle patterns like "January 12 to 15"
+    if m_next or m_this:
+        month_name = (m_next.group(1) if m_next else m_this.group(1)).lower()
+        month_num = MONTH_NAME_TO_NUM[month_name]
+
+        year = now.year
+
+        if m_next:
+            # next January = next future occurrence
+            if month_num <= now.month:
+                year += 1
+        else:
+            # this January but already passed → next year
+            if month_num < now.month:
+                year += 1
+
+        last_day = calendar.monthrange(year, month_num)[1]
+        start_dt = datetime(year, month_num, 1)
+        end_dt = datetime(year, month_num, last_day)
+
+        start_date = start_dt.strftime("%Y-%m-%d")
+        end_date = end_dt.strftime("%Y-%m-%d")
+        travel_month = month_name.capitalize()
+
+
+    if start_date is not None:
+        entities["start_date"] = start_date
+    if end_date is not None:
+        entities["end_date"] = end_date
+    if travel_month is not None:
+        entities["travel_month"] = travel_month
+
+
+
+    def set_range(d1, d2):
+        nonlocal start_date, end_date, travel_month
+        start_date = d1.strftime("%Y-%m-%d")
+        end_date = d2.strftime("%Y-%m-%d")
+        travel_month = d1.strftime("%B")
+
+    # --- today / tomorrow ---
+    if RELATIVE_DATE_PATTERNS["tomorrow"].search(t):
+        d = today + timedelta(days=1)
+        set_range(d, d)
+
+    elif RELATIVE_DATE_PATTERNS["today"].search(t):
+        set_range(today, today)
+
+    # --- this weekend (upcoming Sat-Sun) ---
+    elif RELATIVE_DATE_PATTERNS["this_weekend"].search(t):
+        days_until_sat = (5 - wd) % 7
+        sat = today + timedelta(days=days_until_sat)
+        sun = sat + timedelta(days=1)
+        set_range(sat, sun)
+
+    # --- next weekend (Sat-Sun of next week) ✅ ---
+    elif RELATIVE_DATE_PATTERNS["next_weekend"].search(t):
+        days_until_sat = (5 - wd) % 7
+        sat_this = today + timedelta(days=days_until_sat)
+        sat_next = sat_this + timedelta(days=7)
+        sun_next = sat_next + timedelta(days=1)
+        set_range(sat_next, sun_next)
+
+    # --- next week (Mon-Sun of upcoming week) ---
+    elif RELATIVE_DATE_PATTERNS["next_week"].search(t):
+        days_until_next_monday = (7 - wd) % 7
+        if days_until_next_monday == 0:
+            days_until_next_monday = 7
+        start_dt = today + timedelta(days=days_until_next_monday)
+        end_dt = start_dt + timedelta(days=6)
+        set_range(start_dt, end_dt)
+
+    # --- explicit month/day like "January 12 to 15" ---
     m = MONTH_DAY_RANGE_PATTERN.search(t)
     if m:
         month_name = m.group(1).lower()
@@ -448,62 +517,54 @@ def _override_relative_dates(
         if month_num:
             year = now.year
             try:
-                start_dt = datetime(year, month_num, day_start)
-                end_dt = datetime(year, month_num, day_end)
+                start_dt = datetime(year, month_num, day_start).date()
+                end_dt = datetime(year, month_num, day_end).date()
 
-                # If this range is already in the past, move to next year
-                if end_dt.date() < now.date():
+                # if already past, move to next year
+                if end_dt < today:
                     year += 1
-                    start_dt = datetime(year, month_num, day_start)
-                    end_dt = datetime(year, month_num, day_end)
+                    start_dt = datetime(year, month_num, day_start).date()
+                    end_dt = datetime(year, month_num, day_end).date()
 
-                start_date = start_dt.strftime("%Y-%m-%d")
-                end_date = end_dt.strftime("%Y-%m-%d")
-                travel_month = month_name.capitalize()
+                set_range(start_dt, end_dt)
             except ValueError:
-                # Invalid day/month (e.g. Feb 30) – just ignore
                 pass
+
     else:
-        # Handle phrases like "next Monday", "this Friday", "on Monday"
+        # --- weekday like "next Monday", "this Friday", "on Monday" ---
         m_w = WEEKDAY_RELATIVE_PATTERN.search(t)
         if m_w:
-            modifier = m_w.group(1)  # "next", "this" or None
+            modifier = (m_w.group(1) or "").lower()  # "next", "this", or ""
             weekday_name = m_w.group(2).lower()
             target_wd = WEEKDAY_NAME_TO_NUM[weekday_name]
 
-            today = now.date()
-            current_wd = today.weekday()  # Monday=0 ... Sunday=6
-
-            days_ahead = (target_wd - current_wd) % 7
+            # next occurrence (including today)
+            days_ahead = (target_wd - wd) % 7
 
             if modifier == "next":
-                # Always move to the next occurrence in the *future*
+                # always strictly future
                 if days_ahead == 0:
                     days_ahead = 7
             elif modifier == "this":
-                # "this Monday": if it's already passed this week, jump to next week
-                if days_ahead < 0:
+                # if "this Monday" but today is after Monday in the same week -> go to next week's Monday
+                if days_ahead == 0:
+                    days_ahead = 0
+                # NOTE: days_ahead from %7 is never negative; to detect "already passed",
+                # we check if target is earlier in week (target_wd < wd).
+                elif target_wd < wd:
                     days_ahead += 7
             else:
-                # No modifier: nearest upcoming occurrence (including today)
-                if days_ahead < 0:
-                    days_ahead += 7
+                # no modifier: upcoming occurrence (today allowed)
+                pass
 
-            target_date = today + timedelta(days=days_ahead)
-            iso = target_date.strftime("%Y-%m-%d")
-            month = target_date.strftime("%B")
+            d = today + timedelta(days=days_ahead)
+            set_range(d, d)
 
-            start_date = iso
-            end_date = iso
-            travel_month = month
+    # --- write back ---
+    entities["start_date"] = start_date
+    entities["end_date"] = end_date
+    entities["travel_month"] = travel_month
 
-    # --- finally, write back into entities ---
-    if start_date is not None:
-        entities["start_date"] = start_date
-    if end_date is not None:
-        entities["end_date"] = end_date
-    if travel_month is not None:
-        entities["travel_month"] = travel_month
 
 
 
