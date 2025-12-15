@@ -2,6 +2,12 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+load_dotenv()
+
+
+# 👇 relative import from src.api.main
+from .api.main import app as orchestrator_app
 
 app = FastAPI(
     title="GraphCeylon Orchestrator",
@@ -19,19 +25,11 @@ app.add_middleware(
 )
 
 
-@app.get("/")
-async def root():
-    """Health check endpoint."""
-    return {"service": "orchestrator", "status": "running", "version": "0.1.0"}
+@app.get("/service-health")
+async def service_health():
+    """Health check for the wrapper app."""
+    return {"service": "orchestrator-wrapper", "status": "running", "version": "0.1.0"}
 
 
-@app.get("/health")
-async def health():
-    """Detailed health check."""
-    return {"status": "healthy", "service": "orchestrator"}
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+# Mount the REAL orchestrator app (with /orchestrate etc.) at root
+app.mount("/", orchestrator_app)

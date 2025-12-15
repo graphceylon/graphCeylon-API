@@ -51,10 +51,11 @@ coverage.xml
 *~
 .DS_Store
 Thumbs.db
+services/orchestrator/.venv_orchestrator/
 
 # Jupyter Notebook
 .ipynb_checkpoints
-*.ipynb
+# *.ipynb
 
 # Data files (keep structure, ignore large data files)
 data/**/raw/*
@@ -78,6 +79,7 @@ models/**/*.h5
 models/**/*.ckpt
 !models/*/.gitkeep
 !models/*/README.md
+models/orchestrator/
 
 # Logs
 *.log
@@ -121,6 +123,7 @@ temp/
 *.bak
 *.swp
 
+Tourism_MAS/
 kg-old/
 data/kg_service
 services/kg_service/neo4j
