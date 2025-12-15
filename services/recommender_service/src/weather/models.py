@@ -52,7 +52,7 @@ def load_rain_risk_climatology(location_id: str, start: date, end: Optional[date
     Expect a climatology file like: clean/rainfall_climatology_risk.csv
     containing per-location per-month percentiles + risk labels.
     """
-    path = DATA_CLEAN_DIR / "rainfall_climatology_risk.csv"  # <-- adjust to your saved climatology output
+    path = DATA_CLEAN_DIR / "rainfall_climatology.csv"  # <-- adjust to your saved climatology output
     if not path.exists():
         return {"note": f"Rainfall climatology file not found: {path}"}
 

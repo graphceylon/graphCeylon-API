@@ -54,10 +54,60 @@ def filter_slots_by_date_range(slots: list[dict], start_date: str, end_date: str
 
     filtered = []
     for s in slots:
-        d = date.fromisoformat(s["dt_utc"][:10])
-        if start <= d <= end:
+        local_day = date.fromisoformat(_slot_local_date(s["dt_utc"]))  # ✅ local day
+        if start <= local_day <= end:
             filtered.append(s)
     return filtered
+
+def _build_model_daily(location_id: str, start: date, end: date) -> tuple[list[dict], list[str], dict]:
+    """
+    Returns:
+      model_daily: list[dict] in your daily schema
+      covered_dates: list[str] dates that models could fill
+      meta: debug notes
+    """
+    meta: dict = {"temperature": None, "rainfall": None}
+    model_daily: list[dict] = []
+
+    temp_fc = load_sarima_temp_forecast(location_id, start, end)
+    rain_fc = load_rain_risk_climatology(location_id, start, end)
+
+    # loaders might return {"daily":[...]} or {"note": "..."} etc.
+    temp_daily = temp_fc.get("daily") if isinstance(temp_fc, dict) else None
+    rain_daily = rain_fc.get("daily") if isinstance(rain_fc, dict) else None
+
+    if not isinstance(temp_daily, list):
+        meta["temperature"] = temp_fc  # keep whatever note/error
+        temp_daily = []
+
+    if not isinstance(rain_daily, list):
+        meta["rainfall"] = rain_fc
+        rain_daily = []
+
+    rain_by_date = {d.get("date"): d for d in rain_daily if isinstance(d, dict) and d.get("date")}
+
+    for t in temp_daily:
+        if not isinstance(t, dict) or not t.get("date"):
+            continue
+        day = t["date"]
+        if not (start.isoformat() <= day <= end.isoformat()):
+            continue
+
+        r = rain_by_date.get(day, {})
+        model_daily.append({
+            "date": day,
+            "temp_min": t.get("temp_min"),
+            "temp_max": t.get("temp_max"),
+            "temp_avg": t.get("temp_avg") or t.get("temp_c"),  # support either key
+            "humidity_avg": None,
+            "condition": r.get("condition") or "Unknown",
+            "rain_risk": r.get("rain_risk") or r.get("risk"),
+        })
+
+    covered = [d["date"] for d in model_daily]
+    return model_daily, covered, meta
+
+
 
 
 def build_daily_forecast_from_slots(slots: list[dict]) -> list[dict]:
@@ -145,6 +195,10 @@ def forecast_weather_logic(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         # If ALL dates are present -> return pure API
         if not missing_dates:
+            # ensure response has daily + filtered slots for the exact requested range
+            api_fc["slots"] = slots_in_range
+            api_fc["daily"] = api_daily
+
             return {
                 "source": "openweather_5day",
                 "location_id": location_id,
@@ -156,6 +210,7 @@ def forecast_weather_logic(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "api_forecast": api_fc,
             }
 
+
         # Otherwise: fill missing dates using models/climatology
         # We’ll compute model forecasts ONLY for the missing range for efficiency
         miss_start = date.fromisoformat(missing_dates[0])
@@ -164,32 +219,42 @@ def forecast_weather_logic(payload: Dict[str, Any]) -> Dict[str, Any]:
         temp_fc = load_sarima_temp_forecast(location_id, miss_start, miss_end)
         rain_risk = load_rain_risk_climatology(location_id, miss_start, miss_end)
 
-        # Convert model outputs into a "daily" list matching your API daily shape
-        # (you can adjust keys based on your CSV schema)
-        model_daily = []
-        # If your loaders already return daily lists, just use them.
-        # Otherwise, build them here from the returned data structures.
-        # Example assumes they return dicts keyed by date:
-        # temp_fc["daily"] = [{"date": "...", "temp_avg": ... , ...}]
-        # rain_risk["daily"] = [{"date": "...", "rain_risk": ...}]
-        temp_daily = temp_fc.get("daily", [])
-        rain_daily = {d["date"]: d for d in rain_risk.get("daily", [])}
+        # ✅ SAFE: loaders might return {"note": "..."} or something without "daily"
+        temp_daily = temp_fc.get("daily") if isinstance(temp_fc, dict) else None
+        rain_daily_list = rain_risk.get("daily") if isinstance(rain_risk, dict) else None
 
+        if not isinstance(temp_daily, list):
+            temp_daily = []
+
+        if not isinstance(rain_daily_list, list):
+            rain_daily_list = []
+
+        rain_daily = {
+            d["date"]: d
+            for d in rain_daily_list
+            if isinstance(d, dict) and d.get("date")
+        }
+
+        model_daily = []
         for t in temp_daily:
+            if not isinstance(t, dict) or not t.get("date"):
+                continue
+
             day = t["date"]
-            if day in requested_dates and day in missing_dates:
+            if day in missing_dates:  # missing_dates already subset of requested
                 rd = rain_daily.get(day, {})
                 model_daily.append({
                     "date": day,
                     "temp_min": t.get("temp_min"),
                     "temp_max": t.get("temp_max"),
-                    "temp_avg": t.get("temp_avg"),
+                    "temp_avg": t.get("temp_avg") or t.get("temp_c"),
                     "humidity_avg": None,
                     "condition": rd.get("condition") or "Unknown",
-                    "rain_risk": rd.get("rain_risk"),
+                    "rain_risk": rd.get("rain_risk") or rd.get("risk"),
                 })
 
         merged_daily = _merge_daily(api_daily, model_daily)
+
 
         return {
             "source": "hybrid_openweather_plus_models",
@@ -200,13 +265,19 @@ def forecast_weather_logic(payload: Dict[str, Any]) -> Dict[str, Any]:
             "end_date": str(end_date),
             "time_of_day": tod,
             "api_forecast": {
-                "daily": merged_daily,               # ✅ will now include 15,16 (from api)
-                "slots": slots_in_range,             # ✅ filtered slots only
-                "note": "Days missing from OpenWeather were filled using long-range models/climatology.",
-                "missing_dates_filled": missing_dates,   # ✅ now should be only ['2025-12-17']
+                "daily": merged_daily,
+                "slots": slots_in_range,
+                "note": "Days missing from OpenWeather were filled using long-range models/climatology (if available).",
+                "missing_dates_requested": missing_dates,
                 "api_dates_present": sorted(list(api_dates)),
-    },
+                "model_dates_filled": [d["date"] for d in model_daily],
+                "model_debug": {
+                    "temperature_loader": temp_fc if isinstance(temp_fc, dict) and "note" in temp_fc else None,
+                    "rain_loader": rain_risk if isinstance(rain_risk, dict) and "note" in rain_risk else None,
+                },
+            },
         }
+
 
     # --- LONG RANGE ONLY ---
     temp_fc = load_sarima_temp_forecast(location_id, start_date, end_date)
