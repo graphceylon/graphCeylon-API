@@ -28,6 +28,7 @@ venv/
 env/
 ENV/
 .venv/
+.venv_recommender/
 .env
 .virtualenv
 *.env
@@ -128,3 +129,6 @@ kg-old/
 data/kg_service
 services/kg_service/neo4j
 services/kg_service/data
+#Thinal
+datasets/
+component3_service/
