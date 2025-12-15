@@ -124,3 +124,7 @@ temp/
 *.swp
 
 Tourism_MAS/
+kg-old/
+data/kg_service
+services/kg_service/neo4j
+services/kg_service/data
