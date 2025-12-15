@@ -1,6 +1,38 @@
-version: '3.8'
+version: '3.9'
 
 services:
+  # Neo4j Database for Knowledge Graph
+  neo4j:
+    image: neo4j:5.26
+    container_name: graphceylon-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/password
+      NEO4JLABS_PLUGINS: '["apoc", "n10s"]'
+      NEO4J_PLUGINS: '["apoc", "n10s"]'
+      NEO4J_dbms_security_procedures_allowlist: "apoc.*,n10s.*"
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*,n10s.*"
+      NEO4J_apoc_import_file_enabled: "true"
+      NEO4J_apoc_import_file_use__neo4j__config: "true"
+      NEO4J_server_memory_pagecache_size: 1G
+      NEO4J_server_memory_heap_initial__size: 1G
+      NEO4J_server_memory_heap_max__size: 1G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - ../data/kg_service:/var/lib/neo4j/import
+      - neo4j_plugins:/plugins
+    networks:
+      - graphceylon-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "password", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Component 1: Language Service
   language_service:
     build:
@@ -30,9 +62,20 @@ services:
     environment:
       - SERVICE_NAME=kg_service
       - SERVICE_PORT=8000
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=password
+      - NEO4J_DATABASE=neo4j
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - DEBUG=true
     volumes:
       - ../services/kg_service:/app
       - ../models/kg_service:/models
+      - ../data/kg_service:/data
+    depends_on:
+      neo4j:
+        condition: service_healthy
     networks:
       - graphceylon-network
     restart: unless-stopped
@@ -69,8 +112,10 @@ services:
       - LANGUAGE_SERVICE_URL=http://language_service:8001
       - KG_SERVICE_URL=http://kg_service:8000
       - RECOMMENDER_SERVICE_URL=http://recommender_service:8003
+      - INTENT_MODEL_DIR=/models/orchestrator/intent_multilabel_final
     volumes:
       - ../services/orchestrator:/app
+      - ../models/orchestrator:/models/orchestrator
     depends_on:
       - language_service
       - kg_service
@@ -82,3 +127,11 @@ services:
 networks:
   graphceylon-network:
     driver: bridge
+
+volumes:
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  neo4j_plugins:
+    driver: local
