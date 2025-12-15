@@ -1,15 +1,17 @@
-# src/api/main.py
-
 from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 
 from src.db.session import SessionLocal
 from src.recommendation.service import recommend_pois_from_payload
 
+from src.api.routes.weather import router as weather_router  # ✅ add
+
 app = FastAPI(
     title="Component 3 – Recommendation & Sustainability Service",
     version="0.1.0",
 )
+
+app.include_router(weather_router)  # ✅ add
 
 
 def get_db():
