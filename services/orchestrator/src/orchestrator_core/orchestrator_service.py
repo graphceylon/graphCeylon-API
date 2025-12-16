@@ -235,6 +235,60 @@ class OrchestratorService:
                 error=str(e),
             )
             return None
+    def _execute_intent(
+        self,
+        intent_name: str,
+        parsed_intent: ParsedIntent,
+        req: OrchestrateRequest,
+        results: Dict[str, Any],
+    ) -> None:
+        handler = self.handlers.get(intent_name)
+        if not handler:
+            print(f"[orchestrator] No handler registered for intent={intent_name}")
+            return
+
+        # ✅ IMPORTANT: patch ParsedIntent so mappers see the correct intent
+        patched_intent = parsed_intent.model_copy(
+            update={
+                "intent": intent_name,
+                "confidence": float((parsed_intent.scores or {}).get(intent_name, 0.0)),
+            }
+        )
+
+        contract_obj = handler.mapper(patched_intent, req)
+        payload = contract_obj.model_dump()
+
+        print(f"=== {contract_obj.__class__.__name__} payload ({intent_name}) ===")
+        print(payload)
+
+        raw = self._invoke_capability_a2a(
+            capability=intent_name,
+            endpoint=handler.endpoint,
+            payload=payload,
+            timeout=handler.timeout,
+            session_id=req.session_id or "no_session",
+            user_id=req.user_id,
+        )
+
+        if raw is None:
+            return
+
+        # Parse response if model exists
+        parsed = None
+        if handler.response_model is not None:
+            try:
+                parsed = handler.response_model(**raw)
+            except Exception as e:
+                print(f"[orchestrator] Error parsing response for intent={intent_name}: {e}")
+                parsed = None
+        else:
+            # endpoints you haven't finalized yet
+            print(f"[orchestrator] Raw response for {intent_name}:")
+            print(raw)
+
+        # Store into the appropriate OrchestrateResponse field
+        if handler.result_field and handler.result_field in results:
+            results[handler.result_field] = parsed
 
     # ---------------------------
     # intent parse
@@ -267,13 +321,10 @@ class OrchestratorService:
     # main orchestrate
     # ---------------------------
     def orchestrate(self, req: OrchestrateRequest) -> OrchestrateResponse:
-        session_id = self._clean_session_id(req)
-        user_id = self._clean_user_id(req)
-
         parsed_intent: ParsedIntent = self._run_intent_parser(req)
         tasks: List[TaskSummary] = self.task_graph_builder.build(parsed_intent)
 
-        # keep schema stable
+        # Keep existing response fields to not break schema
         results: Dict[str, Any] = {
             "weather_result": None,
             "crowd_result": None,
@@ -282,29 +333,24 @@ class OrchestratorService:
             "modify_result": None,
         }
 
-        handler = self.handlers.get(parsed_intent.intent)
+        # 1) Build ordered, de-duplicated run list: primary then secondary
+        intents_to_run: List[str] = []
+        seen = set()
 
-        if handler:
-            contract_obj = handler.mapper(parsed_intent, req)
-            payload = contract_obj.model_dump()
+        def _add(i: str):
+            if i and i not in seen:
+                intents_to_run.append(i)
+                seen.add(i)
 
-            print(f"=== {contract_obj.__class__.__name__} payload ===")
-            print(payload)
+        _add(parsed_intent.intent)
+        for s in (parsed_intent.secondary_intents or []):
+            _add(s)
 
-            raw = self._invoke_capability_a2a(
-                capability=parsed_intent.intent,
-                endpoint=handler.endpoint,
-                payload=payload,
-                timeout=handler.timeout,
-                session_id=session_id,
-                user_id=user_id,
-            )
+        print(f"[orchestrator] intents_to_run={intents_to_run}")
 
-            if raw is not None and handler.response_model is not None and handler.result_field:
-                try:
-                    results[handler.result_field] = handler.response_model(**raw)
-                except Exception as e:
-                    print("Error parsing response into model:", e)
+        # 2) Execute each intent sequentially (simple + traceable)
+        for intent_name in intents_to_run:
+            self._execute_intent(intent_name, parsed_intent, req, results)
 
         return OrchestrateResponse(
             status="ok",
