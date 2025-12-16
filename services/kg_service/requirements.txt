@@ -1,10 +1,27 @@
 # Knowledge Graph Service Dependencies
-# Add your required packages here with versions
-# 
-# Example:
-# fastapi==0.104.1
-# uvicorn[standard]==0.24.0
-# networkx==3.2.1
-# pandas==2.1.4
-# 
-# Install with: uv pip install -r requirements.txt
+# Core Web Framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+
+# Database - Updated to satisfy langchain-neo4j requirements
+neo4j>=5.25.0,<6.0.0
+
+# Data Validation & Settings
+pydantic==2.9.2
+pydantic-settings==2.6.1
+
+# HTTP Requests
+requests>=2.32.5
+
+# ML/AI
+torch>=2.2.0
+sentence-transformers==3.0.1
+
+# GraphRAG additional dependencies
+langchain>=0.1.0
+langchain-community
+langchain-openai
+langchain-groq
+langchain-neo4j
+tiktoken
+python-dotenv
