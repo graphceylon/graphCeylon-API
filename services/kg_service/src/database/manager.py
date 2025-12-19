@@ -156,13 +156,13 @@ class DatabaseManager:
         """Remove all attraction relationships to clean up messy graph."""
         return self.attractions.cleanup_relationships()
     
-    def load_attractions_from_json(self) -> Dict[str, Any]:
+    def load_attractions_from_json(self, file_path: str = None) -> Dict[str, Any]:
         """Load attractions from JSON file using APOC and create relationships."""
-        return self.attractions.load_from_json()
+        return self.attractions.load_from_json(file_path)
     
     def create_attraction(self, attraction_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new attraction node."""
-        return self.attractions.create(attraction_data)
+        return self.attractions.create_attraction(attraction_data)
     
     def link_attraction_to_district(self, attraction_title: str, district_name: str) -> Dict[str, Any]:
         """Link an attraction to a district and province."""

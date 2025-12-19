@@ -2,6 +2,8 @@
 
 import logging
 from typing import List, Dict, Any, Optional
+from pathlib import Path
+import json
 from neo4j import Driver
 
 from .base import BaseRepository
@@ -16,6 +18,172 @@ class AttractionRepository(BaseRepository):
     def __init__(self, driver: Driver):
         """Initialize attraction repository."""
         super().__init__(driver)
+    
+    def load_schema(self) -> Dict[str, Any]:
+        """Load attraction schema (constraints and indexes)."""
+        try:
+            logger.info("Loading attractions schema...")
+            schema_path = Path(__file__).parent.parent.parent.parent / "neo4j" / "import" / "scripts" / "init_attractions_schema.cypher"
+            
+            if not schema_path.exists():
+                logger.warning(f"Attractions schema file not found: {schema_path}, creating basic constraints")
+                # Create basic constraints if schema file doesn't exist
+                self.execute_cypher("CREATE CONSTRAINT attraction_title_unique IF NOT EXISTS FOR (a:Attraction) REQUIRE a.title IS UNIQUE;")
+                return {"success": True, "message": "Basic constraints created"}
+            
+            self.execute_cypher_file(str(schema_path))
+            
+            logger.info("Attractions schema loaded successfully")
+            return {"success": True, "message": "Attractions schema loaded"}
+            
+        except Exception as e:
+            logger.error(f"Failed to load attractions schema: {e}")
+            raise
+    
+    def load_from_json(self, file_path: str = None) -> Dict[str, Any]:
+        """Load attractions from JSON file.
+        
+        Args:
+            file_path: Optional path to JSON file. If not provided, uses default location.
+            
+        Returns:
+            Dictionary with success status and statistics
+        """
+        try:
+            logger.info("Loading attractions from JSON...")
+            
+            # Use provided path or default
+            if file_path is None:
+                file_path = str(Path(__file__).parent.parent.parent.parent.parent.parent / "data" / "kg_service" / "data" / "attractions.json")
+            
+            if not Path(file_path).exists():
+                raise FileNotFoundError(f"Attractions data file not found: {file_path}")
+            
+            # Load JSON data
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # Handle both direct array and object with 'attractions' key
+            if isinstance(data, dict) and 'attractions' in data:
+                attractions_data = data['attractions']
+            elif isinstance(data, list):
+                attractions_data = data
+            else:
+                raise ValueError("Attractions data must be a list or an object with 'attractions' key")
+            
+            logger.info(f"Found {len(attractions_data)} attractions to import")
+            
+            # Import each attraction
+            imported_count = 0
+            skipped_count = 0
+            
+            for attraction in attractions_data:
+                try:
+                    # Create or merge attraction
+                    cypher = """
+                    MERGE (a:Attraction {title: $title})
+                    SET a.description = $description,
+                        a.imageUrl = $imageUrl,
+                        a.latitude = $latitude,
+                        a.longitude = $longitude,
+                        a.googlePlaceId = $googlePlaceId,
+                        a.rating = $rating,
+                        a.updatedAt = datetime()
+                    WITH a
+                    WHERE a.createdAt IS NULL
+                    SET a.createdAt = datetime()
+                    RETURN a.title AS title
+                    """
+                    
+                    params = {
+                        "title": attraction.get("title", ""),
+                        "description": attraction.get("description", ""),
+                        "imageUrl": attraction.get("imageUrl", ""),
+                        "latitude": attraction.get("latitude"),
+                        "longitude": attraction.get("longitude"),
+                        "googlePlaceId": attraction.get("googlePlaceId", ""),
+                        "rating": attraction.get("rating")
+                    }
+                    
+                    result = self.execute_cypher(cypher, params)
+                    
+                    if result:
+                        imported_count += 1
+                        
+                        # Link to district if provided
+                        district = attraction.get("district")
+                        if district:
+                            try:
+                                self.link_to_district(attraction.get("title"), district)
+                            except Exception as e:
+                                logger.warning(f"Failed to link {attraction.get('title')} to district {district}: {e}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to import attraction {attraction.get('title', 'unknown')}: {e}")
+                    skipped_count += 1
+                    continue
+            
+            logger.info(f"Successfully imported {imported_count} attractions, skipped {skipped_count}")
+            
+            # Get final statistics
+            stats_query = """
+            MATCH (a:Attraction)
+            OPTIONAL MATCH (a)-[:LOCATED_IN]->(d:District)
+            RETURN count(DISTINCT a) AS total_attractions,
+                   count(DISTINCT d) AS linked_districts
+            """
+            stats = self.execute_cypher(stats_query)
+            
+            return {
+                "success": True,
+                "message": "Attractions loaded from JSON",
+                "attractions_loaded": imported_count,
+                "skipped": skipped_count,
+                "statistics": stats[0] if stats else {}
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to load attractions from JSON: {e}")
+            raise
+    
+    def cleanup_relationships(self) -> Dict[str, Any]:
+        """Remove all attraction relationships to clean up messy graph."""
+        try:
+            logger.info("Cleaning up attraction relationships...")
+            
+            # Count before cleanup
+            before_query = "MATCH ()-[r:HAS_ATTRACTION]->() RETURN count(r) AS count"
+            before = self.execute_cypher(before_query)
+            before_count = before[0]["count"] if before else 0
+            
+            # Delete HAS_ATTRACTION relationships
+            delete_query = """
+            MATCH ()-[r:HAS_ATTRACTION]->()
+            DELETE r
+            RETURN count(r) AS deleted
+            """
+            self.execute_cypher(delete_query)
+            
+            # Count after cleanup
+            after = self.execute_cypher(before_query)
+            after_count = after[0]["count"] if after else 0
+            
+            deleted = before_count - after_count
+            logger.info(f"Cleaned up {deleted} HAS_ATTRACTION relationships")
+            
+            return {
+                "success": True,
+                "message": "Attraction relationships cleaned up",
+                "deleted_count": deleted
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to cleanup attraction relationships: {e}")
+            raise
+    
+    def create(self, attraction_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new attraction node (alias for create_attraction)."""
+        return self.create_attraction(attraction_data)
     
     def create_attraction(self, attraction_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new attraction node.

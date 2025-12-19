@@ -90,3 +90,89 @@ class BaseRepository:
             List of result dictionaries
         """
         return self.execute_query(cypher, parameters)
+    
+    def execute_cypher_file(self, file_path: str) -> List[Dict[str, Any]]:
+        """Execute Cypher commands from a file.
+        
+        Args:
+            file_path: Path to the Cypher file
+            
+        Returns:
+            List of result dictionaries from the last statement
+        """
+        try:
+            logger.info(f"Executing Cypher file: {file_path}")
+            
+            with open(file_path, 'r', encoding='utf-8') as f:
+                cypher_content = f.read()
+            
+            # Split by semicolons and execute each statement
+            statements = []
+            for stmt in cypher_content.split(';'):
+                # Remove comments and whitespace
+                cleaned = '\n'.join(
+                    line for line in stmt.split('\n')
+                    if line.strip() and not line.strip().startswith('//')
+                )
+                if cleaned.strip():
+                    statements.append(cleaned.strip())
+            
+            results = []
+            with self.driver.session() as session:
+                for statement in statements:
+                    logger.debug(f"Executing statement: {statement[:100]}...")
+                    result = session.run(statement)
+                    data = [record.data() for record in result]
+                    results.extend([self._convert_neo4j_types(record) for record in data])
+            
+            logger.info(f"Successfully executed {len(statements)} statements from file")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Failed to execute Cypher file {file_path}: {e}")
+            raise
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get comprehensive database statistics.
+        
+        Returns:
+            Dictionary with node counts, relationship counts, and breakdowns by type
+        """
+        try:
+            # Get basic counts
+            basic_query = """
+            MATCH (n)
+            WITH count(n) AS node_count
+            MATCH ()-[r]->()
+            RETURN node_count, count(r) AS relationship_count
+            """
+            
+            basic_result = self.execute_query(basic_query)
+            stats = basic_result[0] if basic_result else {"node_count": 0, "relationship_count": 0}
+            
+            # Get node labels count
+            labels_query = """
+            MATCH (n)
+            UNWIND labels(n) AS label
+            RETURN label, count(*) AS count
+            ORDER BY count DESC
+            """
+            
+            labels_result = self.execute_query(labels_query)
+            stats["node_labels"] = {record["label"]: record["count"] for record in labels_result}
+            
+            # Get relationship types count
+            rel_query = """
+            MATCH ()-[r]->()
+            RETURN type(r) AS type, count(r) AS count
+            ORDER BY count DESC
+            """
+            
+            rel_result = self.execute_query(rel_query)
+            stats["relationship_types"] = {record["type"]: record["count"] for record in rel_result}
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Failed to get statistics: {e}")
+            raise
