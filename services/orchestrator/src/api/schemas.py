@@ -38,6 +38,8 @@ class Entities(BaseModel):
     end_date: Optional[str] = None
     travel_month: Optional[str] = None
     days: Optional[int] = None
+    nationality_country: Optional[str] = None
+
 
     time_of_day: Optional[str] = None
 

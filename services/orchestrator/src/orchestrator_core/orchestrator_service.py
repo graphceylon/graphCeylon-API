@@ -1,3 +1,5 @@
+# /Users/dev/Desktop/graphCeylon-API/services/orchestrator/src/orchestrator_core/orchestrator_service.py
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -37,6 +39,12 @@ from .contracts.itinerary_modify import ItineraryModifyResponse
 from .mappers.sustainability_mapper import map_sustainability_request
 from .mappers.recommend_pois_mapper import map_recommend_pois_request
 
+
+from .agent_mappers.visa_policy_mapper import map_visa_policy_request
+# from .agent_contracts.visa_policy import VisaPolicyResponse  # optional (enable later)
+from .agent_contracts.visa_policy import VisaPolicyResponse  # optional (enable later)
+
+
 # ✅ registry + adapter + tracing (use RELATIVE imports)
 from .runtime.registry.registry import AgentRegistry
 from .runtime.registry.models import AgentSpec, SLA
@@ -47,6 +55,12 @@ from .runtime.trace import InMemoryTraceStore, TraceEvent
 RECOMMENDER_BASE_URL = os.getenv(
     "RECOMMENDER_SERVICE_URL",
     "http://recommender_service:8003",
+).rstrip("/")
+
+# ✅ NEW: Visa/KG base URL (your friend’s KG interface layer service)
+VISA_KG_BASE_URL = os.getenv(
+    "VISA_KG_SERVICE_URL",
+    "http://visa_kg_service:8006",
 ).rstrip("/")
 
 
@@ -125,6 +139,17 @@ class OrchestratorService:
                 timeout=20,
                 result_field=None,
             ),
+
+            # ✅ NEW: VisaPolicy handler (calls KG interface layer)
+            # IMPORTANT: result_field=None so we don't touch your OrchestrateResponse schema.
+            # Your friend can return any JSON; it will be printed in logs for now.
+            "info_visa_policy": IntentHandler(
+                endpoint="/visa/policy",
+                mapper=map_visa_policy_request,
+                response_model=None,   # set to VisaPolicyResponse later if you add it
+                timeout=20,
+                result_field=None,     # keep None to avoid changing your response object
+            ),
         }
 
         # ✅ 2) registry
@@ -134,10 +159,29 @@ class OrchestratorService:
                     agent_id="recommender",
                     base_url=RECOMMENDER_BASE_URL,
                     protocols=["a2a"],  # later: ["a2a", "mcp", "blackboard"]
-                    capabilities=list(self.handlers.keys()),
+                    capabilities=[
+                        # keep it explicit so it doesn't accidentally claim visa capability
+                        "forecast_weather",
+                        "crowd_forecast",
+                        "forecast_price",
+                        "plan_itinerary",
+                        "modify_itinerary",
+                        "forecast_sustainability",
+                        "recommend_pois",
+                    ],
                     sla=SLA(p95_ms=1200, success_rate=0.98),
                     cost_weight=1.0,
-                )
+                ),
+
+                # ✅ NEW: visa KG agent service
+                AgentSpec(
+                    agent_id="visa_kg",
+                    base_url=VISA_KG_BASE_URL,
+                    protocols=["a2a"],
+                    capabilities=["info_visa_policy"],
+                    sla=SLA(p95_ms=1500, success_rate=0.98),
+                    cost_weight=1.0,
+                ),
             ]
         )
 
@@ -235,6 +279,7 @@ class OrchestratorService:
                 error=str(e),
             )
             return None
+
     def _execute_intent(
         self,
         intent_name: str,

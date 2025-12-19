@@ -301,6 +301,114 @@ MONTH_NAME_TO_NUM = {
     "november": 11,
     "december": 12,
 }
+# --- NEW: Month + Year detection (e.g., "February 2026", "Feb 2026") ---
+MONTH_YEAR_PATTERN = re.compile(
+    r"\b("
+    r"january|february|march|april|may|june|july|august|september|october|november|december"
+    r"|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec"
+    r")\s+(20\d{2})\b",
+    re.IGNORECASE
+)
+
+MONTH_ABBR_TO_FULL = {
+    "jan": "january", "feb": "february", "mar": "march", "apr": "april",
+    "jun": "june", "jul": "july", "aug": "august", "sep": "september",
+    "sept": "september", "oct": "october", "nov": "november", "dec": "december",
+}
+
+# --- NEW: Nationality extraction patterns ---
+CITIZEN_OF_PATTERN = re.compile(r"\bcitizen\s+of\s+([A-Za-z ]+)\b", re.IGNORECASE)
+NATIONALITY_ADJ_PATTERN = re.compile(
+    r"\b(i\s*am|i’m|im|we\s*are|we’re)\s+an?\s+([A-Za-z]+)\s+(citizen|national)\b",
+    re.IGNORECASE,
+)
+PASSPORT_PATTERN = re.compile(r"\b([A-Za-z]+)\s+passport\b", re.IGNORECASE)
+
+# Minimal adjective → country mapping (expand later)
+NATIONALITY_ADJ_TO_COUNTRY = {
+    "indian": "India",
+    "sri": "Sri Lanka",  # (rare phrasing; optional)
+    "srilankan": "Sri Lanka",
+    "american": "United States",
+    "british": "United Kingdom",
+    "australian": "Australia",
+    "canadian": "Canada",
+}
+def _override_month_year_dates(data: Dict[str, Any], text: str, now: datetime) -> None:
+    """
+    If text contains 'February 2026' (or 'Feb 2026') and the LLM missed it,
+    set travel_month + start_date/end_date to that month range.
+
+    This is especially useful for visa queries where policy can change over time.
+    """
+    entities = data.setdefault("entities", {})
+    t = text.lower()
+
+    m = MONTH_YEAR_PATTERN.search(t)
+    if not m:
+        return
+
+    month_raw = m.group(1).lower()
+    year = int(m.group(2))
+
+    # normalize month
+    if month_raw in MONTH_ABBR_TO_FULL:
+        month_name = MONTH_ABBR_TO_FULL[month_raw]
+    else:
+        month_name = month_raw
+
+    month_num = MONTH_NAME_TO_NUM.get(month_name)
+    if not month_num:
+        return
+
+    # Set travel_month always
+    entities["travel_month"] = month_name.capitalize()
+
+    # Only set start/end if not already a more precise date
+    # (If user said "Feb 12 2026", you'd handle that elsewhere.)
+    if not entities.get("start_date") and not entities.get("end_date"):
+        last_day = calendar.monthrange(year, month_num)[1]
+        entities["start_date"] = f"{year:04d}-{month_num:02d}-01"
+        entities["end_date"] = f"{year:04d}-{month_num:02d}-{last_day:02d}"
+def _override_nationality(data: Dict[str, Any], text: str) -> None:
+    """
+    Extract nationality explicitly for visa logic.
+    Examples:
+      - "I’m an Indian citizen" -> India
+      - "citizen of India" -> India
+      - "Indian passport" -> India
+    """
+    entities = data.setdefault("entities", {})
+    t = text.strip()
+
+    # citizen of X
+    m = CITIZEN_OF_PATTERN.search(t)
+    if m:
+        country = m.group(1).strip()
+        entities["nationality_country"] = country
+        return
+
+    # "I'm an Indian citizen"
+    m2 = NATIONALITY_ADJ_PATTERN.search(t)
+    if m2:
+        adj = m2.group(2).strip().lower()
+        country = NATIONALITY_ADJ_TO_COUNTRY.get(adj)
+        if country:
+            entities["nationality_country"] = country
+        else:
+            # fallback: store adjective as-is if unknown
+            entities["nationality_country"] = adj.capitalize()
+        return
+
+    # "Indian passport"
+    m3 = PASSPORT_PATTERN.search(t)
+    if m3:
+        adj = m3.group(1).strip().lower()
+        country = NATIONALITY_ADJ_TO_COUNTRY.get(adj)
+        if country:
+            entities["nationality_country"] = country
+        else:
+            entities["nationality_country"] = adj.capitalize()
 
 
 
@@ -395,80 +503,114 @@ def _override_relative_dates(
     now: datetime,
 ) -> None:
     """
-    Override start_date, end_date, travel_month when relative phrases exist.
-    Deterministic > LLM guesses.
+    Deterministic date overrides based on relative phrases and simple patterns.
     """
     entities = data.setdefault("entities", {})
     t = text.lower()
 
-    start_date: Optional[str] = entities.get("start_date")
-    end_date: Optional[str] = entities.get("end_date")
-    travel_month: Optional[str] = entities.get("travel_month")
-
     today = now.date()
     wd = today.weekday()  # Mon=0 ... Sun=6
 
+    start_date = entities.get("start_date")
+    end_date = entities.get("end_date")
+    travel_month = entities.get("travel_month")
 
+    def set_range(d1, d2):
+        nonlocal start_date, end_date, travel_month
+        start_date = d1.strftime("%Y-%m-%d")
+        end_date = d2.strftime("%Y-%m-%d")
+        travel_month = d1.strftime("%B")
+
+    # --- today / tomorrow ---
     if RELATIVE_DATE_PATTERNS["tomorrow"].search(t):
         d = today + timedelta(days=1)
-        start_date = end_date = d.strftime("%Y-%m-%d")
-        travel_month = d.strftime("%B")
+        set_range(d, d)
 
     elif RELATIVE_DATE_PATTERNS["today"].search(t):
-        start_date = end_date = today.strftime("%Y-%m-%d")
-        travel_month = today.strftime("%B")
+        set_range(today, today)
 
+    # --- this weekend (upcoming Sat-Sun) ---
     elif RELATIVE_DATE_PATTERNS["this_weekend"].search(t):
         days_until_sat = (5 - wd) % 7
         sat = today + timedelta(days=days_until_sat)
         sun = sat + timedelta(days=1)
-        start_date = sat.strftime("%Y-%m-%d")
-        end_date = sun.strftime("%Y-%m-%d")
-        travel_month = sat.strftime("%B")
+        set_range(sat, sun)
 
+    # --- next weekend (Sat-Sun of next week) ---
+    elif RELATIVE_DATE_PATTERNS["next_weekend"].search(t):
+        days_until_sat = (5 - wd) % 7
+        sat_this = today + timedelta(days=days_until_sat)
+        sat_next = sat_this + timedelta(days=7)
+        sun_next = sat_next + timedelta(days=1)
+        set_range(sat_next, sun_next)
+
+    # --- next week (Mon-Sun of upcoming week) ---
     elif RELATIVE_DATE_PATTERNS["next_week"].search(t):
-        days_until_next_monday = (7 - wd) % 7 or 7
+        days_until_next_monday = (7 - wd) % 7
+        if days_until_next_monday == 0:
+            days_until_next_monday = 7
         start_dt = today + timedelta(days=days_until_next_monday)
         end_dt = start_dt + timedelta(days=6)
-        start_date = start_dt.strftime("%Y-%m-%d")
-        end_date = end_dt.strftime("%Y-%m-%d")
-        travel_month = start_dt.strftime("%B")
+        set_range(start_dt, end_dt)
 
+    # --- explicit month/day range like "January 12 to 15" ---
+    m = MONTH_DAY_RANGE_PATTERN.search(t)
+    if m:
+        month_name = m.group(1).lower()
+        day_start = int(m.group(2))
+        day_end = int(m.group(3))
+        month_num = MONTH_NAME_TO_NUM.get(month_name)
+        if month_num:
+            year = now.year
+            try:
+                start_dt = datetime(year, month_num, day_start).date()
+                end_dt = datetime(year, month_num, day_end).date()
+                if end_dt < today:
+                    year += 1
+                    start_dt = datetime(year, month_num, day_start).date()
+                    end_dt = datetime(year, month_num, day_end).date()
+                set_range(start_dt, end_dt)
+            except ValueError:
+                pass
+
+    # --- weekday like "next Monday" / "this Friday" ---
+    m_w = WEEKDAY_RELATIVE_PATTERN.search(t)
+    if m_w:
+        modifier = (m_w.group(1) or "").lower()
+        weekday_name = m_w.group(2).lower()
+        target_wd = WEEKDAY_NAME_TO_NUM[weekday_name]
+
+        days_ahead = (target_wd - wd) % 7
+        if modifier == "next" and days_ahead == 0:
+            days_ahead = 7
+        elif modifier == "this" and target_wd < wd:
+            days_ahead += 7
+
+        d = today + timedelta(days=days_ahead)
+        set_range(d, d)
+
+    # --- next/this month by name ---
     m_next = NEXT_MONTH_PATTERN.search(t)
     m_this = THIS_MONTH_PATTERN.search(t)
-
     if m_next or m_this:
         month_name = (m_next.group(1) if m_next else m_this.group(1)).lower()
         month_num = MONTH_NAME_TO_NUM[month_name]
-
         year = now.year
 
         if m_next:
-            # next January = next future occurrence
             if month_num <= now.month:
                 year += 1
         else:
-            # this January but already passed → next year
             if month_num < now.month:
                 year += 1
 
         last_day = calendar.monthrange(year, month_num)[1]
-        start_dt = datetime(year, month_num, 1)
-        end_dt = datetime(year, month_num, last_day)
+        set_range(datetime(year, month_num, 1).date(), datetime(year, month_num, last_day).date())
 
-        start_date = start_dt.strftime("%Y-%m-%d")
-        end_date = end_dt.strftime("%Y-%m-%d")
-        travel_month = month_name.capitalize()
-
-
-    if start_date is not None:
-        entities["start_date"] = start_date
-    if end_date is not None:
-        entities["end_date"] = end_date
-    if travel_month is not None:
-        entities["travel_month"] = travel_month
-
-
+    # write back
+    entities["start_date"] = start_date
+    entities["end_date"] = end_date
+    entities["travel_month"] = travel_month
 
     def set_range(d1, d2):
         nonlocal start_date, end_date, travel_month
@@ -630,7 +772,11 @@ def extract_entities_and_prefs(
         data["domain_category"] = None
 
     # 1) Rule-based overrides you already had
+    # 1) Deterministic overrides
+    _override_month_year_dates(data, text, now)   # ✅ NEW
     _override_relative_dates(data, text, now)
+    _override_nationality(data, text)            # ✅ NEW
+
     entities = data.setdefault("entities", {})
 
     # If user asked for N days and we have a start_date but end_date is missing/same, compute it
@@ -684,6 +830,7 @@ def extract_entities_and_prefs(
         "days": None,
         "time_of_day": None,
         "num_travelers": None,
+        "nationality_country": None,
         "travel_with": None,
         "origin": None,
         "destination": None,
