@@ -4,9 +4,13 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
-from configs.recommender_service.config import KG_ATTRACTIONS_FILE
+from pathlib import Path
+from configs.recommender_service.config import DATA_CLEAN_DIR
+
+KG_CLEAN_ATTRACTIONS_FILE = DATA_CLEAN_DIR / "kg" / "attractions_clean.json"
+
 
 
 def slugify(text: str) -> str:
@@ -24,6 +28,14 @@ class POI:
     province: Optional[str]
     lat: Optional[float]
     lon: Optional[float]
+def pois_by_district(pois: List[POI]) -> Dict[str, List[POI]]:
+    out: Dict[str, List[POI]] = {}
+    for p in pois:
+        if not p.district:
+            continue
+        key = p.district.strip().lower()
+        out.setdefault(key, []).append(p)
+    return out
 
 
 def _get_admin_area(item: Dict[str, Any], area_type: str) -> Optional[str]:
@@ -36,25 +48,71 @@ def _get_admin_area(item: Dict[str, Any], area_type: str) -> Optional[str]:
     return None
 
 
-def load_pois(json_path: Path = KG_ATTRACTIONS_FILE) -> List[POI]:
+def _coerce_to_items(raw: Any) -> List[Dict[str, Any]]:
+    """
+    Accept KG JSON in multiple shapes:
+      A) list[dict]  -> OK
+      B) list[str]   -> convert each string to {"title": <str>}
+      C) dict[...]   -> if values are dicts, take values; if keys are strings, convert to {"title": key}
+    """
+    # A) list
+    if isinstance(raw, list):
+        items: List[Dict[str, Any]] = []
+        for x in raw:
+            if isinstance(x, dict):
+                items.append(x)
+            elif isinstance(x, str):
+                items.append({"title": x})
+            else:
+                # ignore unknown types
+                continue
+        return items
+
+    # B) dict
+    if isinstance(raw, dict):
+        # if values look like dict POIs, use values
+        vals = list(raw.values())
+        if vals and all(isinstance(v, dict) for v in vals):
+            return [v for v in vals if isinstance(v, dict)]
+        # otherwise assume keys are POI names
+        return [{"title": str(k)} for k in raw.keys()]
+
+    # unknown
+    return []
+
+
+def load_pois(json_path: Path = KG_CLEAN_ATTRACTIONS_FILE) -> List[POI]:
     p = Path(json_path)
     if not p.exists():
         raise FileNotFoundError(f"KG attractions file not found: {p}")
 
     raw = json.loads(p.read_text(encoding="utf-8"))
+
+    # ✅ handle your cleaned KG format: {"attractions": [ ... ]}
+    if isinstance(raw, dict) and isinstance(raw.get("attractions"), list):
+        items = raw["attractions"]
+    else:
+        items = _coerce_to_items(raw)
+
     pois: List[POI] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
 
-    for item in raw:
-        title = item.get("title") or item.get("name") or "unknown"
-        poi_id = slugify(title)
+        # ✅ prefer stable IDs from KG
+        poi_id = (item.get("attraction_id") or item.get("poi_id") or "").strip()
+        title = (item.get("title") or item.get("name") or "unknown").strip()
 
-        district = _get_admin_area(item, "District")
-        province = _get_admin_area(item, "Province")
+        if not poi_id:
+            poi_id = slugify(title)
 
-        geo = item.get("geolocation", {}) or {}
-        coords = geo.get("coordinates", {}) or {}
-        lat = coords.get("latitude") or coords.get("lat")
-        lon = coords.get("longitude") or coords.get("lng") or coords.get("lon")
+        # ✅ your cleaned file stores these at top-level
+        district = item.get("district")
+        province = item.get("province")
+
+        # ✅ your cleaned file uses lat/lng at top-level
+        lat = item.get("lat")
+        lon = item.get("lng") or item.get("lon")
 
         pois.append(
             POI(
@@ -68,13 +126,3 @@ def load_pois(json_path: Path = KG_ATTRACTIONS_FILE) -> List[POI]:
         )
 
     return pois
-
-
-def pois_by_district(pois: List[POI]) -> Dict[str, List[POI]]:
-    out: Dict[str, List[POI]] = {}
-    for p in pois:
-        if not p.district:
-            continue
-        key = p.district.strip().lower()
-        out.setdefault(key, []).append(p)
-    return out
