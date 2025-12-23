@@ -1,6 +1,9 @@
 # /Users/dev/Desktop/graphCeylon-API/services/orchestrator/src/orchestrator_core/orchestrator_service.py
 
 from __future__ import annotations
+import json
+from pathlib import Path
+
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -50,6 +53,11 @@ from .runtime.registry.registry import AgentRegistry
 from .runtime.registry.models import AgentSpec, SLA
 from .runtime.adapters.a2a import A2AHttpAdapter
 from .runtime.trace import InMemoryTraceStore, TraceEvent
+
+
+
+VISA_STUB_JSON = Path(__file__).resolve().parent / "visa_policy" / "visa.json"
+# this points to: orchestrator_core/visa_policy/visa.json
 
 
 RECOMMENDER_BASE_URL = os.getenv(
@@ -146,9 +154,9 @@ class OrchestratorService:
             "info_visa_policy": IntentHandler(
                 endpoint="/visa/policy",
                 mapper=map_visa_policy_request,
-                response_model=None,   # set to VisaPolicyResponse later if you add it
+                response_model=VisaPolicyResponse,   # set to VisaPolicyResponse later if you add it
                 timeout=20,
-                result_field=None,     # keep None to avoid changing your response object
+                result_field="visa_result",     # keep None to avoid changing your response object
             ),
         }
 
@@ -249,12 +257,17 @@ class OrchestratorService:
 
         # 3) invoke
         try:
-            raw = self.a2a.invoke(
-                base_url=agent.base_url,
-                endpoint=endpoint,
-                payload=payload,
-                timeout=timeout,
-            )
+            if capability == "info_visa_policy":
+                raw = json.loads(VISA_STUB_JSON.read_text(encoding="utf-8"))
+            else:
+                raw = self.a2a.invoke(
+                    base_url=agent.base_url,
+                    endpoint=endpoint,
+                    payload=payload,
+                    timeout=timeout,
+                )
+
+            
             finished_at = datetime.utcnow()
             self.trace_store.update(
                 session_id=session_id,
@@ -319,7 +332,8 @@ class OrchestratorService:
             return
 
         # Parse response if model exists
-        parsed = None
+        parsed = handler.response_model(**raw)
+
         if handler.response_model is not None:
             try:
                 parsed = handler.response_model(**raw)
@@ -376,6 +390,7 @@ class OrchestratorService:
             "price_result": None,
             "itinerary_result": None,
             "modify_result": None,
+            "visa_result": None,
         }
 
         # 1) Build ordered, de-duplicated run list: primary then secondary
@@ -408,4 +423,5 @@ class OrchestratorService:
             price_result=results["price_result"],
             itinerary_result=results["itinerary_result"],
             modify_result=results["modify_result"],
+            visa_result=results["visa_result"],
         )

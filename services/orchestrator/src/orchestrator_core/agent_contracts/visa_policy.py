@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Optional, Literal, List, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 # If you already have BaseServiceRequest in .common, keep using it.
@@ -13,13 +13,15 @@ except Exception:
     BaseServiceRequest = BaseModel  # fallback
 
 
+from enum import Enum
+
 class VisaPurpose(str, Enum):
     tourism = "tourism"
     business = "business"
     transit = "transit"
-    work = "work"
-    study = "study"
     other = "other"
+    dual_citizenship = "dual_citizenship"  # ✅ add this
+
 
 
 class PassportType(str, Enum):
@@ -82,6 +84,7 @@ class VisaPolicyRequest(BaseServiceRequest):
 
 
 class Evidence(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     source: str
     url: Optional[str] = None
     node_id: Optional[str] = None
@@ -90,6 +93,7 @@ class Evidence(BaseModel):
 
 
 class PolicyRule(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     rule_type: str
     title: str
     details: str
@@ -98,6 +102,7 @@ class PolicyRule(BaseModel):
 
 
 class VisaPolicyResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     status: Literal["ok", "no_result", "needs_clarification", "error"] = "ok"
 
     destination_country: str = "Sri Lanka"

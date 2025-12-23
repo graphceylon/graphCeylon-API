@@ -6,6 +6,7 @@ from ..orchestrator_core.contracts.crowd import CrowdForecastResponse
 from ..orchestrator_core.contracts.price import PriceForecastResponse
 from ..orchestrator_core.contracts.itinerary import ItineraryPlanResponse
 from ..orchestrator_core.contracts.itinerary_modify import ItineraryModifyResponse
+from ..orchestrator_core.agent_contracts.visa_policy import VisaPolicyResponse
 
 class PreferenceOverrides(BaseModel):
     travel_style: List[str] = []           # ["nature", "culture"]
@@ -57,6 +58,8 @@ class Entities(BaseModel):
     max_star_rating: int | None = None  # or just exact_star_rating
     max_price_lkr: int | None = None
     currency: str | None = "LKR"
+    legal_service: Optional[str] = None        # "visa" | "citizenship" | None
+    citizenship_type: Optional[str] = None     
 
 
 # what user sends
@@ -103,6 +106,7 @@ class OrchestrateResponse(BaseModel):
     price_result : Optional[PriceForecastResponse] = None
     itinerary_result :Optional[ItineraryPlanResponse] = None
     modify_result :Optional[ItineraryModifyResponse] = None
+    visa_result: Optional[VisaPolicyResponse] = None
 
 
 

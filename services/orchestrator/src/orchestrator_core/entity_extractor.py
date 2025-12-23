@@ -74,6 +74,9 @@ Return ONLY valid JSON with this exact structure:
     "budget_level": string|null,     // "low" | "medium" | "high" or null
 
     "tags": string[]                 // descriptive tags like ["nature", "culture", "family-friendly"]
+    "legal_service": string|null   // "visa" | "citizenship" | null
+    "citizenship_type": string|null // "dual_citizenship" | "citizenship_registration" | null
+
 
   },
 
@@ -214,7 +217,22 @@ def llm_extract_entities(text: str) -> Dict[str, Any]:
     data.setdefault("entities", {})
     data.setdefault("preference_overrides", {})
     return data
+DUAL_CITIZENSHIP_PATTERN = re.compile(r"\bdual\s+citizenship\b", re.IGNORECASE)
+CITIZENSHIP_PATTERN = re.compile(r"\bcitizenship\b", re.IGNORECASE)
 
+def _override_citizenship_entities(data: Dict[str, Any], text: str) -> None:
+    entities = data.setdefault("entities", {})
+    t = text.lower()
+
+    if DUAL_CITIZENSHIP_PATTERN.search(t):
+        entities["legal_service"] = "citizenship"
+        entities["citizenship_type"] = "dual_citizenship"
+        return
+
+    # fallback: any citizenship mention
+    if CITIZENSHIP_PATTERN.search(t):
+        entities["legal_service"] = "citizenship"
+        entities["citizenship_type"] = "citizenship_general"
 
 
 # ---- 3. Rule-based overrides (Pattern B: LLM first, then rules) ----
@@ -776,6 +794,8 @@ def extract_entities_and_prefs(
     _override_month_year_dates(data, text, now)   # ✅ NEW
     _override_relative_dates(data, text, now)
     _override_nationality(data, text)            # ✅ NEW
+    _override_citizenship_entities(data, text)
+
 
     entities = data.setdefault("entities", {})
 
@@ -836,6 +856,9 @@ def extract_entities_and_prefs(
         "destination": None,
         "budget_level": None,
         "tags": [],
+        "legal_service": None,
+        "citizenship_type": None,
+
 
         # NEW hotel-specific constraints
         "min_star_rating": None,
