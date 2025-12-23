@@ -96,3 +96,18 @@ ARRIVALS_FORECAST_CSV = DATA_CLEAN_DIR.parent / "forecast" / "sltda_arrivals_sar
 CROWD_TELECOM_DISTRICT_COUNTS_CSV = (
     DATA_CLEAN_DIR / "telecom" / "district_counts_2024.csv"
 )
+# Sustainability Engine (Derived / Calibrated Artifacts)
+# ============================================================
+
+SUSTAINABILITY_CLEAN_DIR = DATA_CLEAN_DIR / "sustainability"
+SUSTAINABILITY_CLEAN_DIR.mkdir(parents=True, exist_ok=True)
+
+# Overall POI baselines (p50 / p75 / p90 across all months)
+SUSTAINABILITY_POI_BASELINES_JSON = (
+    SUSTAINABILITY_CLEAN_DIR / "poi_baselines.json"
+)
+
+# Month-aware POI baselines (Jan..Dec p50 / p75 / p90)
+SUSTAINABILITY_POI_MONTHLY_BASELINES_JSON = (
+    SUSTAINABILITY_CLEAN_DIR / "poi_monthly_baselines.json"
+)

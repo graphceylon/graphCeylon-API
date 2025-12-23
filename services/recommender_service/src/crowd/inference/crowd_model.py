@@ -52,6 +52,7 @@ def forecast_poi_crowd(
     prior_strength_region: float = 60.0,
     prior_strength_poi: float = 50.0,
     evidence_strength_telecom: float = 220.0,
+    n_samples: int = 300,
 ) -> Dict[str, Any]:
     """
     3-source fusion (research-defensible):
@@ -64,6 +65,9 @@ def forecast_poi_crowd(
     - multipliers are derived priors from arrivals seasonality (unless overridden)
     - capacity is a baseline percentile threshold (if available)
     """
+
+    # safety guard (avoid 0/negative samples)
+    n_samples_eff = max(50, int(n_samples))
 
     # ---------- Load supporting data ----------
     pois = load_pois()
@@ -103,7 +107,7 @@ def forecast_poi_crowd(
         evidence_counts=telecom,
         prior_strength=prior_strength_region,
         evidence_strength=evidence_strength_telecom,
-        n_samples=700,
+        n_samples=n_samples,   # ✅ CHANGED (was 700)
     )
 
     foreign_in_target_dist = float(district_mean.get(target_dist, 0.0))
@@ -131,7 +135,7 @@ def forecast_poi_crowd(
         evidence_counts={},  # no POI evidence yet
         prior_strength=prior_strength_poi,
         evidence_strength=0.0,
-        n_samples=700,
+        n_samples=n_samples,   # ✅ CHANGED (was 700)
     )
 
     foreign_to_poi = float(poi_mean.get(poi_id, 0.0))

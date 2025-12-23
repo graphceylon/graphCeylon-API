@@ -57,13 +57,87 @@ def _normalize_source(raw_source: str) -> WeatherSource:
     """
     Map internal sources (openweather, sarima, climatology...) to stable inter-service contract sources.
     """
-    if raw_source in ("openweather_5day_daily", "openweather_daily", "api_daily"):
+    raw_source = (raw_source or "").strip()
+
+    if raw_source in ("short_range_api_daily", "openweather_5day_daily", "openweather_daily", "api_daily"):
         return "short_range_api_daily"
+
     if raw_source in ("long_range_models_monthly", "sarima_monthly", "climatology_monthly"):
         return "long_range_models_monthly"
 
-    # Safe default (don’t crash the API if a new internal label appears)
+    # Safe default
     return "long_range_models_monthly"
+
+
+def _to_daily_point(d: Dict[str, Any]) -> Optional[WeatherPoint]:
+    """
+    Accept BOTH schemas:
+      A) public: ds,temp_c,min_c,max_c,mean_mm,rain_risk,condition
+      B) internal: date,temp_avg,temp_min,temp_max,mean_mm,rain_risk,condition
+    """
+    if not isinstance(d, dict):
+        return None
+
+    ds = d.get("ds") or d.get("date")
+    if not ds:
+        return None
+
+    temp_c = d.get("temp_c")
+    if temp_c is None:
+        temp_c = d.get("temp_avg")
+    if temp_c is None:
+        temp_c = d.get("temp")
+
+    min_c = d.get("min_c")
+    if min_c is None:
+        min_c = d.get("temp_min")
+
+    max_c = d.get("max_c")
+    if max_c is None:
+        max_c = d.get("temp_max")
+
+    return WeatherPoint(
+        ds=ds,
+        temp_c=temp_c,
+        min_c=min_c,
+        max_c=max_c,
+        condition=d.get("condition") or d.get("weather") or d.get("weather_main"),
+        rain_risk=d.get("rain_risk"),
+        mean_mm=d.get("mean_mm"),
+    )
+
+
+def _to_monthly_point(m: Dict[str, Any]) -> Optional[WeatherPoint]:
+    """
+    Accept BOTH schemas:
+      A) public monthly points: ds or month+values
+      B) internal build_monthly_weather: month,temp_avg,mean_mm,rain_risk,condition
+    """
+    if not isinstance(m, dict):
+        return None
+
+    ds = m.get("ds")
+    if not ds:
+        # build_monthly_weather returns month = "YYYY-MM"
+        month = m.get("month")
+        if month:
+            ds = f"{month}-01"
+    if not ds:
+        return None
+
+    temp_c = m.get("temp_c")
+    if temp_c is None:
+        temp_c = m.get("temp_avg")
+
+    return WeatherPoint(
+        ds=ds,
+        temp_c=temp_c,
+        min_c=m.get("min_c"),
+        max_c=m.get("max_c"),
+        condition=m.get("condition") or "Unknown",
+        rain_risk=m.get("rain_risk"),
+        mean_mm=m.get("mean_mm"),
+    )
 
 
 @router.post("/forecast/weather", response_model=WeatherForecastResponse)
@@ -74,77 +148,84 @@ def forecast_weather(req: WeatherForecastRequest):
         raw_source = str(fc.get("source", "long_range_models_monthly"))
         source: WeatherSource = _normalize_source(raw_source)
 
+        # Collect warnings from logic + debug notes (if any)
         warnings: List[str] = []
-        summary_parts: List[str] = []
+        if isinstance(fc.get("warnings"), list):
+            warnings.extend([str(x) for x in fc.get("warnings") if x])
 
-        # ---------- LONG RANGE (MONTHLY) ----------
-        monthly_points: List[WeatherPoint] = []
-        if source == "long_range_models_monthly":
-            debug = fc.get("debug", {}) or {}
-
+        debug = fc.get("debug", {}) or {}
+        if isinstance(debug, dict):
             temp_note = (debug.get("temperature", {}) or {}).get("note")
             if temp_note:
-                warnings.append(temp_note)
+                warnings.append(str(temp_note))
+            rain_note = (debug.get("rainfall", {}) or {}).get("note")
+            if rain_note:
+                warnings.append(str(rain_note))
 
-            rain_monthly = (debug.get("rainfall", {}) or {}).get("monthly", []) or []
-            for m in rain_monthly:
-                month_str = m.get("month")  # "YYYY-MM"
-                if month_str:
-                    monthly_points.append(
-                        WeatherPoint(
-                            ds=f"{month_str}-01",
-                            condition=m.get("condition"),
-                            rain_risk=m.get("rain_risk"),
-                            mean_mm=m.get("mean_mm"),
-                        )
-                    )
-
-            if monthly_points:
-                first = monthly_points[0]
-                if first.rain_risk:
-                    summary_parts.append(f"{first.ds[:7]} rain risk is {first.rain_risk}")
-                if first.mean_mm is not None:
-                    summary_parts.append(f"mean rainfall ~{first.mean_mm:.0f}mm")
-
-        # ---------- SHORT RANGE (DAILY) ----------
+        # ---------- DAILY ----------
         daily_points: List[WeatherPoint] = []
-        if source == "short_range_api_daily":
-            # Your logic might return daily points either at top-level or inside debug.
-            daily_raw = fc.get("daily") or fc.get("debug", {}).get("daily") or []
+        daily_raw = fc.get("daily") or []
+        if isinstance(daily_raw, list):
             for d in daily_raw:
-                ds = d.get("ds") or d.get("date")  # support either key
-                if not ds:
-                    continue
-                daily_points.append(
-                    WeatherPoint(
-                        ds=ds,
-                        temp_c=d.get("temp_c") or d.get("temp"),
-                        min_c=d.get("min_c"),
-                        max_c=d.get("max_c"),
-                        condition=d.get("condition") or d.get("weather"),
-                        rain_risk=d.get("rain_risk"),
-                    )
-                )
+                p = _to_daily_point(d)
+                if p:
+                    daily_points.append(p)
 
-            if daily_points:
-                summary_parts.append("Short-range daily forecast from API")
+        # ---------- MONTHLY ----------
+        monthly_points: List[WeatherPoint] = []
+        # ✅ MOST IMPORTANT FIX: use fc["monthly"] FIRST (do not rely on debug)
+        monthly_raw = fc.get("monthly") or []
+        if isinstance(monthly_raw, list):
+            for m in monthly_raw:
+                p = _to_monthly_point(m)
+                if p:
+                    monthly_points.append(p)
+
+        # fallback: if monthly empty but debug has rainfall monthly, use that
+        if not monthly_points and isinstance(debug, dict):
+            rain_monthly = (debug.get("rainfall", {}) or {}).get("monthly", []) or []
+            if isinstance(rain_monthly, list):
+                for m in rain_monthly:
+                    month_str = m.get("month")
+                    if month_str:
+                        monthly_points.append(
+                            WeatherPoint(
+                                ds=f"{month_str}-01",
+                                condition=m.get("condition"),
+                                rain_risk=m.get("rain_risk"),
+                                mean_mm=m.get("mean_mm"),
+                            )
+                        )
+
+        # ---------- SUMMARY ----------
+        summary_parts: List[str] = []
+        if source == "short_range_api_daily":
+            summary_parts.append("Short-range daily forecast from API")
+        else:
+            summary_parts.append("Long-range monthly forecast from SARIMA + climatology")
+
+        if daily_points and daily_points[0].temp_c is not None:
+            summary_parts.append(f"{daily_points[0].ds} avg ~{daily_points[0].temp_c:.1f}°C")
+
+        if monthly_points and monthly_points[0].rain_risk:
+            summary_parts.append(f"{monthly_points[0].ds[:7]} rain risk {monthly_points[0].rain_risk}")
 
         forecast_summary = ". ".join(summary_parts) if summary_parts else "Weather forecast generated."
 
         return WeatherForecastResponse(
-            city=fc.get("city") or req.city or "",
-            country=fc.get("country") or req.country or "",
-            start_date=req.start_date or "",
-            end_date=req.end_date or "",
+            city=str(fc.get("city") or req.city or ""),
+            country=str(fc.get("country") or req.country or ""),
+            start_date=str(fc.get("start_date") or req.start_date or ""),
+            end_date=str(fc.get("end_date") or req.end_date or ""),
             time_of_day=req.time_of_day,
             source=source,
             forecast_summary=forecast_summary,
-            daily=daily_points if daily_points else [],
-            monthly=monthly_points if monthly_points else [],
+            daily=daily_points,
+            monthly=monthly_points,
             warnings=warnings,
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Weather forecast failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Weather forecast failed: {type(e).__name__}: {e}")
