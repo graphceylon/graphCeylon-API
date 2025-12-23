@@ -13,7 +13,7 @@ except Exception:
     BaseServiceRequest = BaseModel  # fallback
 
 
-from enum import Enum
+
 
 class VisaPurpose(str, Enum):
     tourism = "tourism"

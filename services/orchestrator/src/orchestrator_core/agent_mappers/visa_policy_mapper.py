@@ -26,19 +26,12 @@ def _as_dict(obj: Any) -> dict:
 
 
 def _normalize_country_name(s: Optional[str]) -> Optional[str]:
-    """
-    Quick normalization so KG matching doesn't break on 'the United States' etc.
-    Keep it simple; you can expand later.
-    """
     if not s:
         return s
     x = str(s).strip()
-
-    # remove leading "the "
     if x.lower().startswith("the "):
         x = x[4:].strip()
 
-    # common synonyms
     synonyms = {
         "usa": "United States",
         "u.s.a": "United States",
@@ -47,38 +40,43 @@ def _normalize_country_name(s: Optional[str]) -> Optional[str]:
         "united states of america": "United States",
         "sri lanka": "Sri Lanka",
     }
-    key = x.lower()
-    return synonyms.get(key, x)
+    return synonyms.get(x.lower(), x)
 
 
-def _infer_purpose(raw: str) -> VisaPurpose:
-    """
-    Your contract currently only has VisaPurpose enum.
-    When the user asks about citizenship/dual citizenship, map it to 'other' for now.
-    (Later you can introduce CitizenshipPurpose / separate intent.)
-    """
-    r = raw.lower()
+def _infer_ask_type(raw_lower: str) -> Optional[VisaAskType]:
+    if any(k in raw_lower for k in ["fee", "fees", "cost", "price", "how much"]):
+        return VisaAskType.fees
+    if any(k in raw_lower for k in ["how long", "processing", "processing time"]):
+        return VisaAskType.processing_time
+    if any(k in raw_lower for k in ["extend", "extension"]):
+        return VisaAskType.extension
+    if any(k in raw_lower for k in ["need a visa", "do i need a visa", "eligible", "eligibility"]):
+        return VisaAskType.eligibility
+    return None
 
-    citizenship_terms = [
-        "citizenship",
-        "dual citizenship",
-        "dual-citizenship",
-        "register citizenship",
-        "citizenship fee",
-        "citizenship fees",
-    ]
-    if any(t in r for t in citizenship_terms):
-        return VisaPurpose.other
 
-    # visa purposes
-    if "business" in r:
-        return VisaPurpose.business
-    if "transit" in r:
-        return VisaPurpose.transit
-    if "study" in r or "student" in r:
-        return VisaPurpose.study
-    if "work" in r or "employment" in r:
-        return VisaPurpose.work
+def _infer_purpose(entities: dict, raw_lower: str) -> VisaPurpose:
+    # If your entity extractor adds these, use them.
+    legal_service = entities.get("legal_service")
+    citizenship_type = entities.get("citizenship_type")
+
+    # 1) Citizenship flows
+    if legal_service == "citizenship" or citizenship_type:
+        # Use enum if exists; otherwise fall back safely
+        dual = getattr(VisaPurpose, "dual_citizenship", None)
+        if citizenship_type == "dual_citizenship" and dual is not None:
+            return dual
+        return getattr(VisaPurpose, "other", VisaPurpose.tourism)
+
+    # 2) Visa purposes inferred from text
+    if "business" in raw_lower:
+        return getattr(VisaPurpose, "business", VisaPurpose.tourism)
+    if "transit" in raw_lower:
+        return getattr(VisaPurpose, "transit", VisaPurpose.tourism)
+    if "study" in raw_lower or "student" in raw_lower:
+        return getattr(VisaPurpose, "study", VisaPurpose.tourism)
+    if "work" in raw_lower or "employment" in raw_lower:
+        return getattr(VisaPurpose, "work", VisaPurpose.tourism)
 
     return VisaPurpose.tourism
 
@@ -87,43 +85,48 @@ def map_visa_policy_request(parsed_intent: ParsedIntent, req: OrchestrateRequest
     entities = _as_dict(getattr(parsed_intent, "entities", None))
 
     raw_text = parsed_intent.raw_text or req.input_text or ""
-    raw = raw_text.lower()
+    raw_lower = raw_text.lower()
 
+    # --- travel_window: compute early so it exists even in early returns ---
+    travel_start = entities.get("start_date")
+    travel_end = entities.get("end_date")
+    travel_window: Optional[TravelWindow] = None
+    if travel_start or travel_end:
+        travel_window = TravelWindow(start_date=travel_start, end_date=travel_end)
+
+    # --- ask_type: compute early so it exists even in early returns ---
+    ask_type = _infer_ask_type(raw_lower)
+
+    # --- countries ---
     nationality = entities.get("nationality_country") or entities.get("origin")
     destination = entities.get("destination") or entities.get("country") or "Sri Lanka"
 
     nationality = _normalize_country_name(nationality)
     destination = _normalize_country_name(destination)
 
+    # --- purpose ---
+    purpose = _infer_purpose(entities, raw_lower)
+
+    # ✅ If missing nationality, do NOT crash — return a contract with missing_fields
     if not nationality:
-        raise ValueError("Missing nationality_country for visa query")
+        return VisaPolicyRequest(
+            user_id=req.user_id,
+            session_id=req.session_id,
+            raw_text=raw_text,
+            nationality_country="",  # empty indicates missing
+            destination_country=str(destination),
+            intended_stay_days=entities.get("days"),
+            travel_window=travel_window,
+            purpose=purpose,
+            ask_type=ask_type,
+            extra={
+                "domain_category": parsed_intent.domain_category,
+                "confidence": parsed_intent.confidence,
+                "missing_fields": ["nationality_country"],
+            },
+        )
 
-    travel_start = entities.get("start_date")
-    travel_end = entities.get("end_date")
-
-    travel_window: Optional[TravelWindow] = None
-    if travel_start or travel_end:
-        travel_window = TravelWindow(start_date=travel_start, end_date=travel_end)
-
-    # infer ask_type from raw text
-    ask_type: Optional[VisaAskType] = None
-    if any(k in raw for k in ["fee", "fees", "cost", "price", "how much"]):
-        ask_type = VisaAskType.fees
-    elif any(k in raw for k in ["how long", "processing", "processing time"]):
-        ask_type = VisaAskType.processing_time
-    elif any(k in raw for k in ["extend", "extension"]):
-        ask_type = VisaAskType.extension
-    elif any(k in raw for k in ["need a visa", "do i need a visa", "eligible", "eligibility"]):
-        ask_type = VisaAskType.eligibility
-
-    legal_service = entities.get("legal_service")
-    cit_type = entities.get("citizenship_type")
-
-    purpose = VisaPurpose.tourism
-    if legal_service == "citizenship" or cit_type == "dual_citizenship":
-        purpose = VisaPurpose.dual_citizenship  # you already have this enum now
-
-
+    # Normal path
     return VisaPolicyRequest(
         user_id=req.user_id,
         session_id=req.session_id,
@@ -132,7 +135,7 @@ def map_visa_policy_request(parsed_intent: ParsedIntent, req: OrchestrateRequest
         destination_country=destination,
         intended_stay_days=entities.get("days"),
         travel_window=travel_window,
-        purpose=purpose,          # ✅ FIX: not hard-coded
+        purpose=purpose,
         ask_type=ask_type,
         extra={
             "domain_category": parsed_intent.domain_category,
