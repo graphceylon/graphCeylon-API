@@ -47,9 +47,22 @@ def load_sarima_temp_monthly(location_id: str, start: date, end: Optional[date])
 
         df = pd.read_csv(path)
 
-        loc_col  = _pick_col(df.columns.tolist(), ["location_id", "location", "loc_id"])
+        loc_col = _pick_col(df.columns.tolist(), ["location_id", "location", "loc_id", "loc"])
         date_col = _pick_col(df.columns.tolist(), ["date", "ds"])
-        temp_col = _pick_col(df.columns.tolist(), ["temp_c", "pred_temp", "yhat"])
+        temp_col = _pick_col(
+                df.columns.tolist(),
+                [
+                    "temp_c",
+                    "temp_avg",
+                    "pred_temp_c",      # ✅ your file uses this
+                    "predicted_temp_c",
+                    "pred_temp",
+                    "yhat",
+                    "yhat_mean",
+                    "forecast_temp_c",
+                ],
+            )
+
 
         if not loc_col or not date_col or not temp_col:
             return {"note": f"Temperature CSV missing required columns. Found: {list(df.columns)}", "monthly": []}
