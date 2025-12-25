@@ -81,17 +81,35 @@ Return ONLY valid JSON with this exact structure:
   },
 
   "preference_overrides": {
-    "travel_style": string[],        // e.g. ["nature", "culture", "adventure"]
+    "travel_style": string[],
+
     "avoid_crowds": bool|null,
-    "budget_level": string|null,     // "low" | "medium" | "high" or null
-    "eco_preference": string|null,
-    "accessibility_needs": string|null,
-    "food_preferences": string[],    // e.g. ["vegetarian", "seafood"]
-    "preferred_transport": string[], // e.g. ["train", "bus"]
-    "sun_sensitivity": string|null,  // "high", "medium", "low"
-    "rain_preference": string|null,  // "avoid_rain", "okay_with_rain"
-    "temperature_preference": string|null,  // "cool", "warm"
-    "avoid_stray_animals": bool|null,
+
+    "eco_preference": string|null,           // "high"|"medium"|"low"|null  (will be normalized to float later)
+
+    "activity_preference": string|null,      // "outdoor"|"indoor"|"mixed"|null
+    "pace_preference": string|null,          // "relaxed"|"balanced"|"packed"|null
+    "adventure_level": string|null,          // "low"|"medium"|"high"|null
+
+    "budget_level": string|null,             // "low"|"medium"|"high"|null  (normalize to low/mid/high)
+    "budget_per_night_lkr": int|null,
+    "budget_flexibility": float|null,        // 0..1 if user implies strict/flexible
+
+    "preferred_transport": string[],
+    "food_preferences": string[],
+
+    "accessibility_needs": string[]|null,
+    "walking_tolerance_minutes": int|null,
+
+    "accommodation_type": string|null,       // "hotel"|"eco_lodge"|"homestay"|...
+    "star_preference": string|null,          // "any"|"3_star_plus"|"4_star_plus"|"5_star_only"
+    "must_have_amenities": string[],
+    "cancellation_preference": string|null,  // "flexible"|"strict"|"any"
+
+    "sun_sensitivity": string|null,          // "low"|"medium"|"high"
+    "rain_preference": string|null,          // "avoid_rain"|"ok_with_rain"|"prefer_rain"
+    "temperature_preference": string|null,   // "cool"|"moderate"|"warm"
+
     "motion_sickness": bool|null
   }
 }
@@ -196,6 +214,141 @@ def _run_groq_chat_completion(prompt: str) -> str:
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
 
+CANON_BUDGET = {"low": "low", "mid": "mid", "medium": "mid", "high": "high"}
+ECO_MAP = {"high": 0.9, "medium": 0.6, "low": 0.3}
+SENS_MAP = {"high": "high", "medium": "medium", "low": "low"}
+
+RAIN_MAP = {
+    "avoid_rain": "avoid_rain",
+    "ok_with_rain": "ok_with_rain",
+    "okay_with_rain": "ok_with_rain",
+    "prefer_rain": "prefer_rain",
+}
+
+TEMP_MAP = {"cool": "cool", "moderate": "moderate", "warm": "warm"}
+
+ACTIVITY_PREF = {"outdoor": "outdoor", "indoor": "indoor", "mixed": "mixed"}
+PACE_PREF = {"relaxed": "relaxed", "balanced": "balanced", "packed": "packed"}
+ADV_LEVEL = {"low": "low", "medium": "medium", "high": "high"}
+
+STAR_PREF = {"any": "any", "3_star_plus": "3_star_plus", "4_star_plus": "4_star_plus", "5_star_only": "5_star_only"}
+CANCEL_PREF = {"any": "any", "flexible": "flexible", "strict": "strict"}
+
+ACCOM_TYPE = {"hotel","resort","villa","guesthouse","hostel","eco_lodge","homestay","any"}
+
+ENTITY_BUDGET_MAP = {
+    "low": "low",
+    "mid": "mid",
+    "medium": "mid",
+    "high": "high",
+    "unknown": "unknown",
+}
+
+def _normalize_entity_budget_level(entities: Dict[str, Any]) -> None:
+    v = entities.get("budget_level")
+    if v is None:
+        return
+    if not isinstance(v, str):
+        entities["budget_level"] = None
+        return
+
+    norm = ENTITY_BUDGET_MAP.get(v.strip().lower())
+    entities["budget_level"] = norm if norm else None
+
+
+def _as_list(v):
+    if v is None:
+        return None
+    if isinstance(v, list):
+        return v
+    return [v]
+
+def normalize_preference_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convert raw LLM prefs (strings like 'medium', 'high') into your DB canonical schema types.
+    """
+    raw = dict(raw or {})
+    out: Dict[str, Any] = {}
+
+    # travel_style list[str]
+    ts = raw.get("travel_style")
+    out["travel_style"] = ts if isinstance(ts, list) else ([ts] if ts else [])
+
+    # avoid_crowds bool
+    out["avoid_crowds"] = raw.get("avoid_crowds")
+
+    # eco_preference -> float 0..1
+    eco = raw.get("eco_preference")
+    if isinstance(eco, (int, float)):
+        out["eco_preference"] = float(eco)
+    elif isinstance(eco, str):
+        out["eco_preference"] = ECO_MAP.get(eco.strip().lower())
+    else:
+        out["eco_preference"] = None
+
+    # activity / pace / adventure enums
+    ap = raw.get("activity_preference")
+    out["activity_preference"] = ACTIVITY_PREF.get(ap.strip().lower()) if isinstance(ap, str) else "unknown"
+
+    pp = raw.get("pace_preference")
+    out["pace_preference"] = PACE_PREF.get(pp.strip().lower()) if isinstance(pp, str) else "unknown"
+
+    al = raw.get("adventure_level")
+    out["adventure_level"] = ADV_LEVEL.get(al.strip().lower()) if isinstance(al, str) else "unknown"
+
+    # budget_level canonical (low/mid/high/unknown)
+    bl = raw.get("budget_level")
+    if isinstance(bl, str):
+        out["budget_level"] = CANON_BUDGET.get(bl.strip().lower(), None)
+    else:
+        out["budget_level"] = None
+
+    # numeric budgets
+    out["budget_per_night_lkr"] = raw.get("budget_per_night_lkr")
+    out["budget_flexibility"] = raw.get("budget_flexibility")
+
+    # lists
+    fp = raw.get("food_preferences")
+    out["food_preferences"] = fp if isinstance(fp, list) else ([fp] if fp else [])
+
+    pt = raw.get("preferred_transport")
+    out["preferred_transport"] = pt if isinstance(pt, list) else ([pt] if pt else [])
+
+    # accessibility needs can be list|null in DB (you used Optional[List[str]])
+    out["accessibility_needs"] = _as_list(raw.get("accessibility_needs"))
+
+    out["walking_tolerance_minutes"] = raw.get("walking_tolerance_minutes")
+
+    # accommodation prefs
+    acc = raw.get("accommodation_type")
+    if isinstance(acc, str):
+        acc_norm = acc.strip().lower()
+        out["accommodation_type"] = acc_norm if acc_norm in ACCOM_TYPE else "any"
+    else:
+        out["accommodation_type"] = "any"
+
+    sp = raw.get("star_preference")
+    out["star_preference"] = STAR_PREF.get(sp.strip().lower(), "any") if isinstance(sp, str) else "any"
+
+    mha = raw.get("must_have_amenities")
+    out["must_have_amenities"] = mha if isinstance(mha, list) else ([mha] if mha else [])
+
+    cp = raw.get("cancellation_preference")
+    out["cancellation_preference"] = CANCEL_PREF.get(cp.strip().lower(), "any") if isinstance(cp, str) else "any"
+
+    # weather tolerance
+    sun = raw.get("sun_sensitivity")
+    out["sun_sensitivity"] = SENS_MAP.get(sun.strip().lower()) if isinstance(sun, str) else None
+
+    rain = raw.get("rain_preference")
+    out["rain_preference"] = RAIN_MAP.get(rain.strip().lower()) if isinstance(rain, str) else None
+
+    temp = raw.get("temperature_preference")
+    out["temperature_preference"] = TEMP_MAP.get(temp.strip().lower()) if isinstance(temp, str) else None
+
+    out["motion_sickness"] = raw.get("motion_sickness")
+
+    return out
 
 
 def llm_extract_entities(text: str) -> Dict[str, Any]:
@@ -352,6 +505,26 @@ NATIONALITY_ADJ_TO_COUNTRY = {
     "australian": "Australia",
     "canadian": "Canada",
 }
+
+NEXT_MONTH_GENERIC = re.compile(r"\bnext\s+month\b", re.IGNORECASE)
+
+def _override_next_month_generic(data: Dict[str, Any], text: str, now: datetime) -> None:
+    if not NEXT_MONTH_GENERIC.search(text):
+        return
+
+    entities = data.setdefault("entities", {})
+    year = now.year
+    month = now.month + 1
+    if month == 13:
+        month = 1
+        year += 1
+
+    last_day = calendar.monthrange(year, month)[1]
+    entities["travel_month"] = datetime(year, month, 1).strftime("%B")
+    if not entities.get("start_date") and not entities.get("end_date"):
+        entities["start_date"] = f"{year:04d}-{month:02d}-01"
+        entities["end_date"] = f"{year:04d}-{month:02d}-{last_day:02d}"
+
 def _override_month_year_dates(data: Dict[str, Any], text: str, now: datetime) -> None:
     """
     If text contains 'February 2026' (or 'Feb 2026') and the LLM missed it,
@@ -792,6 +965,8 @@ def extract_entities_and_prefs(
     # 1) Rule-based overrides you already had
     # 1) Deterministic overrides
     _override_month_year_dates(data, text, now)   # ✅ NEW
+    _override_next_month_generic(data, text, now)
+
     _override_relative_dates(data, text, now)
     _override_nationality(data, text)            # ✅ NEW
     _override_citizenship_entities(data, text)
@@ -816,6 +991,7 @@ def extract_entities_and_prefs(
 
     # 1b) Hotel-specific constraints: star rating & price cap
     entities = data.setdefault("entities", {})
+    _normalize_entity_budget_level(entities)
     prefs = data.setdefault("preference_overrides", {})
 
     # Parse star ratings from raw text (range or single)
@@ -885,42 +1061,16 @@ def extract_entities_and_prefs(
             entities["activity_type"] = ", ".join(entities["activity_type"])
 
     # -------- PREFS: ensure keys + types --------
-    prefs_defaults = {
-        "travel_style": [],          # list[str]
-        "avoid_crowds": None,
-        "budget_level": None,
-        "eco_preference": None,
-        "accessibility_needs": None,
-        "food_preferences": [],      # list[str]
-        "preferred_transport": [],   # list[str]
-        "sun_sensitivity": None,
-        "rain_preference": None,
-        "temperature_preference": None,
-        "avoid_stray_animals": None,
-        "motion_sickness": None,
-    }
+    # ✅ keep raw (optional but helpful for debugging)
+    raw_prefs = dict(prefs or {})
 
-    for key, default in prefs_defaults.items():
-        if key not in prefs or prefs[key] is None:
-            prefs[key] = default
+    # ✅ normalize to your DB PreferenceOverrides schema
+    prefs = normalize_preference_overrides(raw_prefs)
 
-    # Force list-typed fields in prefs to always be lists
-    for list_key in ["travel_style", "food_preferences", "preferred_transport"]:
-        if not isinstance(prefs[list_key], list):
-            prefs[list_key] = [prefs[list_key]] if prefs[list_key] is not None else []
-
-    # OPTIONAL: normalize budget_level to low/medium/high only
-    ALLOWED_BUDGET_LEVELS = {"low", "medium", "high"}
-    raw_budget = prefs.get("budget_level")
-    if isinstance(raw_budget, str):
-        b = raw_budget.strip().lower()
-        if b not in ALLOWED_BUDGET_LEVELS:
-            prefs["budget_level"] = None
-        else:
-            prefs["budget_level"] = b
 
     data["entities"] = entities
     data["preference_overrides"] = prefs
+    data["raw_preference_overrides"] = raw_prefs 
     return data
 def _override_weather_tags_and_prefs(data: Dict[str, Any], text: str) -> None:
     """

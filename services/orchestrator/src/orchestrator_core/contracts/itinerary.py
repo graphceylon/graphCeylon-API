@@ -1,20 +1,32 @@
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel
+from typing import Optional, List, Dict, Any, Literal
+from pydantic import BaseModel, Field
 from .common import BaseLocationTimeRequest
 
+BudgetLevel = Literal["low", "mid", "high", "unknown"]
 
 class ItineraryPlanRequest(BaseLocationTimeRequest):
-    intent: str = "plan_itinerary"
+    intent: Literal["plan_itinerary"] = "plan_itinerary"
 
-    # trip specifics
+    # core trip
     days: Optional[int] = None
-    origin: Optional[str] = None
-    destination: Optional[str] = None  # could be country/city; keep flexible
+    destination: Optional[str] = None  # city/country
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
 
-    # preferences (simple for now)
-    travel_style: List[str] = []
-    budget_level: Optional[str] = None          # low|medium|high
+    # preference_overrides (directly from parsed_intent.preference_overrides)
+    travel_style: List[str] = Field(default_factory=list)
+    eco_preference: Optional[float] = None
     avoid_crowds: Optional[bool] = None
+    food_preferences: List[str] = Field(default_factory=list)
+
+    # constraints (trip-only)
+    max_trip_budget_lkr: Optional[int] = None
+    currency: Optional[str] = "LKR"
+    budget_level: BudgetLevel = "unknown"
+
+    # optional passthrough for debugging/trace
+    tags: List[str] = Field(default_factory=list)
+
 
 
 class ItineraryPlanResponse(BaseModel):

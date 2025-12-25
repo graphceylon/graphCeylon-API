@@ -7,6 +7,9 @@ from ..orchestrator_core.contracts.price import PriceForecastResponse
 from ..orchestrator_core.contracts.itinerary import ItineraryPlanResponse
 from ..orchestrator_core.contracts.itinerary_modify import ItineraryModifyResponse
 from ..orchestrator_core.agent_contracts.visa_policy import VisaPolicyResponse
+from ..orchestrator_core.agent_contracts.profile import PreferenceOverrides as CanonicalPreferenceOverrides
+from ..orchestrator_core.agent_contracts.profile import BudgetLevel
+
 
 
 
@@ -52,7 +55,7 @@ class Entities(BaseModel):
     origin: Optional[str] = None
     destination: Optional[str] = None
 
-    budget_level: Optional[str] = None
+    budget_level: Optional[BudgetLevel] = None
 
     tags: List[str] = []
 
@@ -83,7 +86,7 @@ class ParsedIntent(BaseModel):
     scores: Dict[str, float] = {}
 
     entities: Entities = Field(default_factory=Entities)
-    preference_overrides: PreferenceOverrides = Field(default_factory=PreferenceOverrides)
+    preference_overrides: CanonicalPreferenceOverrides = Field(default_factory=CanonicalPreferenceOverrides)
 
     raw_text: Optional[str] = None
 
