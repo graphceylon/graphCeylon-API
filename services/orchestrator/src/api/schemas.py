@@ -8,6 +8,8 @@ from ..orchestrator_core.contracts.itinerary import ItineraryPlanResponse
 from ..orchestrator_core.contracts.itinerary_modify import ItineraryModifyResponse
 from ..orchestrator_core.agent_contracts.visa_policy import VisaPolicyResponse
 
+
+
 class PreferenceOverrides(BaseModel):
     travel_style: List[str] = []           # ["nature", "culture"]
     avoid_crowds: Optional[bool] = None
