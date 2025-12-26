@@ -1,6 +1,149 @@
-version: '3.8'
-
+version: '3.9'
+ 
 services:
+  # PostgreSQL Database for User Service
+  postgres:
+    image: postgres:16-alpine
+    container_name: graphceylon-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: graphceylon_users
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - graphceylon-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+ 
+  # Redis for Auth Service
+  redis:
+    image: redis:7-alpine
+    container_name: graphceylon-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - graphceylon-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+ 
+  # Neo4j Database for Knowledge Graph
+  neo4j:
+    image: neo4j:5.26
+    container_name: graphceylon-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/password
+      NEO4JLABS_PLUGINS: '["apoc", "n10s"]'
+      NEO4J_PLUGINS: '["apoc", "n10s"]'
+      NEO4J_dbms_security_procedures_allowlist: "apoc.*,n10s.*"
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*,n10s.*"
+      NEO4J_apoc_import_file_enabled: "true"
+      NEO4J_apoc_import_file_use__neo4j__config: "true"
+      NEO4J_server_memory_pagecache_size: 1G
+      NEO4J_server_memory_heap_initial__size: 1G
+      NEO4J_server_memory_heap_max__size: 1G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - ../data/kg_service:/var/lib/neo4j/import
+      - neo4j_plugins:/plugins
+    networks:
+      - graphceylon-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "password", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+ 
+  # Auth Service (Node.js)
+  auth_service:
+    build:
+      context: ../services/auth_service
+      dockerfile: ../../docker/auth_service/Dockerfile
+    container_name: graphceylon-auth-service
+    ports:
+      - "8004:8004"
+    environment:
+      - NODE_ENV=production
+      - PORT=8004
+      - API_PREFIX=/api/auth
+      - JWT_SECRET=your-super-secret-jwt-key-change-in-production
+      - JWT_EXPIRES_IN=15m
+      - JWT_REFRESH_SECRET=your-super-secret-refresh-key-change-in-production
+      - JWT_REFRESH_EXPIRES_IN=7d
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - FRONTEND_URL=http://localhost:3000
+      - CORS_ORIGIN=http://localhost:3000,http://localhost:5173
+    volumes:
+      - ../services/auth_service/logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - graphceylon-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8004/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+ 
+  # User Service (Node.js)
+  user_service:
+    build:
+      context: ../services/user_service
+      dockerfile: ../../docker/user_service/Dockerfile
+    container_name: graphceylon-user-service
+    ports:
+      - "8005:8005"
+    environment:
+      - NODE_ENV=production
+      - PORT=8005
+      - API_PREFIX=/api/users
+      - DB_TYPE=postgres
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USERNAME=postgres
+      - DB_PASSWORD=postgres
+      - DB_DATABASE=graphceylon_users
+      - DB_SYNCHRONIZE=true
+      - DB_LOGGING=false
+      - JWT_SECRET=your-super-secret-jwt-key-change-in-production
+      - AUTH_SERVICE_URL=http://auth_service:8004
+      - CORS_ORIGIN=http://localhost:3000,http://localhost:5173
+    volumes:
+      - ../services/user_service/logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth_service:
+        condition: service_started
+    networks:
+      - graphceylon-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8005/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+ 
   # Component 1: Language Service
   language_service:
     build:
@@ -18,7 +161,7 @@ services:
     networks:
       - graphceylon-network
     restart: unless-stopped
-
+ 
   # Component 2: Knowledge Graph Service
   kg_service:
     build:
@@ -30,13 +173,24 @@ services:
     environment:
       - SERVICE_NAME=kg_service
       - SERVICE_PORT=8000
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=password
+      - NEO4J_DATABASE=neo4j
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - DEBUG=true
     volumes:
       - ../services/kg_service:/app
       - ../models/kg_service:/models
+      - ../data/kg_service:/data
+    depends_on:
+      neo4j:
+        condition: service_healthy
     networks:
       - graphceylon-network
     restart: unless-stopped
-
+ 
   # Component 3: Recommender Service
   recommender_service:
     build:
@@ -54,7 +208,7 @@ services:
     networks:
       - graphceylon-network
     restart: unless-stopped
-
+ 
   # Component 4: Orchestrator
   orchestrator:
     build:
@@ -69,16 +223,36 @@ services:
       - LANGUAGE_SERVICE_URL=http://language_service:8001
       - KG_SERVICE_URL=http://kg_service:8000
       - RECOMMENDER_SERVICE_URL=http://recommender_service:8003
+      - AUTH_SERVICE_URL=http://auth_service:8004
+      - USER_SERVICE_URL=http://user_service:8005
+      - INTENT_MODEL_DIR=/models/orchestrator/intent_multilabel_final
     volumes:
       - ../services/orchestrator:/app
+      - ../models/orchestrator:/models/orchestrator
     depends_on:
       - language_service
       - kg_service
       - recommender_service
+      - auth_service
+      - user_service
     networks:
       - graphceylon-network
     restart: unless-stopped
-
+ 
 networks:
   graphceylon-network:
     driver: bridge
+ 
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  neo4j_plugins:
+    driver: local
+ 
+ 

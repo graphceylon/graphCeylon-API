@@ -1,37 +1,37 @@
 """Main application entry point for Knowledge Graph Service."""
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+import sys
+import os
+from pathlib import Path
 
-app = FastAPI(
-    title="GraphCeylon Knowledge Graph Service",
-    description="Tourism knowledge graph management and querying",
-    version="0.1.0",
-)
+# Add the src directory to the Python path
+src_path = Path(__file__).parent.absolute()
+sys.path.insert(0, str(src_path))
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Set working directory to src
+os.chdir(src_path)
 
-
-@app.get("/")
-async def root():
-    """Health check endpoint."""
-    return {"service": "kg_service", "status": "running", "version": "0.1.0"}
-
-
-@app.get("/health")
-async def health():
-    """Detailed health check."""
-    return {"status": "healthy", "service": "kg_service"}
-
+# Import the fully configured app from api.main
+from api.main import app
 
 if __name__ == "__main__":
     import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    from core.config import settings
+    
+    print(f"Starting Knowledge Graph Service...")
+    print(f"API Host: {settings.api_host}")
+    print(f"API Port: {settings.api_port}")
+    print(f"Debug Mode: {settings.debug}")
+    print(f"Neo4j URI: {settings.neo4j_uri}")
+    
+    uvicorn.run(
+        app,
+        host=settings.api_host,
+        port=settings.api_port,
+        reload=settings.debug,
+        log_level="info"
+    )
+    
+    
+    
+    

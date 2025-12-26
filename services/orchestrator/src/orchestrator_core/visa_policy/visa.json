@@ -1,0 +1,109 @@
+{
+    "status": "ok",
+    "destination_country": "Sri Lanka",
+    "nationality_country": "United States",
+    "purpose": "dual_citizenship",
+    "passport_type": "ordinary",
+    "travel_window": {
+        "start_date": "2026-02-01",
+        "end_date": "2026-12-31"
+    },
+    "intended_stay_days": 0,
+    "summary": "Citizenship Registration - Fees Citizenship Registration of Children born outside Sri Lanka Rs.",
+    "rules": [
+        {
+            "rule_type": "requirements",
+            "title": "Required Documents",
+            "details": ". Citizenship Registration - Fees Citizenship Registration of Children born outside Sri Lanka Rs. [SL] For an application made within the prescribed period (within the first year of birth) 5,750 For a delayed application per each year 500 Fee for issuance a duplicate of the citizenship registration certificate . 2,000 Payment Procedure Payments to be made at the time of tendering the application. ",
+            "conditions": {
+                "nationality": "United States",
+                "purpose": "dual_citizenship",
+                "passport_type": "ordinary",
+                "max_stay_days": null
+            },
+            "evidence": [
+                {
+                    "source": "citizenship_services_data.json",
+                    "url": "",
+                    "quote": ". Citizenship Registration - Fees Citizenship Registration of Children born outside Sri Lanka Rs. [SL] For an application made within the prescribed period (within the first year of birth) 5,750 For a"
+                }
+            ]
+        },
+        {
+            "rule_type": "fees",
+            "title": "Visa Fees",
+            "details": ". Email : accit@immigration.gov.lk 5. Dual Citizenship Fee Main Applicant USD 2,000 Spouse of Applicant USD 500 Unmarried child below 22 years USD 500 Fee for issuance of certified copies of certificates issued under Citizenship Act. Rs. 2,000 The relevant fee will be charged from the applicant after obtaining the approval of the Minister. The Department will notify the applicant through e-mail to",
+            "conditions": {
+                "nationality": "United States",
+                "purpose": "dual_citizenship",
+                "passport_type": "ordinary",
+                "max_stay_days": null
+            },
+            "evidence": [
+                {
+                    "source": "citizenship_services_data.json",
+                    "url": "",
+                    "quote": ". Email : accit@immigration.gov.lk 5. Dual Citizenship Fee Main Applicant USD 2,000 Spouse of Applicant USD 500 Unmarried child below 22 years USD 500 Fee for issuance of certified copies of certifica"
+                }
+            ]
+        },
+        {
+            "rule_type": "requirements",
+            "title": "Required Documents",
+            "details": ". How can I submit the applications ? Hand over duly completed applications together with the originals of necessary supporting documents with copies thereof to the Citizenship Branch at the Head Office of the Department of Immigration and Emigration in Colombo. Duly completed applications can be forwarded through the Sri Lankan Mission in the country where the child's birth occurred with the requ",
+            "conditions": {
+                "nationality": "United States",
+                "purpose": "dual_citizenship",
+                "passport_type": "ordinary",
+                "max_stay_days": null
+            },
+            "evidence": [
+                {
+                    "source": "citizenship_services_data.json",
+                    "url": "",
+                    "quote": ". How can I submit the applications ? Hand over duly completed applications together with the originals of necessary supporting documents with copies thereof to the Citizenship Branch at the Head Offi"
+                }
+            ]
+        },
+        {
+            "rule_type": "requirements",
+            "title": "Required Documents",
+            "details": "here\n\nhere\n\nTo download a printable version of application click here\n\nBirth Certificate of the child issued by the country where the birth took place. (If the original Birth Certificate is not in English, an English translation should be attached.)\n\nConsular Birth Certificate issued by the Registrar General's Department of Sri Lanka.\n\nOriginal Birth Certificates of parents\n\nIf the applicant (fath",
+            "conditions": {
+                "nationality": "United States",
+                "purpose": "dual_citizenship",
+                "passport_type": "ordinary",
+                "max_stay_days": null
+            },
+            "evidence": [
+                {
+                    "source": "citizenship_services_data.json",
+                    "url": "",
+                    "quote": "here\n\nhere\n\nTo download a printable version of application click here\n\nBirth Certificate of the child issued by the country where the birth took place. (If the original Birth Certificate is not in Eng"
+                }
+            ]
+        },
+        {
+            "rule_type": "requirements",
+            "title": "Required Documents",
+            "details": ". Original Birth Certificates of parents If the applicant (father or mother) is a Sri Lankan citizen by registration, the relevant certificate Original Marriage Certificate of parents Original Travel Documents and Visas held by parents to prove residence abroad at the time of the child's birth Dual Citizenship certificates, if the parents are dual citizens. Where can I obtain an Application Form ?",
+            "conditions": {
+                "nationality": "United States",
+                "purpose": "dual_citizenship",
+                "passport_type": "ordinary",
+                "max_stay_days": null
+            },
+            "evidence": [
+                {
+                    "source": "citizenship_services_data.json",
+                    "url": "",
+                    "quote": ". Original Birth Certificates of parents If the applicant (father or mother) is a Sri Lankan citizen by registration, the relevant certificate Original Marriage Certificate of parents Original Travel "
+                }
+            ]
+        }
+    ],
+    "warnings": [
+        "This information is for reference only. Please verify with official immigration authorities before travel."
+    ]
+}
+ 
