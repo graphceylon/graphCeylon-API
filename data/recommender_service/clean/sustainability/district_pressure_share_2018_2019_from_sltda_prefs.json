@@ -1,0 +1,31 @@
+{
+  "year": "2018_2019",
+  "source": "sltda_prefs_poi",
+  "district_share": {
+    "Ampara": 0.0,
+    "Anuradhapura": 0.02364180718037348,
+    "Badulla": 0.040316768850166725,
+    "Batticaloa": 0.0,
+    "Colombo": 0.010472076831782808,
+    "Galle": 0.03790328755585454,
+    "Gampaha": 0.0,
+    "Hambantota": 0.004524286128384772,
+    "Jaffna": 0.0822262238775767,
+    "Kalutara": 0.0,
+    "Kandy": 0.21903862736840574,
+    "Kegalle": 0.07843021167754133,
+    "Kilinochchi": 0.0,
+    "Kurunegala": 0.0017228083416739135,
+    "Mannar": 0.005071482873097392,
+    "Matale": 0.24737654574192877,
+    "Matara": 0.0,
+    "Monaragala": 0.07541005573148256,
+    "Mullaitivu": 0.0,
+    "Nuwara Eliya": 0.04559972872605159,
+    "Polonnaruwa": 0.020790832836544686,
+    "Puttalam": 0.0,
+    "Ratnapura": 0.07460776485215752,
+    "Trincomalee": 0.03286749142697754,
+    "Vavuniya": 0.0
+  }
+}
