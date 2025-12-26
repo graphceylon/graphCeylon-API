@@ -1,0 +1,1 @@
+# “fix sentence / reorder / cleanup” for LLM readiness

@@ -1,0 +1,1 @@
+# Sinhala/English/French/Russian/Hindi detection

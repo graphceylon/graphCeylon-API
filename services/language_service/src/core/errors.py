@@ -1,0 +1,1 @@
+# custom exceptions for clean error responses

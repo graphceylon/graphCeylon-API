@@ -1,3 +1,12 @@
+# create the app via app_factory
+# include routers
+# run uvicorn (optional)
+
+# main.py = wiring
+# everything else = modules
+
+
+
 """Main application entry point for Language Service."""
 
 from fastapi import FastAPI
