@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+from pprint import pprint
+
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from src.api.deps import get_db
+
+
 
 
 router = APIRouter(prefix="/itinerary", tags=["itinerary"])
@@ -19,6 +23,9 @@ def itinerary_plan(payload: Dict[str, Any], db: Session = Depends(get_db)):
     Prints all preference-related fields and optionally a preference_sources map.
     Later you will replace this with a Pydantic request model + real logic.
     """
+    print("\n================ FULL ITINERARY REQUEST RECEIVED =================")
+    pprint(payload, width=120)
+    print("=================================================================\n")
     print("\n================ RECOMMENDER /itinerary/plan RECEIVED =================")
     print(f"intent     : {payload.get('intent')}")
     print(f"user_id    : {payload.get('user_id')}")
