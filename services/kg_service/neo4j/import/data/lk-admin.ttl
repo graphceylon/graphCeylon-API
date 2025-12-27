@@ -1,0 +1,34 @@
+@prefix lk:  <http://example.org/lk#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+lk:Province a owl:Class ;
+  rdfs:label "Province" .
+
+lk:District a owl:Class ;
+  rdfs:label "District" .
+
+lk:hasDistrict a owl:ObjectProperty ;
+  rdfs:domain lk:Province ;
+  rdfs:range  lk:District ;
+  rdfs:label "has district" .
+
+lk:inProvince a owl:ObjectProperty ;
+  rdfs:domain lk:District ;
+  rdfs:range  lk:Province ;
+  rdfs:label "in province" ;
+  owl:inverseOf lk:hasDistrict .
+
+lk:isoCode a owl:DatatypeProperty ;
+  rdfs:domain lk:Province ;
+  rdfs:label "ISO code" ;
+  rdfs:range  xsd:string .
+
+lk:name a owl:DatatypeProperty ;
+  rdfs:label "name" ;
+  rdfs:range  xsd:string .
+
+lk:population a owl:DatatypeProperty ;
+  rdfs:label "population" ;
+  rdfs:range  xsd:integer .

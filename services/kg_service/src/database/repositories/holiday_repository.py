@@ -18,6 +18,77 @@ class HolidayRepository(BaseRepository):
         """Initialize holiday repository."""
         super().__init__(driver)
     
+    def initialize_temporal_structure(self, start_year: int = 2020, end_year: int = 2030) -> Dict[str, Any]:
+        """Initialize the temporal structure (Year -> Month hierarchy).
+        
+        Args:
+            start_year: Starting year (default: 2020)
+            end_year: Ending year (default: 2030)
+            
+        Returns:
+            Dictionary with success status and counts
+        """
+        try:
+            logger.info(f"Initializing temporal structure from {start_year} to {end_year}...")
+            
+            years_created = 0
+            months_created = 0
+            
+            # Create years
+            for year in range(start_year, end_year + 1):
+                year_query = """
+                MERGE (y:Year {year: $year})
+                ON CREATE SET y.created_at = datetime()
+                RETURN y.year AS year
+                """
+                result = self.execute_cypher(year_query, {"year": year})
+                if result:
+                    years_created += 1
+            
+            logger.info(f"Created {years_created} year nodes")
+            
+            # Create months for each year
+            month_names = [
+                "January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December"
+            ]
+            
+            for year in range(start_year, end_year + 1):
+                for month_num in range(1, 13):
+                    month_query = """
+                    MERGE (m:Month {year: $year, month: $month})
+                    ON CREATE SET 
+                        m.name = $month_name,
+                        m.created_at = datetime()
+                    WITH m
+                    MATCH (y:Year {year: $year})
+                    MERGE (y)-[:HAS_MONTH]->(m)
+                    MERGE (m)-[:IN_YEAR]->(y)
+                    RETURN m.year AS year, m.month AS month
+                    """
+                    
+                    result = self.execute_cypher(month_query, {
+                        "year": year,
+                        "month": month_num,
+                        "month_name": month_names[month_num - 1]
+                    })
+                    
+                    if result:
+                        months_created += 1
+            
+            logger.info(f"Created {months_created} month nodes")
+            
+            return {
+                "success": True,
+                "years_created": years_created,
+                "months_created": months_created,
+                "year_range": f"{start_year}-{end_year}"
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize temporal structure: {e}")
+            raise
+    
     def create_holiday(self, holiday_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new holiday and link to temporal structure.
         
@@ -94,6 +165,76 @@ class HolidayRepository(BaseRepository):
             "node_id": result[0]["node_id"] if result else None,
             "name": holiday_data["name"]
         }
+    
+    def load_from_json(self, file_path: str = None) -> Dict[str, Any]:
+        """Load holidays from JSON file.
+        
+        Args:
+            file_path: Optional path to JSON file. If not provided, uses default location.
+            
+        Returns:
+            Dictionary with success status and statistics
+        """
+        try:
+            import json
+            from pathlib import Path
+            
+            logger.info("Loading holidays from JSON...")
+            
+            # Use provided path or default
+            if file_path is None:
+                file_path = str(Path(__file__).parent.parent.parent.parent.parent.parent / "data" / "kg_service" / "data" / "holidays.json")
+            
+            if not Path(file_path).exists():
+                raise FileNotFoundError(f"Holidays data file not found: {file_path}")
+            
+            # Load JSON data
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # Handle both direct array and object with 'holidays' key
+            if isinstance(data, dict) and 'holidays' in data:
+                holidays_data = data['holidays']
+            elif isinstance(data, list):
+                holidays_data = data
+            else:
+                raise ValueError("Holidays data must be a list or an object with 'holidays' key")
+            
+            logger.info(f"Found {len(holidays_data)} holidays to import")
+            
+            # Import each holiday
+            imported_count = 0
+            skipped_count = 0
+            
+            for holiday in holidays_data:
+                try:
+                    self.create_holiday(holiday)
+                    imported_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to import holiday {holiday.get('name', 'unknown')}: {e}")
+                    skipped_count += 1
+                    continue
+            
+            logger.info(f"Successfully imported {imported_count} holidays, skipped {skipped_count}")
+            
+            # Get final statistics
+            stats_query = """
+            MATCH (h:Holiday)
+            RETURN count(DISTINCT h) AS total_holidays
+            """
+            stats = self.execute_cypher(stats_query)
+            
+            return {
+                "success": True,
+                "message": "Holidays loaded from JSON",
+                "holidays_loaded": imported_count,
+                "skipped": skipped_count,
+                "total_holidays": stats[0]["total_holidays"] if stats else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to load holidays from JSON: {e}")
+            raise
     
     def query_holidays(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Query holidays with various filters.
