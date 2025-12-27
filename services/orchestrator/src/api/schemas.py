@@ -6,6 +6,12 @@ from ..orchestrator_core.contracts.crowd import CrowdForecastResponse
 from ..orchestrator_core.contracts.price import PriceForecastResponse
 from ..orchestrator_core.contracts.itinerary import ItineraryPlanResponse
 from ..orchestrator_core.contracts.itinerary_modify import ItineraryModifyResponse
+from ..orchestrator_core.agent_contracts.visa_policy import VisaPolicyResponse
+from ..orchestrator_core.agent_contracts.profile import PreferenceOverrides as CanonicalPreferenceOverrides
+from ..orchestrator_core.agent_contracts.profile import BudgetLevel
+
+
+
 
 class PreferenceOverrides(BaseModel):
     travel_style: List[str] = []           # ["nature", "culture"]
@@ -38,6 +44,8 @@ class Entities(BaseModel):
     end_date: Optional[str] = None
     travel_month: Optional[str] = None
     days: Optional[int] = None
+    nationality_country: Optional[str] = None
+
 
     time_of_day: Optional[str] = None
 
@@ -47,7 +55,7 @@ class Entities(BaseModel):
     origin: Optional[str] = None
     destination: Optional[str] = None
 
-    budget_level: Optional[str] = None
+    budget_level: Optional[BudgetLevel] = None
 
     tags: List[str] = []
 
@@ -55,6 +63,8 @@ class Entities(BaseModel):
     max_star_rating: int | None = None  # or just exact_star_rating
     max_price_lkr: int | None = None
     currency: str | None = "LKR"
+    legal_service: Optional[str] = None        # "visa" | "citizenship" | None
+    citizenship_type: Optional[str] = None     
 
 
 # what user sends
@@ -76,7 +86,7 @@ class ParsedIntent(BaseModel):
     scores: Dict[str, float] = {}
 
     entities: Entities = Field(default_factory=Entities)
-    preference_overrides: PreferenceOverrides = Field(default_factory=PreferenceOverrides)
+    preference_overrides: CanonicalPreferenceOverrides = Field(default_factory=CanonicalPreferenceOverrides)
 
     raw_text: Optional[str] = None
 
@@ -101,6 +111,7 @@ class OrchestrateResponse(BaseModel):
     price_result : Optional[PriceForecastResponse] = None
     itinerary_result :Optional[ItineraryPlanResponse] = None
     modify_result :Optional[ItineraryModifyResponse] = None
+    visa_result: Optional[VisaPolicyResponse] = None
 
 
 
