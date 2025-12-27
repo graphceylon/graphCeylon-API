@@ -1,12 +1,11 @@
-# orchestrator_core/orchestrator_service.py
-
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Type
+from uuid import uuid4
 
 import os
-import requests
 from pydantic import BaseModel
 
 from ..api.schemas import (
@@ -21,28 +20,34 @@ from .task_graph_builder import TaskGraphBuilder
 
 # ---- mappers + contracts ----
 from .mappers.weather_mapper import map_weather_request
-from .contracts.weather import WeatherForecastRequest, WeatherForecastResponse
+from .contracts.weather import WeatherForecastResponse
 
 from .mappers.crowd_mapper import map_crowd_request
-from .contracts.crowd import CrowdForecastRequest, CrowdForecastResponse
+from .contracts.crowd import CrowdForecastResponse
 
 from .mappers.price_mapper import map_price_request
-from .contracts.price import PriceForecastRequest, PriceForecastResponse
+from .contracts.price import PriceForecastResponse
 
 from .mappers.itinerary_mapper import map_itinerary_request
-from .contracts.itinerary import ItineraryPlanRequest, ItineraryPlanResponse
+from .contracts.itinerary import ItineraryPlanResponse
 
 from .mappers.itinerary_modify_mapper import map_itinerary_modify_request
-from .contracts.itinerary_modify import ItineraryModifyRequest, ItineraryModifyResponse
+from .contracts.itinerary_modify import ItineraryModifyResponse
 
 from .mappers.sustainability_mapper import map_sustainability_request
-from .contracts.sustainability import SustainabilityForecastRequest  # response optional later
-
 from .mappers.recommend_pois_mapper import map_recommend_pois_request
-from .contracts.recommend_pois import RecommendPOIsRequest  # response optional later
+
+# ✅ registry + adapter + tracing (use RELATIVE imports)
+from .runtime.registry.registry import AgentRegistry
+from .runtime.registry.models import AgentSpec, SLA
+from .runtime.adapters.a2a import A2AHttpAdapter
+from .runtime.trace import InMemoryTraceStore, TraceEvent
 
 
-RECOMMENDER_BASE_URL = os.getenv("RECOMMENDER_SERVICE_URL", "http://recommender_service:8003").rstrip("/")
+RECOMMENDER_BASE_URL = os.getenv(
+    "RECOMMENDER_SERVICE_URL",
+    "http://recommender_service:8003",
+).rstrip("/")
 
 
 @dataclass(frozen=True)
@@ -51,7 +56,6 @@ class IntentHandler:
     mapper: Callable[[ParsedIntent, OrchestrateRequest], BaseModel]
     response_model: Optional[Type[BaseModel]] = None
     timeout: int = 20
-    # which OrchestrateResponse field to populate (keep your existing schema)
     result_field: Optional[str] = None
 
 
@@ -66,7 +70,10 @@ class OrchestratorService:
         self.task_graph_builder = task_graph_builder
         self.protocol_mode = protocol_mode
 
-        # One place to register everything
+        # ✅ trace store
+        self.trace_store = InMemoryTraceStore(max_per_session=500)
+
+        # ✅ 1) capability handlers
         self.handlers: Dict[str, IntentHandler] = {
             "forecast_weather": IntentHandler(
                 endpoint="/forecast/weather",
@@ -103,36 +110,189 @@ class OrchestratorService:
                 timeout=30,
                 result_field="modify_result",
             ),
-            # If you don’t have response models yet, keep response_model=None.
+            # You can keep these without response models for now.
             "forecast_sustainability": IntentHandler(
                 endpoint="/forecast/sustainability",
                 mapper=map_sustainability_request,
                 response_model=None,
                 timeout=20,
-                result_field=None,  # you’re not returning sustainability_result yet
+                result_field=None,
             ),
             "recommend_pois": IntentHandler(
                 endpoint="/recommend/pois",
                 mapper=map_recommend_pois_request,
                 response_model=None,
                 timeout=20,
-                result_field=None,  # you’re not returning recommend_pois_result yet
+                result_field=None,
             ),
         }
 
+        # ✅ 2) registry
+        self.registry = AgentRegistry(
+            agents=[
+                AgentSpec(
+                    agent_id="recommender",
+                    base_url=RECOMMENDER_BASE_URL,
+                    protocols=["a2a"],  # later: ["a2a", "mcp", "blackboard"]
+                    capabilities=list(self.handlers.keys()),
+                    sla=SLA(p95_ms=1200, success_rate=0.98),
+                    cost_weight=1.0,
+                )
+            ]
+        )
+
+        # ✅ 3) A2A adapter
+        self.a2a = A2AHttpAdapter()
+
     # ---------------------------
-    # Generic HTTP caller (one function for all)
+    # helpers
     # ---------------------------
-    def _post_to_recommender(self, endpoint: str, payload: dict, timeout: int) -> Optional[dict]:
-        url = f"{RECOMMENDER_BASE_URL}{endpoint}"
-        try:
-            resp = requests.post(url, json=payload, timeout=timeout)
-            resp.raise_for_status()
-            return resp.json() if resp.content else None
-        except Exception as e:
-            print(f"Error calling recommender {url}:", e)
+    @staticmethod
+    def _clean_session_id(req: OrchestrateRequest) -> str:
+        return (req.session_id or "no_session").strip()
+
+    @staticmethod
+    def _clean_user_id(req: OrchestrateRequest) -> Optional[str]:
+        return req.user_id.strip() if req.user_id else None
+
+    # ---------------------------
+    # registry + A2A invoke + trace
+    # ---------------------------
+    def _invoke_capability_a2a(
+        self,
+        *,
+        capability: str,
+        endpoint: str,
+        payload: dict,
+        timeout: int,
+        session_id: str,
+        user_id: Optional[str],
+    ) -> Optional[dict]:
+        trace_id = str(uuid4())
+        task_id = f"T-{uuid4().hex[:8]}"
+        started_at = datetime.utcnow()
+
+        # 1) trace START
+        self.trace_store.add(
+            TraceEvent(
+                trace_id=trace_id,
+                session_id=session_id,
+                user_id=user_id,
+                task_id=task_id,
+                capability=capability,
+                protocol="a2a",
+                agent_id=None,
+                endpoint=endpoint,
+                status="started",
+                started_at=started_at,
+                request_payload=payload,
+            )
+        )
+
+        # 2) pick agent
+        agent = self.registry.pick(capability=capability, protocol="a2a")
+        if not agent:
+            finished_at = datetime.utcnow()
+            self.trace_store.update(
+                session_id=session_id,
+                trace_id=trace_id,
+                status="error",
+                finished_at=finished_at,
+                latency_ms=int((finished_at - started_at).total_seconds() * 1000),
+                error=f"No agent found for capability={capability} protocol=a2a",
+            )
             return None
 
+        # 3) invoke
+        try:
+            raw = self.a2a.invoke(
+                base_url=agent.base_url,
+                endpoint=endpoint,
+                payload=payload,
+                timeout=timeout,
+            )
+            finished_at = datetime.utcnow()
+            self.trace_store.update(
+                session_id=session_id,
+                trace_id=trace_id,
+                status="ok",
+                agent_id=agent.agent_id,
+                finished_at=finished_at,
+                latency_ms=int((finished_at - started_at).total_seconds() * 1000),
+                response_payload=raw,
+            )
+            return raw
+
+        except Exception as e:
+            finished_at = datetime.utcnow()
+            self.trace_store.update(
+                session_id=session_id,
+                trace_id=trace_id,
+                status="error",
+                agent_id=agent.agent_id,
+                finished_at=finished_at,
+                latency_ms=int((finished_at - started_at).total_seconds() * 1000),
+                error=str(e),
+            )
+            return None
+    def _execute_intent(
+        self,
+        intent_name: str,
+        parsed_intent: ParsedIntent,
+        req: OrchestrateRequest,
+        results: Dict[str, Any],
+    ) -> None:
+        handler = self.handlers.get(intent_name)
+        if not handler:
+            print(f"[orchestrator] No handler registered for intent={intent_name}")
+            return
+
+        # ✅ IMPORTANT: patch ParsedIntent so mappers see the correct intent
+        patched_intent = parsed_intent.model_copy(
+            update={
+                "intent": intent_name,
+                "confidence": float((parsed_intent.scores or {}).get(intent_name, 0.0)),
+            }
+        )
+
+        contract_obj = handler.mapper(patched_intent, req)
+        payload = contract_obj.model_dump()
+
+        print(f"=== {contract_obj.__class__.__name__} payload ({intent_name}) ===")
+        print(payload)
+
+        raw = self._invoke_capability_a2a(
+            capability=intent_name,
+            endpoint=handler.endpoint,
+            payload=payload,
+            timeout=handler.timeout,
+            session_id=req.session_id or "no_session",
+            user_id=req.user_id,
+        )
+
+        if raw is None:
+            return
+
+        # Parse response if model exists
+        parsed = None
+        if handler.response_model is not None:
+            try:
+                parsed = handler.response_model(**raw)
+            except Exception as e:
+                print(f"[orchestrator] Error parsing response for intent={intent_name}: {e}")
+                parsed = None
+        else:
+            # endpoints you haven't finalized yet
+            print(f"[orchestrator] Raw response for {intent_name}:")
+            print(raw)
+
+        # Store into the appropriate OrchestrateResponse field
+        if handler.result_field and handler.result_field in results:
+            results[handler.result_field] = parsed
+
+    # ---------------------------
+    # intent parse
+    # ---------------------------
     def _run_intent_parser(self, req: OrchestrateRequest) -> ParsedIntent:
         result = self.intent_parser.parse(req.input_text)
 
@@ -157,11 +317,14 @@ class OrchestratorService:
             preference_overrides=preference_overrides,
         )
 
+    # ---------------------------
+    # main orchestrate
+    # ---------------------------
     def orchestrate(self, req: OrchestrateRequest) -> OrchestrateResponse:
         parsed_intent: ParsedIntent = self._run_intent_parser(req)
         tasks: List[TaskSummary] = self.task_graph_builder.build(parsed_intent)
 
-        # Keep your existing response fields so schema doesn't break
+        # Keep existing response fields to not break schema
         results: Dict[str, Any] = {
             "weather_result": None,
             "crowd_result": None,
@@ -170,36 +333,24 @@ class OrchestratorService:
             "modify_result": None,
         }
 
-        handler = self.handlers.get(parsed_intent.intent)
+        # 1) Build ordered, de-duplicated run list: primary then secondary
+        intents_to_run: List[str] = []
+        seen = set()
 
-        if handler:
-            contract_obj = handler.mapper(parsed_intent, req)
+        def _add(i: str):
+            if i and i not in seen:
+                intents_to_run.append(i)
+                seen.add(i)
 
-            print(f"=== {contract_obj.__class__.__name__} payload ===")
-            print(contract_obj.model_dump())
+        _add(parsed_intent.intent)
+        for s in (parsed_intent.secondary_intents or []):
+            _add(s)
 
-            raw = self._post_to_recommender(
-                endpoint=handler.endpoint,
-                payload=contract_obj.model_dump(),
-                timeout=handler.timeout,
-            )
+        print(f"[orchestrator] intents_to_run={intents_to_run}")
 
-            # If you have a response model, parse it and put into the correct field
-            if raw is not None:
-                if handler.response_model is not None:
-                    try:
-                        parsed = handler.response_model(**raw)
-                    except Exception as e:
-                        print("Error parsing response into model:", e)
-                        parsed = None
-                else:
-                    # For endpoints you haven't finalized yet (sustainability/recommend_pois)
-                    print(f"Response from {parsed_intent.intent}:")
-                    print(raw)
-                    parsed = None
-
-                if handler.result_field and handler.result_field in results:
-                    results[handler.result_field] = parsed
+        # 2) Execute each intent sequentially (simple + traceable)
+        for intent_name in intents_to_run:
+            self._execute_intent(intent_name, parsed_intent, req, results)
 
         return OrchestrateResponse(
             status="ok",
