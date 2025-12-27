@@ -5,9 +5,10 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
-
+from services.recommender_service.src.crowd.data.district_norm import norm_district
 from pathlib import Path
 from configs.recommender_service.config import DATA_CLEAN_DIR
+from services.recommender_service.src.crowd.data.district_norm import norm_district
 
 KG_CLEAN_ATTRACTIONS_FILE = DATA_CLEAN_DIR / "kg" / "attractions_clean.json"
 
@@ -33,7 +34,7 @@ def pois_by_district(pois: List[POI]) -> Dict[str, List[POI]]:
     for p in pois:
         if not p.district:
             continue
-        key = p.district.strip().lower()
+        key = norm_district(p.district)
         out.setdefault(key, []).append(p)
     return out
 

@@ -11,5 +11,7 @@ def norm_district(name: str) -> str:
         "nuwara-eliya": "nuwara-eliya",
         "matale": "matale",
         "galle": "galle",
+        "monaragala": "moneragala",
+        "moneragala": "moneragala",
     }
     return aliases.get(s, s)
