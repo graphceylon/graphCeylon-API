@@ -9,9 +9,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from src.api.deps import get_db
-
-
-
+from src.poi.store import get_pois_near_city
 
 router = APIRouter(prefix="/itinerary", tags=["itinerary"])
 
@@ -66,6 +64,16 @@ def itinerary_plan(payload: Dict[str, Any], db: Session = Depends(get_db)):
             print(f"{k:<24}: {src}")
 
     print("=======================================================================\n")
+
+        # -------- KG substitute: load POIs near base city --------
+    base_city = payload.get("city") or payload.get("destination")
+
+    candidates = get_pois_near_city(base_city)
+
+    print(f"\nFound {len(candidates)} POIs near {base_city}:")
+    for p in candidates:
+        print(f" - {p.title} ({p.district})")
+
 
     # For now return a simple echo (so you can verify in Postman/orchestrator)
     return {
