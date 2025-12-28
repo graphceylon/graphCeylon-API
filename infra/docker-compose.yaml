@@ -21,6 +21,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
  
   # Redis for Auth Service
   redis:
@@ -38,6 +39,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
  
   # Neo4j Database for Knowledge Graph
   neo4j:
@@ -70,6 +72,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
  
   # Auth Service (Node.js)
   auth_service:
@@ -104,6 +107,7 @@ services:
       interval: 30s
       timeout: 3s
       retries: 3
+
  
   # User Service (Node.js)
   user_service:
@@ -143,6 +147,7 @@ services:
       interval: 30s
       timeout: 3s
       retries: 3
+
  
   # Component 1: Language Service
   language_service:

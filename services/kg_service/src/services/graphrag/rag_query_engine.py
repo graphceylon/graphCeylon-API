@@ -263,3 +263,112 @@ If you're unsure or the context is insufficient, respond with:
             True if LLM is initialized, False otherwise
         """
         return self.llm is not None
+    
+    def retrieve_relevant_chunks(
+        self,
+        query_text: str,
+        domain_name: str = "Economic & Policy",
+        top_k: int = 10,
+        min_score: float = 0.5
+    ) -> List[Dict[str, Any]]:
+        """Retrieve relevant chunks without LLM answer generation.
+        
+        This method performs only the retrieval step of RAG, suitable for
+        when another service handles the answer generation.
+        
+        Args:
+            query_text: Text to search for
+            domain_name: Domain to search within
+            top_k: Number of similar chunks to retrieve
+            min_score: Minimum similarity score threshold (0-1)
+            
+        Returns:
+            List of relevant chunks with metadata and relevance scores
+        """
+        try:
+            # 1. Generate query embedding
+            query_embedding = self._generate_embedding(query_text)
+            
+            # 2. Retrieve similar chunks
+            similar_chunks = self._retrieve_similar_chunks_with_threshold(
+                query_embedding,
+                domain_name,
+                top_k,
+                min_score
+            )
+            
+            logger.info(f"Retrieved {len(similar_chunks)} chunks for query: {query_text[:50]}...")
+            return similar_chunks
+            
+        except Exception as e:
+            logger.error(f"Chunk retrieval failed: {e}")
+            raise
+    
+    def _retrieve_similar_chunks_with_threshold(
+        self,
+        query_embedding: List[float],
+        domain_name: str,
+        top_k: int,
+        min_score: float
+    ) -> List[Dict[str, Any]]:
+        """Retrieve similar chunks with custom threshold.
+        
+        Args:
+            query_embedding: Query embedding vector
+            domain_name: Domain to filter by
+            top_k: Number of results to return
+            min_score: Minimum similarity score
+            
+        Returns:
+            List of similar chunks with metadata
+        """
+        try:
+            with self.driver.session() as session:
+                result = session.run("""
+                    MATCH (c:Chunk)-[:BELONGS_TO]->(d:Domain {name: $domain_name})
+                    WHERE c.embedding IS NOT NULL
+                    WITH c, 
+                         vector.similarity.cosine(c.embedding, $query_embedding) AS score
+                    WHERE score > $min_score
+                    
+                    // Get entities mentioned in chunk
+                    OPTIONAL MATCH (c)-[:MENTIONS]->(entity)
+                    WHERE NOT entity:Domain AND NOT entity:Chunk
+                    
+                    WITH c, score, 
+                         collect(DISTINCT {
+                             id: entity.id,
+                             type: labels(entity)[0],
+                             properties: properties(entity)
+                         }) AS entities
+                    
+                    RETURN c.text AS text,
+                           c.source AS source,
+                           c.id AS chunk_id,
+                           score,
+                           entities
+                    ORDER BY score DESC
+                    LIMIT $top_k
+                """, {
+                    "query_embedding": query_embedding,
+                    "domain_name": domain_name,
+                    "top_k": top_k,
+                    "min_score": min_score
+                })
+                
+                chunks = []
+                for record in result:
+                    chunks.append({
+                        "text": record["text"],
+                        "source": record["source"],
+                        "chunk_id": record["chunk_id"],
+                        "relevance_score": record["score"],
+                        "entities": record["entities"] or []
+                    })
+                
+                logger.info(f"Retrieved {len(chunks)} similar chunks with threshold {min_score}")
+                return chunks
+                
+        except Exception as e:
+            logger.error(f"Failed to retrieve similar chunks: {e}")
+            raise

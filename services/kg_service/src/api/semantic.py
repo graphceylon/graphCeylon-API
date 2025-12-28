@@ -10,7 +10,7 @@ This module provides REST API endpoints for semantic web operations:
 - Semantic data integration
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from enum import Enum
@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter(prefix="/semantic", tags=["Semantic Web"])
+
+
+# Dependency injection function
+def get_db_manager() -> DatabaseManager:
+    """Dependency to get database manager - will be overridden by main app."""
+    raise HTTPException(status_code=503, detail="Database manager not initialized")
 
 
 # ============================================================================
@@ -101,7 +107,7 @@ class NamespaceRequest(BaseModel):
 # ============================================================================
 
 @router.get("/config", summary="Get n10s Configuration")
-async def get_n10s_config():
+async def get_n10s_config(db: DatabaseManager = Depends(get_db_manager)):
     """
     Get current n10s (Neo4j Semantics) configuration.
     
@@ -116,18 +122,17 @@ async def get_n10s_config():
     RDF/OWL ontology integration and SHACL-based validation.
     """
     try:
-        db = DatabaseManager()
         query = "CALL n10s.graphconfig.show()"
         
-        result = db.execute_query(query)
+        result = db.execute_cypher(query)
         
-        if not result or not result.get("data"):
+        if not result:
             raise HTTPException(
                 status_code=404,
                 detail="n10s not configured. Run initialization script first."
             )
         
-        config = result["data"][0]
+        config = result[0]
         
         return {
             "status": "configured",
@@ -148,7 +153,7 @@ async def get_n10s_config():
 
 
 @router.post("/import/rdf", summary="Import RDF Data")
-async def import_rdf(request: RDFImportRequest):
+async def import_rdf(request: RDFImportRequest, db: DatabaseManager = Depends(get_db_manager)):
     """
     Import RDF data into the knowledge graph.
     
@@ -171,8 +176,6 @@ async def import_rdf(request: RDFImportRequest):
     ```
     """
     try:
-        db = DatabaseManager()
-        
         query = f"""
         CALL n10s.rdf.import.fetch(
             '{request.source}',
@@ -181,10 +184,10 @@ async def import_rdf(request: RDFImportRequest):
         )
         """
         
-        result = db.execute_query(query)
+        result = db.execute_cypher(query)
         
-        if result and result.get("data"):
-            stats = result["data"][0]
+        if result:
+            stats = result[0]
             return {
                 "status": "success",
                 "source": request.source,
@@ -206,7 +209,7 @@ async def import_rdf(request: RDFImportRequest):
 
 
 @router.post("/export/rdf", summary="Export Graph as RDF")
-async def export_rdf(request: RDFExportRequest):
+async def export_rdf(request: RDFExportRequest, db: DatabaseManager = Depends(get_db_manager)):
     """
     Export knowledge graph data as RDF.
     
@@ -227,8 +230,6 @@ async def export_rdf(request: RDFExportRequest):
     ```
     """
     try:
-        db = DatabaseManager()
-        
         query = f"""
         CALL n10s.rdf.export.cypher(
             '{request.cypher_query}',
@@ -236,12 +237,12 @@ async def export_rdf(request: RDFExportRequest):
         )
         """
         
-        result = db.execute_query(query)
+        result = db.execute_cypher(query)
         
-        if result and result.get("data"):
+        if result:
             # n10s returns RDF as string in result
             rdf_output = []
-            for record in result["data"]:
+            for record in result:
                 if "result" in record:
                     rdf_output.append(record["result"])
             
@@ -261,7 +262,7 @@ async def export_rdf(request: RDFExportRequest):
 
 
 @router.post("/validate/shacl", summary="SHACL Validation")
-async def validate_shacl(request: SHACLValidationRequest):
+async def validate_shacl(request: SHACLValidationRequest, db: DatabaseManager = Depends(get_db_manager)):
     """
     Validate knowledge graph against SHACL shapes.
     
@@ -282,8 +283,6 @@ async def validate_shacl(request: SHACLValidationRequest):
     ```
     """
     try:
-        db = DatabaseManager()
-        
         # First import SHACL shapes
         import_query = f"""
         CALL n10s.validation.shacl.import.fetch(
@@ -292,16 +291,16 @@ async def validate_shacl(request: SHACLValidationRequest):
         )
         """
         
-        import_result = db.execute_query(import_query)
+        import_result = db.execute_cypher(import_query)
         
         # Then validate
         validate_query = "CALL n10s.validation.shacl.validate()"
         
-        validation_result = db.execute_query(validate_query)
+        validation_result = db.execute_cypher(validate_query)
         
         violations = []
-        if validation_result and validation_result.get("data"):
-            violations = validation_result["data"]
+        if validation_result:
+            violations = validation_result
         
         return {
             "status": "validated",
@@ -320,7 +319,7 @@ async def validate_shacl(request: SHACLValidationRequest):
 
 
 @router.get("/namespaces", summary="List RDF Namespaces")
-async def list_namespaces():
+async def list_namespaces(db: DatabaseManager = Depends(get_db_manager)):
     """
     List all registered RDF namespaces.
     
@@ -332,14 +331,13 @@ async def list_namespaces():
     (OWL, RDFS, SHACL) and custom ontologies for Sri Lankan data.
     """
     try:
-        db = DatabaseManager()
         query = "CALL n10s.nsprefixes.list()"
         
-        result = db.execute_query(query)
+        result = db.execute_cypher(query)
         
         namespaces = []
-        if result and result.get("data"):
-            namespaces = result["data"]
+        if result:
+            namespaces = result
         
         return {
             "status": "success",
@@ -354,7 +352,7 @@ async def list_namespaces():
 
 
 @router.post("/namespaces", summary="Add RDF Namespace")
-async def add_namespace(request: NamespaceRequest):
+async def add_namespace(request: NamespaceRequest, db: DatabaseManager = Depends(get_db_manager)):
     """
     Add a new RDF namespace prefix.
     
@@ -366,13 +364,11 @@ async def add_namespace(request: NamespaceRequest):
     vocabularies by registering their namespace prefixes.
     """
     try:
-        db = DatabaseManager()
-        
         query = f"""
         CALL n10s.nsprefixes.add('{request.prefix}', '{request.uri}')
         """
         
-        result = db.execute_query(query)
+        result = db.execute_cypher(query)
         
         return {
             "status": "success",
@@ -387,18 +383,16 @@ async def add_namespace(request: NamespaceRequest):
 
 
 @router.delete("/namespaces/{prefix}", summary="Remove RDF Namespace")
-async def remove_namespace(prefix: str):
+async def remove_namespace(prefix: str, db: DatabaseManager = Depends(get_db_manager)):
     """
     Remove an RDF namespace prefix.
     
     **Note:** Some standard namespaces (owl, rdfs, rdf) may not be removable.
     """
     try:
-        db = DatabaseManager()
-        
         query = f"CALL n10s.nsprefixes.remove('{prefix}')"
         
-        result = db.execute_query(query)
+        result = db.execute_cypher(query)
         
         return {
             "status": "success",
@@ -412,7 +406,7 @@ async def remove_namespace(prefix: str):
 
 
 @router.get("/ontology/info", summary="Get Ontology Information")
-async def get_ontology_info():
+async def get_ontology_info(db: DatabaseManager = Depends(get_db_manager)):
     """
     Get information about loaded ontologies and their structure.
     
@@ -421,8 +415,6 @@ async def get_ontology_info():
     showing classes, properties, and relationships defined by ontologies.
     """
     try:
-        db = DatabaseManager()
-        
         # Get class hierarchy
         class_query = """
         MATCH (c:Class)
@@ -433,7 +425,7 @@ async def get_ontology_info():
         ORDER BY c.name
         """
         
-        class_result = db.execute_query(class_query)
+        class_result = db.execute_cypher(class_query)
         
         # Get property definitions
         property_query = """
@@ -447,13 +439,13 @@ async def get_ontology_info():
         ORDER BY p.name
         """
         
-        property_result = db.execute_query(property_query)
+        property_result = db.execute_cypher(property_query)
         
         return {
             "status": "success",
             "ontology_structure": {
-                "classes": class_result.get("data", []) if class_result else [],
-                "properties": property_result.get("data", []) if property_result else [],
+                "classes": class_result if class_result else [],
+                "properties": property_result if property_result else [],
             },
             "description": "Ontology class and property definitions in the knowledge graph"
         }
@@ -464,7 +456,7 @@ async def get_ontology_info():
 
 
 @router.get("/capabilities", summary="List Semantic Web Capabilities")
-async def get_capabilities():
+async def get_capabilities(db: DatabaseManager = Depends(get_db_manager)):
     """
     List all available semantic web capabilities and procedures.
     
@@ -473,8 +465,6 @@ async def get_capabilities():
     supported by the knowledge graph system.
     """
     try:
-        db = DatabaseManager()
-        
         query = """
         SHOW PROCEDURES YIELD name, description
         WHERE name STARTS WITH 'n10s'
@@ -482,11 +472,11 @@ async def get_capabilities():
         ORDER BY name
         """
         
-        result = db.execute_query(query)
+        result = db.execute_cypher(query)
         
         procedures = []
-        if result and result.get("data"):
-            procedures = result["data"]
+        if result:
+            procedures = result
         
         # Categorize procedures
         categories = {

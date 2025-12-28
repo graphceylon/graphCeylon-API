@@ -163,3 +163,28 @@ class GraphRAGService:
             "vector_indexing": True,
             "data_ingestion": True
         }
+    
+    def retrieve_relevant_chunks(
+        self,
+        query_text: str,
+        domain_name: str = "Economic & Policy",
+        top_k: int = 10,
+        min_score: float = 0.5
+    ) -> Dict[str, Any]:
+        """Retrieve relevant chunks without LLM generation.
+        
+        Args:
+            query_text: Text to search for
+            domain_name: Domain to search within
+            top_k: Number of similar chunks to retrieve
+            min_score: Minimum similarity score threshold
+            
+        Returns:
+            Dictionary with chunks and metadata
+        """
+        return self.rag_query_engine.retrieve_relevant_chunks(
+            query_text,
+            domain_name,
+            top_k,
+            min_score
+        )

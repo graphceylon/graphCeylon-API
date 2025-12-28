@@ -3,6 +3,7 @@
 Complete guide for clean GitHub repository management with GraphCeylon-API.
 
 ## Table of Contents
+
 - [Branch Management](#branch-management)
 - [Commit Message Convention](#commit-message-convention)
 - [Pull Request Workflow](#pull-request-workflow)
@@ -19,16 +20,16 @@ Complete guide for clean GitHub repository management with GraphCeylon-API.
 
 #### Branch Types
 
-| Type | Purpose | Example |
-|------|---------|---------|
-| `feat` | New features | `john/feat/add-search-endpoint` |
-| `fix` | Bug fixes | `sarah/fix/memory-leak-kg-service` |
-| `docs` | Documentation only | `mike/docs/api-documentation` |
-| `refactor` | Code restructuring | `jane/refactor/optimize-queries` |
-| `test` | Adding/updating tests | `alex/test/recommender-unit-tests` |
-| `chore` | Maintenance tasks | `lisa/chore/update-dependencies` |
-| `perf` | Performance improvements | `david/perf/cache-implementation` |
-| `style` | Code style/formatting | `emma/style/fix-linting-errors` |
+| Type       | Purpose                  | Example                            |
+| ---------- | ------------------------ | ---------------------------------- |
+| `feat`     | New features             | `john/feat/add-search-endpoint`    |
+| `fix`      | Bug fixes                | `sarah/fix/memory-leak-kg-service` |
+| `docs`     | Documentation only       | `mike/docs/api-documentation`      |
+| `refactor` | Code restructuring       | `jane/refactor/optimize-queries`   |
+| `test`     | Adding/updating tests    | `alex/test/recommender-unit-tests` |
+| `chore`    | Maintenance tasks        | `lisa/chore/update-dependencies`   |
+| `perf`     | Performance improvements | `david/perf/cache-implementation`  |
+| `style`    | Code style/formatting    | `emma/style/fix-linting-errors`    |
 
 #### Main Branches
 
@@ -47,18 +48,21 @@ feature branches (your work)
 ### Creating Branches
 
 #### Step 1: Update your local repository
+
 ```bash
 git checkout develop
 git pull origin develop
 ```
 
 #### Step 2: Create your branch
+
 ```bash
 # Format: git checkout -b <username>/<type>/<description>
 git checkout -b john/feat/multilingual-search
 ```
 
 #### Step 3: Push branch to GitHub
+
 ```bash
 git push -u origin john/feat/multilingual-search
 ```
@@ -98,23 +102,25 @@ feat/sarah/new-endpoint    # Wrong order (username should come first)
 ### Structure Breakdown
 
 #### 1. **Type** (Required)
+
 What kind of change this is:
 
-| Type | Description | Example |
-|------|-------------|---------|
-| `feat` | New feature | `feat(kg): add location search endpoint` |
-| `fix` | Bug fix | `fix(orchestrator): handle timeout errors` |
-| `docs` | Documentation | `docs(readme): update setup instructions` |
-| `style` | Formatting, no code change | `style(language): fix indentation` |
-| `refactor` | Code restructuring | `refactor(recommender): simplify algorithm` |
-| `test` | Adding tests | `test(kg): add unit tests for queries` |
-| `chore` | Maintenance | `chore(deps): update fastapi to 0.104.0` |
-| `perf` | Performance improvement | `perf(kg): add caching layer` |
-| `ci` | CI/CD changes | `ci(github): add deployment workflow` |
-| `build` | Build system changes | `build(docker): optimize image size` |
-| `revert` | Revert previous commit | `revert: revert "feat(kg): add search"` |
+| Type       | Description                | Example                                     |
+| ---------- | -------------------------- | ------------------------------------------- |
+| `feat`     | New feature                | `feat(kg): add location search endpoint`    |
+| `fix`      | Bug fix                    | `fix(orchestrator): handle timeout errors`  |
+| `docs`     | Documentation              | `docs(readme): update setup instructions`   |
+| `style`    | Formatting, no code change | `style(language): fix indentation`          |
+| `refactor` | Code restructuring         | `refactor(recommender): simplify algorithm` |
+| `test`     | Adding tests               | `test(kg): add unit tests for queries`      |
+| `chore`    | Maintenance                | `chore(deps): update fastapi to 0.104.0`    |
+| `perf`     | Performance improvement    | `perf(kg): add caching layer`               |
+| `ci`       | CI/CD changes              | `ci(github): add deployment workflow`       |
+| `build`    | Build system changes       | `build(docker): optimize image size`        |
+| `revert`   | Revert previous commit     | `revert: revert "feat(kg): add search"`     |
 
 #### 2. **Scope** (Optional but Recommended)
+
 Which service/part is affected:
 
 - `kg` - KG Service
@@ -127,6 +133,7 @@ Which service/part is affected:
 - `api` - API changes across services
 
 #### 3. **Subject** (Required)
+
 - Use imperative mood: "add" not "added" or "adds"
 - Don't capitalize first letter
 - No period at the end
@@ -134,22 +141,26 @@ Which service/part is affected:
 - Be specific and concise
 
 #### 4. **Body** (Optional)
+
 - Explain **what** and **why**, not **how**
 - Wrap at 72 characters
 - Separate from subject with blank line
 
 #### 5. **Footer** (Optional)
+
 - Reference issues: `Closes #123`
 - Breaking changes: `BREAKING CHANGE: ...`
 
 ### Commit Examples
 
 #### Simple commit (most common)
+
 ```bash
 git commit -m "feat(kg): add place search endpoint"
 ```
 
 #### Commit with body
+
 ```bash
 git commit -m "fix(orchestrator): handle service timeout errors
 
@@ -161,6 +172,7 @@ Closes #45"
 ```
 
 #### Multiple changes (staged separately)
+
 ```bash
 # Stage and commit related changes together
 git add services/kg_service/src/api.py
@@ -216,6 +228,7 @@ perf(orchestrator): implement connection pooling
 ### Step-by-Step PR Process
 
 #### 1. **Complete Your Work**
+
 ```bash
 # Make sure all changes are committed
 git status
@@ -233,6 +246,7 @@ pytest services/kg_service/tests/
 ```
 
 #### 2. **Push Your Branch**
+
 ```bash
 git push origin feat/john/multilingual-search
 ```
@@ -240,34 +254,42 @@ git push origin feat/john/multilingual-search
 #### 3. **Create Pull Request on GitHub**
 
 **PR Title Format:** Same as commit message
+
 ```
 feat(language): add multilingual search support
 ```
 
 **PR Description Template:**
+
 ```markdown
 ## Description
+
 Brief description of what this PR does.
 
 ## Changes
+
 - Added multilingual tokenization
 - Implemented language detection
 - Updated API documentation
 
 ## Testing
+
 - [ ] Unit tests pass
 - [ ] Integration tests pass
 - [ ] Manual testing completed
 - [ ] CI/CD pipeline passes
 
 ## Related Issues
+
 Closes #123
 Related to #456
 
 ## Screenshots (if applicable)
+
 [Add screenshots for UI changes]
 
 ## Checklist
+
 - [ ] Code follows project style guidelines
 - [ ] Self-review completed
 - [ ] Comments added for complex logic
@@ -278,6 +300,7 @@ Related to #456
 #### 4. **Code Review Process**
 
 **Reviewer checks:**
+
 - [ ] Code quality and readability
 - [ ] Tests are comprehensive
 - [ ] No security vulnerabilities
@@ -285,6 +308,7 @@ Related to #456
 - [ ] Documentation updated
 
 **Author actions:**
+
 - Address review comments
 - Make requested changes
 - Push updates (will update PR automatically)
@@ -293,6 +317,7 @@ Related to #456
 #### 5. **Merge PR**
 
 **Merge Strategy:**
+
 ```bash
 # Squash and merge (recommended for feature branches)
 # - Combines all commits into one
@@ -303,6 +328,7 @@ Related to #456
 ```
 
 #### 6. **After Merge**
+
 ```bash
 # Delete remote branch (GitHub does this automatically)
 # Delete local branch
@@ -594,6 +620,7 @@ git stash pop
 ## Quick Reference
 
 ### Commit Message Template
+
 ```bash
 git commit -m "feat(scope): add feature description
 
@@ -605,6 +632,7 @@ Closes #123"
 ```
 
 ### Branch Naming Template
+
 ```bash
 git checkout -b <username>/<type>/<short-description>
 
@@ -615,6 +643,7 @@ mike/docs/update-readme
 ```
 
 ### PR Checklist
+
 - [ ] Branch name follows convention
 - [ ] Commits are clear and focused
 - [ ] Tests pass locally
@@ -628,6 +657,7 @@ mike/docs/update-readme
 ## Help and Resources
 
 ### Getting Help
+
 ```bash
 # Git command help
 git help <command>
@@ -638,7 +668,9 @@ git --version
 ```
 
 ### Useful Aliases (Optional)
+
 Add to `~/.gitconfig`:
+
 ```ini
 [alias]
     st = status
@@ -650,6 +682,7 @@ Add to `~/.gitconfig`:
 ```
 
 Usage:
+
 ```bash
 git st           # Instead of git status
 git lg           # Pretty log view
@@ -660,6 +693,7 @@ git lg           # Pretty log view
 ## Questions?
 
 If you're unsure about any Git operation:
+
 1. Check `git status` to see current state
 2. Test on a backup branch first
 3. Ask team members in Slack/Discord

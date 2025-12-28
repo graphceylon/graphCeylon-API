@@ -85,3 +85,67 @@ class GraphExtraction(BaseModel):
         default_factory=list,
         description="List of relationships between nodes"
     )
+
+
+# Visa Policy Query Models
+
+class TravelWindow(BaseModel):
+    """Travel window with start and end dates."""
+    start_date: str = Field(..., description="Start date (YYYY-MM-DD)")
+    end_date: str = Field(..., description="End date (YYYY-MM-DD)")
+
+
+class VisaPolicyQueryRequest(BaseModel):
+    """Request model for visa policy query without LLM."""
+    intent: str = Field(..., description="Intent type (e.g., 'info_visa_policy')")
+    user_id: str = Field(..., description="User identifier")
+    session_id: str = Field(..., description="Session identifier")
+    raw_text: str = Field(..., description="User's raw question text")
+    nationality_country: str = Field(..., description="Nationality/passport country")
+    destination_country: str = Field(..., description="Destination country")
+    intended_stay_days: int = Field(..., description="Intended stay duration in days")
+    travel_window: TravelWindow = Field(..., description="Travel date range")
+    purpose: str = Field(..., description="Purpose of travel (tourism, business, etc.)")
+    passport_type: str = Field(..., description="Type of passport (ordinary, diplomatic, etc.)")
+    entry_type: str | None = Field(None, description="Entry type (single, multiple, etc.)")
+    prior_visa_or_eta: str | None = Field(None, description="Prior visa or ETA status")
+    ask_type: str = Field(..., description="Type of query (eligibility, requirements, etc.)")
+    extra: Dict[str, Any] = Field(default_factory=dict, description="Extra metadata")
+
+
+class EvidenceSource(BaseModel):
+    """Evidence source for a visa rule."""
+    source: str = Field(..., description="Source name")
+    url: str = Field(default="", description="Source URL")
+    quote: str = Field(..., description="Relevant quote from source")
+
+
+class RuleConditions(BaseModel):
+    """Conditions for a visa rule."""
+    nationality: str | None = Field(None, description="Applicable nationality")
+    purpose: str | None = Field(None, description="Applicable purpose")
+    passport_type: str | None = Field(None, description="Applicable passport type")
+    max_stay_days: int | None = Field(None, description="Maximum stay days")
+
+
+class VisaRule(BaseModel):
+    """Visa rule with details and conditions."""
+    rule_type: str = Field(..., description="Type of rule (eligibility, requirement, fee, etc.)")
+    title: str = Field(..., description="Rule title")
+    details: str = Field(..., description="Detailed description")
+    conditions: RuleConditions = Field(default_factory=RuleConditions, description="Rule conditions")
+    evidence: List[EvidenceSource] = Field(default_factory=list, description="Supporting evidence")
+
+
+class VisaPolicyResponse(BaseModel):
+    """Response model for visa policy query."""
+    status: str = Field(..., description="Response status (ok, needs_clarification, no_result, error)")
+    destination_country: str | None = Field(None, description="Destination country")
+    nationality_country: str | None = Field(None, description="Nationality country")
+    purpose: str | None = Field(None, description="Purpose of travel")
+    passport_type: str | None = Field(None, description="Passport type")
+    travel_window: TravelWindow | None = Field(None, description="Travel date range")
+    intended_stay_days: int | None = Field(None, description="Intended stay days")
+    summary: str = Field(..., description="Summary message")
+    rules: List[VisaRule] = Field(default_factory=list, description="Applicable visa rules")
+    warnings: List[str] = Field(default_factory=list, description="Warning messages")
