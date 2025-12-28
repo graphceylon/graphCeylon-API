@@ -1,4 +1,8 @@
+# /Users/dev/Desktop/graphCeylon-API/services/orchestrator/src/orchestrator_core/orchestrator_service.py
+
 from __future__ import annotations
+import json
+from pathlib import Path
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -37,17 +41,37 @@ from .contracts.itinerary_modify import ItineraryModifyResponse
 from .mappers.sustainability_mapper import map_sustainability_request
 from .mappers.recommend_pois_mapper import map_recommend_pois_request
 
+from .agent_mappers.visa_policy_mapper import map_visa_policy_request
+from .agent_contracts.visa_policy import VisaPolicyResponse  # optional (enable later)
+
 # ✅ registry + adapter + tracing (use RELATIVE imports)
 from .runtime.registry.registry import AgentRegistry
 from .runtime.registry.models import AgentSpec, SLA
 from .runtime.adapters.a2a import A2AHttpAdapter
 from .runtime.trace import InMemoryTraceStore, TraceEvent
 
+from ..profile.repo import get_profile
+from .memory.preference_merge import merge_preferences
+
+
+
+VISA_STUB_JSON = Path(__file__).resolve().parent / "visa_policy" / "visa.json"
+# this points to: orchestrator_core/visa_policy/visa.json
+
 
 RECOMMENDER_BASE_URL = os.getenv(
     "RECOMMENDER_SERVICE_URL",
     "http://recommender_service:8003",
 ).rstrip("/")
+
+# ✅ NEW: Visa/KG base URL (your friend’s KG interface layer service)
+VISA_KG_BASE_URL = os.getenv(
+    "VISA_KG_SERVICE_URL",
+    "http://visa_kg_service:8006",
+).rstrip("/")
+
+# ✅ toggle for stub vs real visa service
+USE_VISA_STUB = os.getenv("USE_VISA_STUB", "0") == "1"
 
 
 @dataclass(frozen=True)
@@ -125,6 +149,14 @@ class OrchestratorService:
                 timeout=20,
                 result_field=None,
             ),
+            # ✅ VisaPolicy handler (calls KG interface layer)
+            "info_visa_policy": IntentHandler(
+                endpoint="/visa/policy",
+                mapper=map_visa_policy_request,
+                response_model=VisaPolicyResponse,
+                timeout=20,
+                result_field="visa_result",
+            ),
         }
 
         # ✅ 2) registry
@@ -134,10 +166,27 @@ class OrchestratorService:
                     agent_id="recommender",
                     base_url=RECOMMENDER_BASE_URL,
                     protocols=["a2a"],  # later: ["a2a", "mcp", "blackboard"]
-                    capabilities=list(self.handlers.keys()),
+                    capabilities=[
+                        "forecast_weather",
+                        "crowd_forecast",
+                        "forecast_price",
+                        "plan_itinerary",
+                        "modify_itinerary",
+                        "forecast_sustainability",
+                        "recommend_pois",
+                    ],
                     sla=SLA(p95_ms=1200, success_rate=0.98),
                     cost_weight=1.0,
-                )
+                ),
+                # ✅ visa KG agent service
+                AgentSpec(
+                    agent_id="visa_kg",
+                    base_url=VISA_KG_BASE_URL,
+                    protocols=["a2a"],
+                    capabilities=["info_visa_policy"],
+                    sla=SLA(p95_ms=1500, success_rate=0.98),
+                    cost_weight=1.0,
+                ),
             ]
         )
 
@@ -154,6 +203,33 @@ class OrchestratorService:
     @staticmethod
     def _clean_user_id(req: OrchestrateRequest) -> Optional[str]:
         return req.user_id.strip() if req.user_id else None
+    
+    @staticmethod
+    def _extract_db_preferences(profile_obj) -> Dict[str, Any]:
+        """
+        Pull only preference fields from the DB profile.
+        This assumes you store long-term prefs mainly in:
+          - root budget_level
+          - preference_overrides (dict)
+        """
+        if profile_obj is None:
+            return {}
+
+        data = profile_obj.model_dump()
+
+        db_prefs: Dict[str, Any] = {}
+
+        # example: you store budget_level at root
+        if data.get("budget_level") is not None:
+            db_prefs["budget_level"] = data.get("budget_level")
+
+        # long-term preferences can live here (if you keep it)
+        po = data.get("preference_overrides") or {}
+        if isinstance(po, dict):
+            db_prefs.update(po)
+
+        return db_prefs
+
 
     # ---------------------------
     # registry + A2A invoke + trace
@@ -205,12 +281,16 @@ class OrchestratorService:
 
         # 3) invoke
         try:
-            raw = self.a2a.invoke(
-                base_url=agent.base_url,
-                endpoint=endpoint,
-                payload=payload,
-                timeout=timeout,
-            )
+            if capability == "info_visa_policy" and USE_VISA_STUB:
+                raw = json.loads(VISA_STUB_JSON.read_text(encoding="utf-8"))
+            else:
+                raw = self.a2a.invoke(
+                    base_url=agent.base_url,
+                    endpoint=endpoint,
+                    payload=payload,
+                    timeout=timeout,
+                )
+
             finished_at = datetime.utcnow()
             self.trace_store.update(
                 session_id=session_id,
@@ -235,19 +315,21 @@ class OrchestratorService:
                 error=str(e),
             )
             return None
+
     def _execute_intent(
         self,
         intent_name: str,
         parsed_intent: ParsedIntent,
         req: OrchestrateRequest,
         results: Dict[str, Any],
+        user_profile,
     ) -> None:
         handler = self.handlers.get(intent_name)
         if not handler:
             print(f"[orchestrator] No handler registered for intent={intent_name}")
             return
 
-        # ✅ IMPORTANT: patch ParsedIntent so mappers see the correct intent
+        # 1) Patch intent + confidence so mapper sees the right intent
         patched_intent = parsed_intent.model_copy(
             update={
                 "intent": intent_name,
@@ -255,12 +337,60 @@ class OrchestratorService:
             }
         )
 
+        # 2) Extract DB prefs safely (long-term memory)
+        db_prefs: Dict[str, Any] = {}
+        if user_profile is not None:
+            try:
+                if getattr(user_profile, "preference_overrides", None) is not None:
+                    db_prefs = user_profile.preference_overrides.model_dump(exclude_none=True)
+            except Exception:
+                db_prefs = {}
+
+        # 3) Merge prefs: query overrides > DB prefs  ✅ (use imported merge_preferences)
+        # NOTE: merge_preferences is imported at top:
+        # from .memory.preference_merge import merge_preferences
+        q_overrides = patched_intent.preference_overrides or {}
+        if hasattr(q_overrides, "model_dump"):
+            q_overrides = q_overrides.model_dump(exclude_none=True)
+        else:
+            q_overrides = dict(q_overrides)
+
+        merged_prefs, pref_source = merge_preferences(
+            db_prefs=db_prefs,
+            query_overrides=q_overrides,
+        )
+
+        patched_intent = patched_intent.model_copy(
+            update={"preference_overrides": merged_prefs}
+        )
+
+        # 4) Build contract payload via mapper
         contract_obj = handler.mapper(patched_intent, req)
-        payload = contract_obj.model_dump()
+
+        # 5) DEBUG prints (DB vs query vs final)
+        print("\n================ USER PREF DEBUG =================")
+        print(f"user_id    : {req.user_id}")
+        print(f"session_id : {req.session_id}")
+        print(f"intent     : {intent_name}")
+        print("--------------------------------------------------")
+        print("DB prefs:")
+        print(db_prefs if db_prefs else "None")
+        print("\nQuery overrides:")
+        print(q_overrides if q_overrides else "None")
+        print("\nMerged prefs (effective):")
+        print(merged_prefs if merged_prefs else "None")
+        print("\nPreference source map (query vs db):")
+        print(pref_source if pref_source else "None")
+        print("==================================================\n")
+
+        payload = contract_obj.model_dump(exclude_none=True)
+        payload["preference_sources"] = pref_source  # ✅ add this
+
 
         print(f"=== {contract_obj.__class__.__name__} payload ({intent_name}) ===")
         print(payload)
 
+        # 6) Invoke downstream agent/service
         raw = self._invoke_capability_a2a(
             capability=intent_name,
             endpoint=handler.endpoint,
@@ -269,26 +399,26 @@ class OrchestratorService:
             session_id=req.session_id or "no_session",
             user_id=req.user_id,
         )
-
         if raw is None:
             return
 
-        # Parse response if model exists
-        parsed = None
+        # 7) Parse response ONCE (support response_model=None)
+        parsed_obj: Any = None
         if handler.response_model is not None:
             try:
-                parsed = handler.response_model(**raw)
+                parsed_obj = handler.response_model(**raw)
             except Exception as e:
                 print(f"[orchestrator] Error parsing response for intent={intent_name}: {e}")
-                parsed = None
+                parsed_obj = None
         else:
-            # endpoints you haven't finalized yet
             print(f"[orchestrator] Raw response for {intent_name}:")
             print(raw)
+            parsed_obj = raw
 
-        # Store into the appropriate OrchestrateResponse field
+        # 8) Store into OrchestrateResponse result bucket
         if handler.result_field and handler.result_field in results:
-            results[handler.result_field] = parsed
+            results[handler.result_field] = parsed_obj
+
 
     # ---------------------------
     # intent parse
@@ -321,19 +451,28 @@ class OrchestratorService:
     # main orchestrate
     # ---------------------------
     def orchestrate(self, req: OrchestrateRequest) -> OrchestrateResponse:
+        # ===== LOAD USER PROFILE FROM DB =====
+        user_profile = None
+        if req.user_id:
+            user_profile = get_profile(req.user_id.strip())
+
+        # 0) load DB profile once
+        user_id = (req.user_id or "").strip()
+        db_profile = get_profile(user_id) if user_id else None
+        db_prefs = self._extract_db_preferences(db_profile)
+
         parsed_intent: ParsedIntent = self._run_intent_parser(req)
         tasks: List[TaskSummary] = self.task_graph_builder.build(parsed_intent)
 
-        # Keep existing response fields to not break schema
         results: Dict[str, Any] = {
             "weather_result": None,
             "crowd_result": None,
             "price_result": None,
             "itinerary_result": None,
             "modify_result": None,
+            "visa_result": None,
         }
 
-        # 1) Build ordered, de-duplicated run list: primary then secondary
         intents_to_run: List[str] = []
         seen = set()
 
@@ -348,9 +487,10 @@ class OrchestratorService:
 
         print(f"[orchestrator] intents_to_run={intents_to_run}")
 
-        # 2) Execute each intent sequentially (simple + traceable)
+        # 2) Execute each intent sequentially
         for intent_name in intents_to_run:
-            self._execute_intent(intent_name, parsed_intent, req, results)
+            self._execute_intent(intent_name, parsed_intent, req, results, user_profile)
+
 
         return OrchestrateResponse(
             status="ok",
@@ -363,4 +503,6 @@ class OrchestratorService:
             price_result=results["price_result"],
             itinerary_result=results["itinerary_result"],
             modify_result=results["modify_result"],
+            visa_result=results["visa_result"],
         )
+

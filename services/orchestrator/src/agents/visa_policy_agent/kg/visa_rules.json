@@ -1,0 +1,14 @@
+[
+  {
+    "nationality_country": "India",
+    "destination_country": "Sri Lanka",
+    "purpose": "tourism",
+    "visa_type": "ETA",
+    "max_stay_days": 30,
+    "extendable": true,
+    "fee_usd": 20,
+    "source": "Department of Immigration & Emigration Sri Lanka",
+    "url": "https://www.immigration.gov.lk",
+    "last_updated": "2024-10-01"
+  }
+]

@@ -1,5 +1,5 @@
 version: '3.9'
-
+ 
 services:
   # PostgreSQL Database for User Service
   postgres:
@@ -22,6 +22,7 @@ services:
       timeout: 5s
       retries: 5
 
+ 
   # Redis for Auth Service
   redis:
     image: redis:7-alpine
@@ -39,6 +40,7 @@ services:
       timeout: 5s
       retries: 5
 
+ 
   # Neo4j Database for Knowledge Graph
   neo4j:
     image: neo4j:5.26
@@ -71,6 +73,7 @@ services:
       timeout: 5s
       retries: 5
 
+ 
   # Auth Service (Node.js)
   auth_service:
     build:
@@ -105,6 +108,7 @@ services:
       timeout: 3s
       retries: 3
 
+ 
   # User Service (Node.js)
   user_service:
     build:
@@ -144,6 +148,7 @@ services:
       timeout: 3s
       retries: 3
 
+ 
   # Component 1: Language Service
   language_service:
     build:
@@ -161,7 +166,7 @@ services:
     networks:
       - graphceylon-network
     restart: unless-stopped
-
+ 
   # Component 2: Knowledge Graph Service
   kg_service:
     build:
@@ -190,7 +195,7 @@ services:
     networks:
       - graphceylon-network
     restart: unless-stopped
-
+ 
   # Component 3: Recommender Service
   recommender_service:
     build:
@@ -208,7 +213,7 @@ services:
     networks:
       - graphceylon-network
     restart: unless-stopped
-
+ 
   # Component 4: Orchestrator
   orchestrator:
     build:
@@ -238,11 +243,11 @@ services:
     networks:
       - graphceylon-network
     restart: unless-stopped
-
+ 
 networks:
   graphceylon-network:
     driver: bridge
-
+ 
 volumes:
   postgres_data:
     driver: local
@@ -254,3 +259,5 @@ volumes:
     driver: local
   neo4j_plugins:
     driver: local
+ 
+ 
