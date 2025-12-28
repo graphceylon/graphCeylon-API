@@ -50,8 +50,11 @@ from .runtime.registry.models import AgentSpec, SLA
 from .runtime.adapters.a2a import A2AHttpAdapter
 from .runtime.trace import InMemoryTraceStore, TraceEvent
 
-from ..profile.repo import get_profile
+from ..profile.profile_client import ProfileClient
+
+
 from .memory.preference_merge import merge_preferences
+
 
 
 
@@ -94,8 +97,12 @@ class OrchestratorService:
         self.task_graph_builder = task_graph_builder
         self.protocol_mode = protocol_mode
 
+        # ✅ Profile client (User Service)
+        self.profile_client = ProfileClient()
+
         # ✅ trace store
         self.trace_store = InMemoryTraceStore(max_per_session=500)
+
 
         # ✅ 1) capability handlers
         self.handlers: Dict[str, IntentHandler] = {
@@ -203,32 +210,92 @@ class OrchestratorService:
     @staticmethod
     def _clean_user_id(req: OrchestrateRequest) -> Optional[str]:
         return req.user_id.strip() if req.user_id else None
-    
     @staticmethod
-    def _extract_db_preferences(profile_obj) -> Dict[str, Any]:
-        """
-        Pull only preference fields from the DB profile.
-        This assumes you store long-term prefs mainly in:
-          - root budget_level
-          - preference_overrides (dict)
-        """
-        if profile_obj is None:
+    def _extract_db_preferences(profile_json: Dict[str, Any] | None) -> Dict[str, Any]:
+        if not profile_json:
             return {}
-
-        data = profile_obj.model_dump()
 
         db_prefs: Dict[str, Any] = {}
 
-        # example: you store budget_level at root
-        if data.get("budget_level") is not None:
-            db_prefs["budget_level"] = data.get("budget_level")
+        # ✅ top-level (camelCase from user_service response)
+        for k_src, k_dst in [
+            ("budgetLevel", "budget_level"),
+            ("homeCity", "home_city"),
+            ("defaultParty", "default_party"),
+        ]:
+            v = profile_json.get(k_src)
+            if v not in [None, "", "unknown"]:
+                db_prefs[k_dst] = v
 
-        # long-term preferences can live here (if you keep it)
-        po = data.get("preference_overrides") or {}
+        # ✅ preferenceOverrides (camelCase)
+        po = profile_json.get("preferenceOverrides") or {}
         if isinstance(po, dict):
-            db_prefs.update(po)
+            # convert keys to snake_case if your orchestrator expects that
+            key_map = {
+                "travelStyle": "travel_style",
+                "ecoPreference": "eco_preference",
+                "avoidCrowds": "avoid_crowds",
+                "activityPreference": "activity_preference",
+                "pacePreference": "pace_preference",
+                "adventureLevel": "adventure_level",
+                "budgetLevel": "budget_level",
+                "budgetPerNightLkr": "budget_per_night_lkr",
+                "budgetFlexibility": "budget_flexibility",
+                "preferredTransport": "preferred_transport",
+                "foodPreferences": "food_preferences",
+                "accessibilityNeeds": "accessibility_needs",
+                "walkingToleranceMinutes": "walking_tolerance_minutes",
+                "accommodationType": "accommodation_type",
+                "starPreference": "star_preference",
+                "mustHaveAmenities": "must_have_amenities",
+                "cancellationPreference": "cancellation_preference",
+                "sunSensitivity": "sun_sensitivity",
+                "rainPreference": "rain_preference",
+                "temperaturePreference": "temperature_preference",
+                "motionSickness": "motion_sickness",
+            }
+
+            for k, v in po.items():
+                if v in [None, "", [], {}, "unknown"]:
+                    continue
+                db_prefs[key_map.get(k, k)] = v
+
+        # ✅ OPTIONAL: also pull useful prefs from onboarding.answers
+        onboarding = profile_json.get("onboarding") or {}
+        answers = onboarding.get("answers") if isinstance(onboarding, dict) else None
+        if isinstance(answers, dict):
+            onboarding_map = {
+                "avoidCrowds": "avoid_crowds",
+                "rainPreference": "rain_preference",
+                "tempPreference": "temperature_preference",
+                "foodPreferences": "food_preferences",
+                "travelInterests": "travel_style",          # up to you: map interests → travel_style
+                "budgetPerNightLkr": "budget_per_night_lkr",
+                "preferredTransport": "preferred_transport",
+            }
+            for k, v in answers.items():
+                if v in [None, "", [], {}, "unknown"]:
+                    continue
+                mapped = onboarding_map.get(k)
+                if mapped and mapped not in db_prefs:
+                    db_prefs[mapped] = v
 
         return db_prefs
+
+    @staticmethod
+    def _sanitize_query_overrides(q: Dict[str, Any]) -> Dict[str, Any]:
+        cleaned: Dict[str, Any] = {}
+        for k, v in (q or {}).items():
+            if v is None:
+                continue
+            if isinstance(v, str) and v.strip().lower() in {"unknown", "any", ""}:
+                continue
+            if isinstance(v, (list, dict)) and len(v) == 0:
+                continue
+            cleaned[k] = v
+        return cleaned
+
+
 
 
     # ---------------------------
@@ -322,8 +389,9 @@ class OrchestratorService:
         parsed_intent: ParsedIntent,
         req: OrchestrateRequest,
         results: Dict[str, Any],
-        user_profile,
+        db_prefs: Dict[str, Any],
     ) -> None:
+
         handler = self.handlers.get(intent_name)
         if not handler:
             print(f"[orchestrator] No handler registered for intent={intent_name}")
@@ -338,13 +406,7 @@ class OrchestratorService:
         )
 
         # 2) Extract DB prefs safely (long-term memory)
-        db_prefs: Dict[str, Any] = {}
-        if user_profile is not None:
-            try:
-                if getattr(user_profile, "preference_overrides", None) is not None:
-                    db_prefs = user_profile.preference_overrides.model_dump(exclude_none=True)
-            except Exception:
-                db_prefs = {}
+        
 
         # 3) Merge prefs: query overrides > DB prefs  ✅ (use imported merge_preferences)
         # NOTE: merge_preferences is imported at top:
@@ -355,10 +417,10 @@ class OrchestratorService:
         else:
             q_overrides = dict(q_overrides)
 
-        merged_prefs, pref_source = merge_preferences(
-            db_prefs=db_prefs,
-            query_overrides=q_overrides,
-        )
+        q_overrides = self._sanitize_query_overrides(q_overrides)
+
+        merged_prefs, pref_source = merge_preferences(db_prefs=db_prefs, query_overrides=q_overrides)
+
 
         patched_intent = patched_intent.model_copy(
             update={"preference_overrides": merged_prefs}
@@ -451,15 +513,13 @@ class OrchestratorService:
     # main orchestrate
     # ---------------------------
     def orchestrate(self, req: OrchestrateRequest) -> OrchestrateResponse:
-        # ===== LOAD USER PROFILE FROM DB =====
-        user_profile = None
-        if req.user_id:
-            user_profile = get_profile(req.user_id.strip())
-
-        # 0) load DB profile once
         user_id = (req.user_id or "").strip()
-        db_profile = get_profile(user_id) if user_id else None
-        db_prefs = self._extract_db_preferences(db_profile)
+
+        # ✅ fetch profile JSON from user service (single source of truth)
+        profile_json = self.profile_client.get_profile(user_id) if user_id else None
+
+        # ✅ extract db prefs from columns + preference_overrides
+        db_prefs = self._extract_db_preferences(profile_json)
 
         parsed_intent: ParsedIntent = self._run_intent_parser(req)
         tasks: List[TaskSummary] = self.task_graph_builder.build(parsed_intent)
@@ -489,7 +549,7 @@ class OrchestratorService:
 
         # 2) Execute each intent sequentially
         for intent_name in intents_to_run:
-            self._execute_intent(intent_name, parsed_intent, req, results, user_profile)
+            self._execute_intent(intent_name, parsed_intent, req, results, db_prefs)
 
 
         return OrchestrateResponse(

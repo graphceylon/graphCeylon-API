@@ -9,6 +9,30 @@ export const authenticate = async (
   next: NextFunction
 ): Promise<void> => {
   try {
+    // ✅ 0) INTERNAL SERVICE-TO-SERVICE AUTH (Orchestrator → User Service)
+    const expectedServiceToken = process.env.SERVICE_TOKEN;
+    const serviceToken = req.headers['x-service-token'];
+
+    if (
+      expectedServiceToken &&
+      typeof serviceToken === 'string' &&
+      serviceToken === expectedServiceToken
+    ) {
+      // Mark internal call (optional)
+      (req as any).isInternal = true;
+
+      // Optionally attach a "system" user context (optional)
+      req.userId = 'internal-service';
+      req.user = {
+        userId: 'internal-service',
+        email: 'internal@graphceylon',
+        role: 'admin' as any, // or 'system' if you have it
+      };
+
+      return next();
+    }
+
+    // ✅ 1) NORMAL USER JWT AUTH
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -34,9 +58,9 @@ export const authenticate = async (
       role: decoded.role,
     };
 
-    next();
+    return next();
   } catch (error) {
-    next(error);
+    return next(error);
   }
 };
 
