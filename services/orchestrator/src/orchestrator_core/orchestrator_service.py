@@ -3,6 +3,8 @@
 from __future__ import annotations
 import json
 from pathlib import Path
+import psycopg
+
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,6 +30,11 @@ from .contracts.weather import WeatherForecastResponse
 
 from .mappers.crowd_mapper import map_crowd_request
 from .contracts.crowd import CrowdForecastResponse
+
+# Phase 3 semantic recall (local module)
+from ..profile_semantic.embedder import embed_texts, vector_literal
+from ..profile_semantic.db import db_conn
+
 
 from .mappers.price_mapper import map_price_request
 from .contracts.price import PriceForecastResponse
@@ -55,6 +62,8 @@ from ..profile.profile_client import ProfileClient
 
 from .memory.preference_merge import merge_preferences
 from .memory.profile_event_store import ProfileEventStore, ProfileEvent
+from ..profile_agent_phase2.compute import maybe_auto_compute
+
 
 
 
@@ -202,6 +211,203 @@ class OrchestratorService:
 
         # ✅ 3) A2A adapter
         self.a2a = A2AHttpAdapter()
+        # ---------------------------
+    # Phase 3 — Semantic Memory trigger (PGVector)
+    # ---------------------------
+    
+
+    def _semantic_recall_for_request(
+            self,
+            *,
+            user_id: str,
+            q: str,
+            k: int = 5,
+            event_types: Optional[List[str]] = None,
+            snippet_chars: int = 240,
+        ) -> Dict[str, Any]:
+            """
+            Local semantic recall (no HTTP):
+            - embed q
+            - pgvector top-k search
+            - returns lightweight payload safe to forward downstream
+            """
+            if not user_id or not q or len(q.strip()) < 2:
+                return {"ok": True, "results": []}
+
+            types = event_types or ["prefs_merged", "intent_parsed", "downstream_response"]
+
+            try:
+                v = embed_texts([q])[0]
+                vlit = vector_literal(v)
+
+                with db_conn() as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT event_type, created_at, doc_text, meta,
+                            (embedding <=> %s::vector) AS distance
+                        FROM profile_memory_embeddings
+                        WHERE user_id=%s
+                        AND event_type = ANY(%s)
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT %s
+                        """,
+                        (vlit, user_id, types, vlit, k),
+                    ).fetchall()
+
+                results: List[Dict[str, Any]] = []
+                for (etype, created_at, doc_text, meta, distance) in rows:
+                    dist = float(distance)
+                    similarity = 1.0 - dist
+
+                    text = (doc_text or "").strip()
+                    snippet = text[:snippet_chars] + ("…" if len(text) > snippet_chars else "")
+
+                    meta_dict = meta if isinstance(meta, dict) else {}
+                    results.append(
+                        {
+                            "event_type": etype,
+                            "created_at": str(created_at),
+                            "distance": dist,
+                            "similarity": similarity,
+                            "meta": meta_dict,
+                            "snippet": snippet,
+                        }
+                    )
+
+                return {
+                    "ok": True,
+                    "q": q,
+                    "k": k,
+                    "event_types": types,
+                    "results": results,
+                }
+
+            except Exception as e:
+                # do not break orchestration
+                return {
+                    "ok": False,
+                    "error": str(e),
+                    "results": [],
+                }
+
+    @staticmethod
+    def _phase3_enabled() -> bool:
+        return os.getenv("PHASE3_AUTO_EMBED", "0") == "1"
+
+    @staticmethod
+    def _phase3_min_events() -> int:
+        try:
+            return int(os.getenv("PHASE3_MIN_EVENTS", "10"))
+        except Exception:
+            return 10
+
+    @staticmethod
+    def _profile_events_dsn() -> str:
+        return os.getenv("PROFILE_EVENTS_DB_DSN", "").strip()
+
+    @staticmethod
+    def _profile_events_schema() -> str:
+        return os.getenv("PROFILE_EVENTS_SCHEMA", "public").strip()
+
+    @staticmethod
+    def _profile_events_table() -> str:
+        return os.getenv("PROFILE_EVENTS_TABLE", "profile_events").strip()
+
+    @staticmethod
+    def _events_fqtn() -> str:
+        return f"{OrchestratorService._profile_events_schema()}.{OrchestratorService._profile_events_table()}"
+
+    @staticmethod
+    def _cursor_table_fqtn() -> str:
+        # you already created: profile_embedding_cursor
+        return f"{OrchestratorService._profile_events_schema()}.profile_embedding_cursor"
+
+    def _phase3_get_last_cursor(self, user_id: str) -> Optional[datetime]:
+        dsn = self._profile_events_dsn()
+        if not dsn:
+            return None
+
+        sql = f"SELECT last_embedded_at FROM {self._cursor_table_fqtn()} WHERE user_id = %s"
+        with psycopg.connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (user_id,))
+                row = cur.fetchone()
+                return row[0] if row else None
+
+    def _phase3_count_new_events(self, user_id: str, since: Optional[datetime]) -> int:
+        dsn = self._profile_events_dsn()
+        if not dsn:
+            return 0
+
+        events_tbl = self._events_fqtn()
+
+        if since is None:
+            sql = f"SELECT COUNT(*) FROM {events_tbl} WHERE user_id = %s"
+            params = (user_id,)
+        else:
+            sql = f"SELECT COUNT(*) FROM {events_tbl} WHERE user_id = %s AND created_at > %s"
+            params = (user_id, since)
+
+        with psycopg.connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return int(cur.fetchone()[0])
+
+    def _phase3_update_cursor(self, user_id: str) -> None:
+        dsn = self._profile_events_dsn()
+        if not dsn:
+            return
+
+        sql = f"""
+        INSERT INTO {self._cursor_table_fqtn()} (user_id, last_embedded_at)
+        VALUES (%s, now())
+        ON CONFLICT (user_id) DO UPDATE
+        SET last_embedded_at = EXCLUDED.last_embedded_at
+        """
+        with psycopg.connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (user_id,))
+            conn.commit()
+
+    def maybe_run_phase3(self, user_id: str, session_id: str) -> None:
+        """
+        Phase 3 trigger:
+        - Runs inside /orchestrate (sync)
+        - Only runs when new events since last_embedded_at >= PHASE3_MIN_EVENTS
+        """
+        if not user_id:
+            return
+        if not self._phase3_enabled():
+            return
+
+        dsn = self._profile_events_dsn()
+        if not dsn:
+            print("[phase3] PROFILE_EVENTS_DB_DSN not set — skipping")
+            return
+
+        min_events = self._phase3_min_events()
+        last = self._phase3_get_last_cursor(user_id)
+        new_events = self._phase3_count_new_events(user_id, last)
+
+        print(f"[phase3] gate user={user_id} session={session_id} last={last} new_events={new_events} min={min_events}")
+
+        if new_events < min_events:
+            return
+
+        # ✅ Call your semantic pipeline
+        try:
+            from ..profile_semantic.pipeline import run_embed_pipeline
+        except Exception as e:
+            print(f"[phase3] cannot import semantic pipeline: {e}")
+            return
+
+        try:
+            run_embed_pipeline(user_id=user_id)
+            
+            print(f"[phase3] semantic embed pipeline ran OK, cursor updated user={user_id}")
+        except Exception as e:
+            print(f"[phase3] semantic embed pipeline FAILED: {e}")
+
 
     # ---------------------------
     # helpers
@@ -439,6 +645,14 @@ class OrchestratorService:
                 )
             )
 
+            # ✅ Phase 2 auto-compute hook (runs only when threshold satisfied)
+            try:
+                maybe_auto_compute(req.user_id, session_id=req.session_id)
+
+            except Exception as e:
+                print(f"[phase2] auto compute failed: {e}")
+
+
 
 
         patched_intent = patched_intent.model_copy(
@@ -466,6 +680,16 @@ class OrchestratorService:
 
         payload = contract_obj.model_dump(exclude_none=True)
         payload["preference_sources"] = pref_source  # ✅ add this
+        if req.user_id and intent_name in {"plan_itinerary", "modify_itinerary", "recommend_pois"}:
+            recall = self._semantic_recall_for_request(
+                user_id=req.user_id,
+                q=req.input_text,   # use raw current user query text
+                k=int(os.getenv("PHASE3_RECALL_TOPK", "5")),
+            )
+            payload["semantic_context"] = {
+                "recall": recall.get("results", []),
+                "recall_ok": bool(recall.get("ok", False)),
+            }
 
 
         print(f"=== {contract_obj.__class__.__name__} payload ({intent_name}) ===")
@@ -631,6 +855,13 @@ class OrchestratorService:
         # 2) Execute each intent sequentially
         for intent_name in intents_to_run:
             self._execute_intent(intent_name, parsed_intent, req, results, db_prefs)
+                # ✅ Phase 3 trigger (semantic profile engine)
+        if user_id:
+            try:
+                self.maybe_run_phase3(user_id=user_id, session_id=session_id)
+            except Exception as e:
+                print(f"[phase3] trigger failed: {e}")
+
 
 
         return OrchestrateResponse(

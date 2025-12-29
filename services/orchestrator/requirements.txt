@@ -30,3 +30,7 @@ langchain
 groq
 httpx
 aiohttp
+sentence-transformers==2.7.0
+numpy>=1.26
+psycopg[binary]>=3.2
+

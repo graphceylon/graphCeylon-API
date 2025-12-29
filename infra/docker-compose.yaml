@@ -3,7 +3,7 @@ version: '3.9'
 services:
   # PostgreSQL Database for User Service
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: graphceylon-postgres
     ports:
       - "5432:5432"
@@ -247,24 +247,7 @@ services:
     networks:
       - graphceylon-network
     restart: unless-stopped
- 
-networks:
-  graphceylon-network:
-    driver: bridge
- 
-volumes:
-  postgres_data:
-    driver: local
-  redis_data:
-    driver: local
-  neo4j_data:
-    driver: local
-  neo4j_logs:
-    driver: local
-  neo4j_plugins:
-    driver: local
- 
-   # Profile Agent (Phase 1: context + event memory)
+  # Profile Agent (Phase 1: context + event memory)
   profile_agent:
     build:
       context: ../services/profile_agent
@@ -286,3 +269,21 @@ volumes:
     networks:
       - graphceylon-network
     restart: unless-stopped
+
+networks:
+  graphceylon-network:
+    driver: bridge
+ 
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  neo4j_plugins:
+    driver: local
+ 
+   # Profile Agent (Phase 1: context + event memory)
