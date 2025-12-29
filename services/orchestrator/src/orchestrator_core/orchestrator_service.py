@@ -54,6 +54,8 @@ from ..profile.profile_client import ProfileClient
 
 
 from .memory.preference_merge import merge_preferences
+from .memory.profile_event_store import ProfileEventStore, ProfileEvent
+
 
 
 
@@ -96,6 +98,7 @@ class OrchestratorService:
         self.intent_parser = intent_parser
         self.task_graph_builder = task_graph_builder
         self.protocol_mode = protocol_mode
+        self.profile_event_store = ProfileEventStore()
 
         # ✅ Profile client (User Service)
         self.profile_client = ProfileClient()
@@ -420,6 +423,22 @@ class OrchestratorService:
         q_overrides = self._sanitize_query_overrides(q_overrides)
 
         merged_prefs, pref_source = merge_preferences(db_prefs=db_prefs, query_overrides=q_overrides)
+        if req.user_id:
+            self.profile_event_store.append(
+                ProfileEvent(
+                    user_id=req.user_id,
+                    session_id=req.session_id or "no_session",
+                    event_type="prefs_merged",
+                    intent=intent_name,
+                    payload={
+                        "db_prefs": db_prefs,
+                        "query_overrides": q_overrides,
+                        "merged_prefs": merged_prefs,
+                        "preference_sources": pref_source,
+                    },
+                )
+            )
+
 
 
         patched_intent = patched_intent.model_copy(
@@ -461,8 +480,27 @@ class OrchestratorService:
             session_id=req.session_id or "no_session",
             user_id=req.user_id,
         )
+       
+
+        # ✅ EVENT: downstream result
+        if req.user_id:
+            self.profile_event_store.append(
+                ProfileEvent(
+                    user_id=req.user_id,
+                    session_id=req.session_id or "no_session",
+                    event_type="downstream_response",
+                    intent=intent_name,
+                    payload={
+                        "endpoint": handler.endpoint,
+                        "ok": raw is not None,
+                        "response": raw if raw is not None else None,
+                    },
+                )
+            )
+
         if raw is None:
             return
+
 
         # 7) Parse response ONCE (support response_model=None)
         parsed_obj: Any = None
@@ -514,6 +552,23 @@ class OrchestratorService:
     # ---------------------------
     def orchestrate(self, req: OrchestrateRequest) -> OrchestrateResponse:
         user_id = (req.user_id or "").strip()
+        session_id = (req.session_id or "no_session").strip()
+
+        # ✅ EVENT 1: raw query received (store raw text)
+        if user_id:
+            self.profile_event_store.append(
+                ProfileEvent(
+                    user_id=user_id,
+                    session_id=session_id,
+                    event_type="query_received",
+                    intent=None,
+                    payload={
+                        "raw_text": req.input_text,
+                        "source": "orchestrator",
+                    },
+                )
+            )
+
 
         # ✅ fetch profile JSON from user service (single source of truth)
         profile_json = self.profile_client.get_profile(user_id) if user_id else None
@@ -522,6 +577,32 @@ class OrchestratorService:
         db_prefs = self._extract_db_preferences(profile_json)
 
         parsed_intent: ParsedIntent = self._run_intent_parser(req)
+        if user_id:
+            self.profile_event_store.append(
+                ProfileEvent(
+                    user_id=user_id,
+                    session_id=session_id,
+                    event_type="intent_parsed",
+                    intent=parsed_intent.intent,
+                    payload={
+                        "raw_text": parsed_intent.raw_text,   # ✅ store raw text (cleaned)
+                        "confidence": parsed_intent.confidence,
+                        "scores": parsed_intent.scores,
+                        "entities": (
+                            parsed_intent.entities.model_dump(exclude_none=True)
+                            if hasattr(parsed_intent.entities, "model_dump")
+                            else parsed_intent.entities
+                        ),
+
+                        "query_preference_overrides": (
+                            parsed_intent.preference_overrides.model_dump(exclude_none=True)
+                            if hasattr(parsed_intent.preference_overrides, "model_dump")
+                            else dict(parsed_intent.preference_overrides or {})
+                        ),
+                    },
+                )
+            )
+
         tasks: List[TaskSummary] = self.task_graph_builder.build(parsed_intent)
 
         results: Dict[str, Any] = {
