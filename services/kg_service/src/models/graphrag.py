@@ -1,6 +1,5 @@
 """Pydantic models for GraphRAG API requests and responses."""
-
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
 
@@ -95,20 +94,50 @@ class TravelWindow(BaseModel):
     end_date: str = Field(..., description="End date (YYYY-MM-DD)")
 
 
+# class VisaPolicyQueryRequest(BaseModel):
+#     """Request model for visa policy query without LLM."""
+#     intent: str = Field(..., description="Intent type (e.g., 'info_visa_policy')")
+#     user_id: str = Field(..., description="User identifier")
+#     session_id: str = Field(..., description="Session identifier")
+#     raw_text: str = Field(..., description="User's raw question text")
+#     nationality_country: str = Field(..., description="Nationality/passport country")
+#     destination_country: str = Field(..., description="Destination country")
+#     intended_stay_days: int = Field(..., description="Intended stay duration in days")
+#     travel_window: TravelWindow = Field(..., description="Travel date range")
+#     purpose: str = Field(..., description="Purpose of travel (tourism, business, etc.)")
+#     passport_type: str = Field(..., description="Type of passport (ordinary, diplomatic, etc.)")
+#     entry_type: str | None = Field(None, description="Entry type (single, multiple, etc.)")
+#     prior_visa_or_eta: str | None = Field(None, description="Prior visa or ETA status")
+#     ask_type: str = Field(..., description="Type of query (eligibility, requirements, etc.)")
+#     extra: Dict[str, Any] = Field(default_factory=dict, description="Extra metadata")
+class TravelWindow(BaseModel):
+    start_date: str = Field(..., description="Start date (YYYY-MM-DD)")
+    end_date: str = Field(..., description="End date (YYYY-MM-DD)")
+    
 class VisaPolicyQueryRequest(BaseModel):
     """Request model for visa policy query without LLM."""
     intent: str = Field(..., description="Intent type (e.g., 'info_visa_policy')")
     user_id: str = Field(..., description="User identifier")
     session_id: str = Field(..., description="Session identifier")
     raw_text: str = Field(..., description="User's raw question text")
+
     nationality_country: str = Field(..., description="Nationality/passport country")
     destination_country: str = Field(..., description="Destination country")
-    intended_stay_days: int = Field(..., description="Intended stay duration in days")
-    travel_window: TravelWindow = Field(..., description="Travel date range")
+
+    # ✅ MAKE OPTIONAL (so API doesn't 422 when user didn't give it)
+    intended_stay_days: Optional[int] = Field(
+        None, description="Intended stay duration in days"
+    )
+    travel_window: Optional[TravelWindow] = Field(
+        None, description="Travel date range"
+    )
+
     purpose: str = Field(..., description="Purpose of travel (tourism, business, etc.)")
     passport_type: str = Field(..., description="Type of passport (ordinary, diplomatic, etc.)")
-    entry_type: str | None = Field(None, description="Entry type (single, multiple, etc.)")
-    prior_visa_or_eta: str | None = Field(None, description="Prior visa or ETA status")
+
+    entry_type: Optional[str] = Field(None, description="Entry type (single, multiple, etc.)")
+    prior_visa_or_eta: Optional[str] = Field(None, description="Prior visa or ETA status")
+
     ask_type: str = Field(..., description="Type of query (eligibility, requirements, etc.)")
     extra: Dict[str, Any] = Field(default_factory=dict, description="Extra metadata")
 

@@ -22,7 +22,7 @@ from ..api.schemas import (
 )
 
 from .intent_parser.agent import IntentParserAgent
-from .task_graph_builder import TaskGraphBuilder
+
 
 # ---- mappers + contracts ----
 from .mappers.weather_mapper import map_weather_request
@@ -63,10 +63,71 @@ from ..profile.profile_client import ProfileClient
 from .memory.preference_merge import merge_preferences
 from .memory.profile_event_store import ProfileEventStore, ProfileEvent
 from ..profile_agent_phase2.compute import maybe_auto_compute
+from typing import Any, Dict, List, Tuple, Callable, Awaitable
+
+import anyio
+
+from .task_executor import TaskExecutor, ExecTask
+from .task_graph_builder import TaskGraphBuilder
+
+def normalize_executor_output(out: Any) -> tuple[dict, list]:
+    """
+    Normalize TaskExecutor.run() output into:
+      (dag_results_dict, exec_results_list)
+    """
+
+    # Case: already dict
+    if isinstance(out, dict):
+        return out, []
+
+    # Case: ((dict, list), anything)
+    if isinstance(out, tuple) and len(out) == 2:
+        a, b = out
+
+        if isinstance(a, tuple) and len(a) == 2 and isinstance(a[0], dict):
+            dag, execs = a
+            return dag, execs if isinstance(execs, list) else []
+
+        if isinstance(b, tuple) and len(b) == 2 and isinstance(b[0], dict):
+            dag, execs = b
+            return dag, execs if isinstance(execs, list) else []
+
+        if isinstance(a, dict):
+            return a, b if isinstance(b, list) else []
+
+    return {}, []
 
 
+def build_exec_tasks(builder: TaskGraphBuilder, parsed_intent) -> List[ExecTask]:
+    """
+    Convert TaskNodes (internal DAG) -> ExecTask (executor input).
+    """
+    nodes = builder.get_nodes()  # Dict[str, TaskNode]
+    tasks: List[ExecTask] = []
+    for t in nodes.values():
+        tasks.append(
+            ExecTask(
+                id=t.id,
+                type=t.type,
+                assigned_agent=t.assigned_agent,
+                depends_on=list(t.depends_on or []),
+            )
+        )
+    return tasks
 
 
+async def run_task_graph(
+    *,
+    exec_tasks: List[ExecTask],
+    handlers: Dict[str, Callable[[], Awaitable[Any]]],
+) -> Tuple[Dict[str, Any], Any]:
+    """
+    Execute the DAG and return:
+      - results: Dict[task_id -> handler_output]
+      - task_results: List[ExecResult]
+    """
+    executor = TaskExecutor(handlers=handlers)
+    return await executor.run(exec_tasks)
 
 
 VISA_STUB_JSON = Path(__file__).resolve().parent / "visa_policy" / "visa.json"
@@ -81,8 +142,9 @@ RECOMMENDER_BASE_URL = os.getenv(
 # ✅ NEW: Visa/KG base URL (your friend’s KG interface layer service)
 VISA_KG_BASE_URL = os.getenv(
     "VISA_KG_SERVICE_URL",
-    "http://visa_kg_service:8006",
+    "http://kg_service:8000",
 ).rstrip("/")
+
 
 # ✅ toggle for stub vs real visa service
 USE_VISA_STUB = os.getenv("USE_VISA_STUB", "0") == "1"
@@ -170,7 +232,7 @@ class OrchestratorService:
             ),
             # ✅ VisaPolicy handler (calls KG interface layer)
             "info_visa_policy": IntentHandler(
-                endpoint="/visa/policy",
+                endpoint="/graphrag/visa-policy",
                 mapper=map_visa_policy_request,
                 response_model=VisaPolicyResponse,
                 timeout=20,
@@ -560,6 +622,8 @@ class OrchestratorService:
             if capability == "info_visa_policy" and USE_VISA_STUB:
                 raw = json.loads(VISA_STUB_JSON.read_text(encoding="utf-8"))
             else:
+                print(f"[orchestrator] calling agent={agent.agent_id} url={agent.base_url}{endpoint}")
+
                 raw = self.a2a.invoke(
                     base_url=agent.base_url,
                     endpoint=endpoint,
@@ -580,6 +644,7 @@ class OrchestratorService:
             return raw
 
         except Exception as e:
+            print(f"[orchestrator] ERROR calling {agent.agent_id} {agent.base_url}{endpoint}: {e}")
             finished_at = datetime.utcnow()
             self.trace_store.update(
                 session_id=session_id,
@@ -597,9 +662,9 @@ class OrchestratorService:
         intent_name: str,
         parsed_intent: ParsedIntent,
         req: OrchestrateRequest,
-        results: Dict[str, Any],
         db_prefs: Dict[str, Any],
-    ) -> None:
+    ) -> Any:
+
 
         handler = self.handlers.get(intent_name)
         if not handler:
@@ -678,7 +743,7 @@ class OrchestratorService:
         print(pref_source if pref_source else "None")
         print("==================================================\n")
 
-        payload = contract_obj.model_dump(exclude_none=True)
+        payload = contract_obj.model_dump(mode="json", exclude_none=True)
         payload["preference_sources"] = pref_source  # ✅ add this
         if req.user_id and intent_name in {"plan_itinerary", "modify_itinerary", "recommend_pois"}:
             recall = self._semantic_recall_for_request(
@@ -739,9 +804,7 @@ class OrchestratorService:
             print(raw)
             parsed_obj = raw
 
-        # 8) Store into OrchestrateResponse result bucket
-        if handler.result_field and handler.result_field in results:
-            results[handler.result_field] = parsed_obj
+        return parsed_obj
 
 
     # ---------------------------
@@ -838,24 +901,118 @@ class OrchestratorService:
             "visa_result": None,
         }
 
-        intents_to_run: List[str] = []
-        seen = set()
+                # ---------------------------
+        # NEW: Execute task graph (DAG)
+      
+        # ---------------------------
+        # ---------------------------
+        # ---------------------------
+        # Execute task graph (DAG)
+        # ---------------------------
 
-        def _add(i: str):
-            if i and i not in seen:
-                intents_to_run.append(i)
-                seen.add(i)
+        # 1) Build ExecTasks from your graph builder
+        exec_tasks: List[ExecTask] = build_exec_tasks(self.task_graph_builder, parsed_intent)
 
-        _add(parsed_intent.intent)
-        for s in (parsed_intent.secondary_intents or []):
-            _add(s)
+        # 2) Build handlers for each task id
+        handlers: Dict[str, HandlerFn] = {}
 
-        print(f"[orchestrator] intents_to_run={intents_to_run}")
+        for t in exec_tasks:
+            ttype = (t.type or "").strip()
 
-        # 2) Execute each intent sequentially
-        for intent_name in intents_to_run:
-            self._execute_intent(intent_name, parsed_intent, req, results, db_prefs)
-                # ✅ Phase 3 trigger (semantic profile engine)
+            if ttype in {"parse_intent", "extract_entities", "format_response"}:
+                async def _noop(task, ctx, results):
+                    return {"ok": True}
+                handlers[ttype] = _noop
+                continue
+
+            if ttype in self.handlers:
+                def make_handler(intent_name: str):
+                    async def _run(task, ctx, results):
+                        return await anyio.to_thread.run_sync(
+                            self._execute_intent,
+                            intent_name,
+                            parsed_intent,
+                            req,
+                            db_prefs,
+                        )
+                    return _run
+
+                handlers[ttype] = make_handler(ttype)
+                continue
+
+            async def _unknown(task, ctx, results, tt=ttype):
+                return {"ok": False, "error": f"Unknown task type: {tt}"}
+
+            handlers[ttype] = _unknown
+
+
+        
+
+        
+
+
+
+
+
+        # 3) Run the graph (IMPORTANT: anyio.run takes only a coroutine function)
+        async def _runner():
+            return await run_task_graph(exec_tasks=exec_tasks, handlers=handlers)
+
+        dag_results, exec_results, ctx = anyio.run(_runner)
+
+        # 🔥 Map DAG outputs into response fields
+        for task in exec_tasks:
+            out = dag_results.get(task.id)
+            if not out:
+                continue
+
+            ttype = task.type
+
+            if ttype == "info_visa_policy":
+                results["visa_result"] = out
+            elif ttype == "forecast_weather":
+                results["weather_result"] = out
+            elif ttype == "crowd_forecast":
+                results["crowd_result"] = out
+            elif ttype == "forecast_price":
+                results["price_result"] = out
+            elif ttype == "plan_itinerary":
+                results["itinerary_result"] = out
+            elif ttype == "modify_itinerary":
+                results["modify_result"] = out
+
+
+
+        
+
+
+        # 6) OPTIONAL but recommended: update TaskSummary statuses from exec_results
+        #    If your TaskExecutor returns ExecResult objects with fields like id/status.
+        #    Otherwise, mark as completed if output exists.
+        # 🔥 Update task status based on DAG execution
+        task_status_by_id: Dict[str, str] = {}
+        for task in exec_tasks:
+            task_status_by_id[task.id] = "completed" if task.id in dag_results else "pending"
+
+            
+        print("[orchestrator] dag_results keys =", list(dag_results.keys()))
+
+
+        # If exec_results has richer status, use it:
+        for r in (exec_results or []):
+            rid = getattr(r, "id", None)
+            rstatus = getattr(r, "status", None)
+            if rid and rstatus:
+                task_status_by_id[rid] = rstatus
+
+        # Update your TaskSummary list
+        updated_tasks: List[TaskSummary] = []
+        for ts in tasks:
+            new_status = task_status_by_id.get(ts.id, ts.status)
+            updated_tasks.append(ts.model_copy(update={"status": new_status}))
+
+        tasks = updated_tasks
+
         if user_id:
             try:
                 self.maybe_run_phase3(user_id=user_id, session_id=session_id)

@@ -15,13 +15,13 @@ from models.graphrag import (
     RAGQueryResponse,
     EnsureIndexResponse,
     GraphRAGStatistics,
-    VisaPolicyQueryRequest,
     VisaPolicyResponse,
     VisaRule,
     EvidenceSource,
     RuleConditions,
     TravelWindow
 )
+from models.graphrag import VisaPolicyQueryRequest
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +227,10 @@ async def query_visa_policy(
     request: VisaPolicyQueryRequest,
     service: GraphRAGService = Depends(get_graphrag_service)
 ):
+    logger.warning("🔥 ORCHESTRATOR HIT /graphrag/visa-policy")
+    logger.warning("payload=%s", request.model_dump())
+
+
     """
     Query visa policy information without LLM generation.
     
@@ -273,7 +277,9 @@ async def query_visa_policy(
         query_parts.append(f"Destination: {request.destination_country}")
         query_parts.append(f"Purpose: {request.purpose}")
         query_parts.append(f"Passport type: {request.passport_type}")
-        query_parts.append(f"Stay duration: {request.intended_stay_days} days")
+        if request.intended_stay_days is not None:
+            query_parts.append(f"Stay duration: {request.intended_stay_days} days")
+
         
         if request.entry_type:
             query_parts.append(f"Entry type: {request.entry_type}")
@@ -329,12 +335,11 @@ async def query_visa_policy(
         
     except Exception as e:
         logger.error(f"Visa policy query failed: {e}", exc_info=True)
-        return VisaPolicyResponse(
-            status="error",
-            summary=f"Unable to retrieve visa policy at this time: {str(e)}",
-            rules=[],
-            warnings=[]
+        raise HTTPException(
+            status_code=500,
+            detail=f"Visa policy query failed: {str(e)}"
         )
+
 
 
 def _extract_visa_rules_from_chunks(
@@ -469,20 +474,26 @@ def _generate_warnings(
     request: VisaPolicyQueryRequest
 ) -> list[str]:
     """Generate warnings based on chunks and request."""
-    warnings = []
-    
-    # Check if stay exceeds common limits
-    if request.intended_stay_days > 90:
-        warnings.append("Your intended stay exceeds 90 days. Extended stay visas may require additional documentation.")
-    
+    warnings: list[str] = []
+
+    # ✅ Safe compare (intended_stay_days is Optional[int])
+    days = request.intended_stay_days
+    if days is not None and days > 90:
+        warnings.append(
+            "Your intended stay exceeds 90 days. Extended-stay visas may require additional documentation."
+        )
+
     # Check for text mentioning restrictions or special conditions
     for chunk in chunks[:3]:
-        text = chunk.get("text", "").lower()
+        text = (chunk.get("text") or "").lower()
         if any(term in text for term in ["restriction", "not eligible", "prohibited", "denied"]):
             warnings.append("Special restrictions may apply. Please verify eligibility with official sources.")
             break
-    
+
     # Always add general warning
-    warnings.append("This information is for reference only. Please verify with official immigration authorities before travel.")
-    
+    warnings.append(
+        "This information is for reference only. Please verify with official immigration authorities before travel."
+    )
+
     return warnings
+
