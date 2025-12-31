@@ -226,8 +226,10 @@ def predict_district_crowd(district: str, dt: DateLike) -> Dict[str, Any]:
 
     # Sustainability-friendly continuous metrics
     risk_metrics = _compute_crowd_risk(adjusted_pressure, th)
-    # ✅ actual sustainability risk should come from level
-    crowd_risk_0_1 = crowd_level_to_risk_0_1(level)
+
+    # ✅ force crowd_risk_0_1 to be derived from ratio
+    crowd_risk = risk_metrics["crowd_risk_0_1"]
+    pressure_vs_p90 = risk_metrics["pressure_vs_p90"]
 
     return {
         "status": "ok",
@@ -242,8 +244,10 @@ def predict_district_crowd(district: str, dt: DateLike) -> Dict[str, Any]:
         "crowd_level": level,
 
         # ✅ new, defensible metrics for Sustainability Index
-        "pressure_vs_p90": risk_metrics["pressure_vs_p90"],
-        "crowd_risk_0_1": crowd_risk_0_1,
+        "pressure_vs_p90": pressure_vs_p90,
+
+        # ✅ FIX: this variable must exist
+        "crowd_risk_0_1": crowd_risk,
 
         "thresholds_used": "district" if district in district_thresholds else "global",
         "thresholds": th,

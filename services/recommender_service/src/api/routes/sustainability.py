@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 import json
 from pathlib import Path
 
@@ -14,12 +14,12 @@ from services.recommender_service.src.sustainability.district_crowd.predict impo
 # ✅ Use the SAME weather logic you already use in your weather route
 from src.weather.logic import forecast_weather_logic
 
-# ✅ Your scorer file (you already have this in your code snippet)
-
-from services.recommender_service.src.sustainability.district_crowd.sustainability_score import compute_sustainability_score
+# ✅ Your scorer file
+from services.recommender_service.src.sustainability.district_crowd.sustainability_score import (
+    compute_sustainability_score,
+)
 from services.recommender_service.src.sustainability.risk_maps import rain_risk_to_0_1
 from services.recommender_service.src.sustainability.district_city_map import district_to_city
-from src.weather.logic import forecast_weather_logic
 
 router = APIRouter(prefix="/sustainability", tags=["Sustainability"])
 
@@ -50,6 +50,7 @@ class AttractionScoreRequest(BaseModel):
     country: Optional[str] = Field(default="Sri Lanka", example="Sri Lanka")
     eco_preference: float = Field(default=0.5, ge=0.0, le=1.0, example=0.7)
 
+
 class RankAttractionsRequest(BaseModel):
     date: str
     country: str = "Sri Lanka"
@@ -61,24 +62,47 @@ class RankAttractionsRequest(BaseModel):
 def _rain_risk_str_to_0_1(risk: Optional[str]) -> float:
     """
     Convert your weather risk labels -> numeric risk (0..1).
-    Keep it simple + defensible.
     """
-    r = (risk or "").strip().lower()
-    if r == "low":
-        return 0.2
-    if r == "medium":
+    try:
+        v = rain_risk_to_0_1(risk)
+        return max(0.0, min(1.0, float(v)))
+    except Exception:
+        r = (risk or "").strip().lower()
+        if r == "low":
+            return 0.2
+        if r == "medium":
+            return 0.5
+        if r == "high":
+            return 0.8
         return 0.5
-    if r == "high":
-        return 0.8
-    return 0.5  # unknown -> neutral
+
+
+def _resolve_weather_city(
+    *,
+    district: Optional[str],
+    explicit_city: Optional[str],
+) -> str:
+    """
+    - If explicit city -> use it
+    - Else district -> mapped city
+    - Else Colombo
+    """
+    if explicit_city and str(explicit_city).strip():
+        return str(explicit_city).strip()
+
+    d = (district or "").strip()
+    if d:
+        try:
+            mapped = district_to_city(d)
+            if mapped and str(mapped).strip():
+                return str(mapped).strip()
+        except Exception:
+            pass
+
+    return "Colombo"
 
 
 def _get_rain_risk_for_date(city: str, country: str, date_str: str) -> Dict[str, Any]:
-    """
-    Calls your existing forecast_weather_logic and extracts a rain risk.
-    For far future dates, your logic returns MONTHLY points.
-    We’ll prefer monthly[0].rain_risk if present, else fallback safe.
-    """
     payload = {
         "city": city,
         "country": country,
@@ -88,7 +112,6 @@ def _get_rain_risk_for_date(city: str, country: str, date_str: str) -> Dict[str,
     }
     fc = forecast_weather_logic(payload)
 
-    # Prefer MONTHLY for long-range
     monthly = fc.get("monthly") or []
     if isinstance(monthly, list) and monthly:
         rain_risk = monthly[0].get("rain_risk")
@@ -97,9 +120,9 @@ def _get_rain_risk_for_date(city: str, country: str, date_str: str) -> Dict[str,
             "rain_risk": rain_risk,
             "rain_risk_0_1": _rain_risk_str_to_0_1(rain_risk),
             "weather_point": monthly[0],
+            "debug": {"city_used": city, "country_used": country, "mode": "monthly"},
         }
 
-    # Else DAILY
     daily = fc.get("daily") or []
     if isinstance(daily, list) and daily:
         rain_risk = daily[0].get("rain_risk")
@@ -108,15 +131,16 @@ def _get_rain_risk_for_date(city: str, country: str, date_str: str) -> Dict[str,
             "rain_risk": rain_risk,
             "rain_risk_0_1": _rain_risk_str_to_0_1(rain_risk),
             "weather_point": daily[0],
+            "debug": {"city_used": city, "country_used": country, "mode": "daily"},
         }
 
-    # fallback
     return {
         "weather_source": fc.get("source"),
         "rain_risk": None,
         "rain_risk_0_1": 0.5,
         "weather_point": None,
         "warning": "No daily/monthly points returned; defaulted rain risk to 0.5",
+        "debug": {"city_used": city, "country_used": country, "mode": "none"},
     }
 
 
@@ -167,7 +191,7 @@ def attraction_crowd_post(payload: AttractionCrowdRequest) -> Dict[str, Any]:
 
 
 # =========================
-# ✅ NEW: District Sustainability Score
+# ✅ District Sustainability Score
 # =========================
 @router.get("/district-score")
 def district_score_get(
@@ -180,8 +204,8 @@ def district_score_get(
     try:
         crowd = predict_district_crowd(district, date)
 
-        # Use city if provided, else district
-        city_final = (city or district).strip()
+        district_final = str(crowd.get("district") or district).strip()
+        city_final = _resolve_weather_city(district=district_final, explicit_city=city)
 
         weather = _get_rain_risk_for_date(city_final, country, date)
 
@@ -194,9 +218,14 @@ def district_score_get(
             eco_preference=eco_preference,
         )
 
+        score.setdefault("inputs", {})
+        if isinstance(score.get("inputs"), dict):
+            score["inputs"]["district"] = district_final
+            score["inputs"]["city_used_for_weather"] = city_final
+
         return {
             "status": "ok",
-            "district": crowd.get("district", district),
+            "district": district_final,
             "date": date,
             "month_start": crowd.get("month_start"),
             "eco_preference": eco_preference,
@@ -215,7 +244,9 @@ def district_score_post(payload: DistrictScoreRequest) -> Dict[str, Any]:
     try:
         crowd = predict_district_crowd(payload.district, payload.date)
 
-        city_final = (payload.city or payload.district).strip()
+        district_final = str(crowd.get("district") or payload.district).strip()
+        city_final = _resolve_weather_city(district=district_final, explicit_city=payload.city)
+
         weather = _get_rain_risk_for_date(city_final, payload.country or "Sri Lanka", payload.date)
 
         crowd_risk = float(crowd.get("crowd_risk_0_1", 0.5))
@@ -227,9 +258,14 @@ def district_score_post(payload: DistrictScoreRequest) -> Dict[str, Any]:
             eco_preference=payload.eco_preference,
         )
 
+        score.setdefault("inputs", {})
+        if isinstance(score.get("inputs"), dict):
+            score["inputs"]["district"] = district_final
+            score["inputs"]["city_used_for_weather"] = city_final
+
         return {
             "status": "ok",
-            "district": crowd.get("district", payload.district),
+            "district": district_final,
             "date": payload.date,
             "month_start": crowd.get("month_start"),
             "eco_preference": payload.eco_preference,
@@ -244,7 +280,7 @@ def district_score_post(payload: DistrictScoreRequest) -> Dict[str, Any]:
 
 
 # =========================
-# ✅ NEW: Attraction Sustainability Score
+# ✅ Attraction Sustainability Score
 # =========================
 @router.get("/attraction-score")
 def attraction_score_get(
@@ -257,9 +293,8 @@ def attraction_score_get(
     try:
         crowd = predict_attraction_crowd(attraction_id, date)
 
-        # If caller didn’t pass city, try district from crowd output
-        district_from_crowd = crowd.get("district") or ""
-        city_final = (city or district_from_crowd or "Colombo").strip()
+        district_from_crowd = str(crowd.get("district") or "").strip()
+        city_final = _resolve_weather_city(district=district_from_crowd, explicit_city=city)
 
         weather = _get_rain_risk_for_date(city_final, country, date)
 
@@ -271,6 +306,11 @@ def attraction_score_get(
             rain_risk_0_1=rain_risk_0_1,
             eco_preference=eco_preference,
         )
+
+        score.setdefault("inputs", {})
+        if isinstance(score.get("inputs"), dict):
+            score["inputs"]["district"] = district_from_crowd or None
+            score["inputs"]["city_used_for_weather"] = city_final
 
         return {
             "status": "ok",
@@ -295,8 +335,8 @@ def attraction_score_post(payload: AttractionScoreRequest) -> Dict[str, Any]:
     try:
         crowd = predict_attraction_crowd(payload.attraction_id, payload.date)
 
-        district_from_crowd = crowd.get("district") or ""
-        city_final = (payload.city or district_from_crowd or "Colombo").strip()
+        district_from_crowd = str(crowd.get("district") or "").strip()
+        city_final = _resolve_weather_city(district=district_from_crowd, explicit_city=payload.city)
 
         weather = _get_rain_risk_for_date(city_final, payload.country or "Sri Lanka", payload.date)
 
@@ -308,6 +348,11 @@ def attraction_score_post(payload: AttractionScoreRequest) -> Dict[str, Any]:
             rain_risk_0_1=rain_risk_0_1,
             eco_preference=payload.eco_preference,
         )
+
+        score.setdefault("inputs", {})
+        if isinstance(score.get("inputs"), dict):
+            score["inputs"]["district"] = district_from_crowd or None
+            score["inputs"]["city_used_for_weather"] = city_final
 
         return {
             "status": "ok",
@@ -326,79 +371,141 @@ def attraction_score_post(payload: AttractionScoreRequest) -> Dict[str, Any]:
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# =========================
+# ✅ NEW: Rank Attractions
+# =========================
+
+def _find_repo_root() -> Path:
+    """
+    Same pattern you used elsewhere: walk up until repo root found.
+    """
+    p = Path(__file__).resolve()
+    for parent in [p] + list(p.parents):
+        if (parent / "data").exists() and (parent / "services").exists():
+            return parent
+    return p.parents[5]
+
+
+def _iter_attractions(obj: Any):
+    # supports {"attractions":[...]} or [...], or nested dicts
+    if isinstance(obj, dict) and "attractions" in obj and isinstance(obj["attractions"], list):
+        for x in obj["attractions"]:
+            if isinstance(x, dict):
+                yield x
+        return
+    if isinstance(obj, list):
+        for x in obj:
+            if isinstance(x, dict):
+                yield x
+        return
+    if isinstance(obj, dict):
+        for v in obj.values():
+            if isinstance(v, dict):
+                yield v
+
+
+def _load_attractions_list() -> List[Dict[str, Any]]:
+    repo_root = _find_repo_root()
+    root_data = repo_root / "data" / "recommender_service"
+    attractions_json = root_data / "clean/kg/attractions_clean.json"
+    if not attractions_json.exists():
+        raise FileNotFoundError(f"[FATAL] attractions_clean.json not found at {attractions_json.resolve()}")
+    obj = json.loads(attractions_json.read_text(encoding="utf-8"))
+    out: List[Dict[str, Any]] = []
+    for r in _iter_attractions(obj):
+        # normalize id field
+        aid = r.get("attraction_id") or r.get("poi_id") or r.get("id")
+        if aid:
+            rr = dict(r)
+            rr["attraction_id"] = str(aid)
+            out.append(rr)
+    return out
+
+
 @router.post("/rank-attractions")
 def rank_attractions(payload: RankAttractionsRequest) -> Dict[str, Any]:
+    """
+    Rank attractions by sustainability score for a given date.
+    """
     try:
-        # reuse same attractions file used in predict.py
-        from services.recommender_service.src.sustainability.district_crowd.predict import ATTRACTIONS_JSON
+        all_atts = _load_attractions_list()
 
-        obj = json.loads(Path(ATTRACTIONS_JSON).read_text(encoding="utf-8"))
+        # optional district filter
+        if payload.district and str(payload.district).strip():
+            d_filter = str(payload.district).strip().lower()
+            all_atts = [
+                a for a in all_atts
+                if str(a.get("district") or "").strip().lower() == d_filter
+            ]
 
-        # normalize list
-        attractions = obj.get("attractions", obj) if isinstance(obj, dict) else obj
-        if not isinstance(attractions, list):
-            raise ValueError("Invalid attractions_clean.json format")
+        # avoid silly values
+        limit = int(payload.limit or 10)
+        if limit <= 0:
+            limit = 10
+        if limit > 200:
+            limit = 200  # safety cap
 
-        out = []
-        for a in attractions:
-            if not isinstance(a, dict):
+        results: List[Dict[str, Any]] = []
+
+        for a in all_atts:
+            attraction_id = str(a.get("attraction_id") or "").strip()
+            if not attraction_id:
                 continue
 
-            district = a.get("district")
-            if payload.district and (district or "").strip().lower() != payload.district.strip().lower():
+            crowd = predict_attraction_crowd(attraction_id, payload.date)
+            if crowd.get("status") != "ok":
                 continue
 
-            aid = a.get("attraction_id") or a.get("poi_id") or a.get("id")
-            if not aid:
-                continue
+            district_from_crowd = str(crowd.get("district") or a.get("district") or "").strip()
+            city_final = _resolve_weather_city(district=district_from_crowd, explicit_city=None)
 
-            crowd = predict_attraction_crowd(str(aid), payload.date)
+            weather = _get_rain_risk_for_date(city_final, payload.country or "Sri Lanka", payload.date)
 
-            # weather city based on district
-            city = district_to_city(crowd.get("district", district or ""))
-            weather = forecast_weather_logic({
-                "city": city,
-                "country": payload.country,
-                "start_date": payload.date,
-                "end_date": payload.date,
-                "time_of_day": None,
-            })
-
-            rain_risk = None
-            if weather.get("daily"):
-                rain_risk = (weather["daily"][0] or {}).get("rain_risk")
-            elif weather.get("monthly"):
-                rain_risk = (weather["monthly"][0] or {}).get("rain_risk")
-
-            rain_risk_0_1 = rain_risk_to_0_1(rain_risk)
+            crowd_risk = float(crowd.get("crowd_risk_0_1", 0.5))
+            rain_risk_0_1 = float(weather.get("rain_risk_0_1", 0.5))
 
             score = compute_sustainability_score(
-                crowd_risk_0_1=float(crowd.get("crowd_risk_0_1", 0.5)),
-                rain_risk_0_1=float(rain_risk_0_1),
-                eco_preference=float(payload.eco_preference),
+                crowd_risk_0_1=crowd_risk,
+                rain_risk_0_1=rain_risk_0_1,
+                eco_preference=float(payload.eco_preference or 0.5),
             )
 
-            out.append({
-                "attraction_id": str(aid),
-                "title": a.get("title") or a.get("name") or str(aid),
-                "district": crowd.get("district", district),
-                "crowd_level": crowd.get("crowd_level"),
-                "crowd_risk_0_1": crowd.get("crowd_risk_0_1"),
-                "rain_risk": rain_risk,
-                "rain_risk_0_1": rain_risk_0_1,
+            results.append({
+                "attraction_id": attraction_id,
+                "title": crowd.get("attraction_title") or a.get("title") or a.get("name"),
+                "district": district_from_crowd or None,
+                "city_used_for_weather": city_final,
+                "date": payload.date,
+                "month_start": crowd.get("month_start"),
                 "sustainability": score,
+                "crowd": {
+                    "crowd_level": crowd.get("crowd_level"),
+                    "crowd_risk_0_1": crowd_risk,
+                    "pressure_vs_p90": crowd.get("pressure_vs_p90"),
+                    "total_district_pressure": crowd.get("total_district_pressure"),
+                },
+                "weather": {
+                    "rain_risk": weather.get("rain_risk"),
+                    "rain_risk_0_1": rain_risk_0_1,
+                    "weather_source": weather.get("weather_source"),
+                },
             })
 
-        # sort best first
-        out.sort(key=lambda x: float(x["sustainability"]["score_0_1"]), reverse=True)
+        # sort best score first
+        results.sort(key=lambda x: float((x.get("sustainability") or {}).get("score_0_1", 0.0)), reverse=True)
 
         return {
             "status": "ok",
             "date": payload.date,
-            "eco_preference": float(payload.eco_preference),
-            "count": len(out),
-            "top": out[: max(1, int(payload.limit))],
+            "country": payload.country,
+            "eco_preference": payload.eco_preference,
+            "filter_district": payload.district,
+            "returned": min(limit, len(results)),
+            "results": results[:limit],
         }
 
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=500, detail=f"Missing artifact/file: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
