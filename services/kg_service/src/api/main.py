@@ -128,19 +128,15 @@ app.include_router(agent.router)
 app.dependency_overrides[agent.get_reasoning_orchestrator] = api_deps.get_reasoning_orchestrator
 app.dependency_overrides[agent.get_db_manager] = api_deps.get_db_manager
 
-# Import and include enhanced AIL router (after app is created)
-from api import ail_enhanced
-app.include_router(ail_enhanced.router)
-
-# Import and include GraphRAG router
-from api import graphrag
-app.include_router(graphrag.router)
-
 # Import and include Enhanced AIL router
 from api import ail_enhanced
 app.include_router(ail_enhanced.router)
 app.dependency_overrides[ail_enhanced.get_db_manager] = api_deps.get_db_manager
 app.dependency_overrides[ail_enhanced.get_driver] = api_deps.get_driver
+
+# Import and include GraphRAG router
+from api import graphrag
+app.include_router(graphrag.router)
 app.dependency_overrides[graphrag.get_db_manager] = api_deps.get_db_manager
 
 # Import and include Research & AI router (GNN, Hybrid Reasoning)
