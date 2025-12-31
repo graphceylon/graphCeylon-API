@@ -1,0 +1,450 @@
+{
+    "info": {
+        "_postman_id": "gnn-heterogeneous-api-2025",
+        "name": "GraphCeylon - Heterogeneous GNN API",
+        "description": "Complete Postman collection for testing Heterogeneous Graph Neural Network (GNN) with 9 entity types.\n\n**Key Features:**\n- Train on 383 nodes across 9 types (Attraction, Policy, District, etc.)\n- Cross-type predictions (81 type pair combinations)\n- Link prediction between entities\n- Hybrid symbolic-neural reasoning\n\n**Demo Flow:**\n1. Check system status\n2. Train GNN model\n3. Verify training status\n4. Test link predictions\n5. Test cross-type predictions\n6. Demonstrate hybrid reasoning\n\n**Base URL:** http://localhost:8000",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "item": [
+        {
+            "name": "1. System & Status",
+            "item": [
+                {
+                    "name": "Get GNN Status (Before Training)",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/research/gnn/status",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "research",
+                                "gnn",
+                                "status"
+                            ]
+                        },
+                        "description": "Check if GNN model is trained and see model details.\n\n**Expected Response (Before Training):**\n```json\n{\n  \"trained\": false,\n  \"embedding_dim\": 64,\n  \"device\": \"cpu\",\n  \"num_embeddings\": 0\n}\n```\n\n**Demo Points:**\n- Shows model is not yet trained\n- Displays configuration (64-dim embeddings, CPU device)\n- Use this to establish baseline before training"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Health Check",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/health",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "health"
+                            ]
+                        },
+                        "description": "Verify API is running and accessible."
+                    },
+                    "response": []
+                }
+            ],
+            "description": "Check system health and initial status"
+        },
+        {
+            "name": "2. GNN Training",
+            "item": [
+                {
+                    "name": "Train Heterogeneous GNN (Quick)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"embedding_dim\": 64,\n  \"epochs\": 100,\n  \"learning_rate\": 0.001,\n  \"node_limit\": 5000\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/research/gnn/train",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "research",
+                                "gnn",
+                                "train"
+                            ]
+                        },
+                        "description": "**Quick training for demo (100 epochs, ~2 seconds)**\n\n**What Happens:**\n1. Extracts 383 nodes across 9 entity types from Neo4j\n2. Builds 759 edges representing relationships\n3. Trains 3-layer Graph Attention Network\n4. Generates 64-dimensional embeddings for each node\n\n**Expected Response:**\n```json\n{\n  \"status\": \"success\",\n  \"training_stats\": {\n    \"final_loss\": 0.89,\n    \"training_time\": 1.8,\n    \"num_nodes\": 383,\n    \"num_edges\": 759,\n    \"node_type_distribution\": {\n      \"Attraction\": 39,\n      \"Policy\": 8,\n      \"Chunk\": 282,\n      \"District\": 25,\n      \"Location\": 9,\n      \"Authority\": 5,\n      \"Domain\": 8,\n      \"Month\": 12,\n      \"Year\": 5\n    }\n  },\n  \"message\": \"Trained heterogeneous GNN on 383 nodes (9 types) with 759 edges\"\n}\n```\n\n**Demo Talking Points:**\n- ✅ Training completes in ~2 seconds\n- ✅ 9.8× more nodes than previous single-type model (39 → 383)\n- ✅ Handles 9 different entity types simultaneously\n- ✅ Enables cross-domain predictions (tourism + policy + temporal)"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Train Heterogeneous GNN (Full)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"embedding_dim\": 64,\n  \"epochs\": 200,\n  \"learning_rate\": 0.001,\n  \"node_limit\": 5000\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/research/gnn/train",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "research",
+                                "gnn",
+                                "train"
+                            ]
+                        },
+                        "description": "**Full training (200 epochs, ~3.6 seconds)**\n\nUse this for production-quality embeddings. Training time is still fast due to efficient GAT architecture with multi-head attention."
+                    },
+                    "response": []
+                }
+            ],
+            "description": "Train the heterogeneous GNN model"
+        },
+        {
+            "name": "3. Verify Training",
+            "item": [
+                {
+                    "name": "Get GNN Status (After Training)",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/research/gnn/status",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "research",
+                                "gnn",
+                                "status"
+                            ]
+                        },
+                        "description": "Verify training success and see node type distribution.\n\n**Expected Response (After Training):**\n```json\n{\n  \"trained\": true,\n  \"embedding_dim\": 64,\n  \"device\": \"cpu\",\n  \"num_embeddings\": 383,\n  \"model_type\": \"Heterogeneous Graph Attention Network (GAT)\",\n  \"layers\": 3,\n  \"node_types_trained\": 9,\n  \"node_type_distribution\": {\n    \"Attraction\": 39,\n    \"Policy\": 8,\n    \"Chunk\": 282,\n    \"District\": 25,\n    \"Location\": 9,\n    \"Authority\": 5,\n    \"Domain\": 8,\n    \"Month\": 12,\n    \"Year\": 5\n  },\n  \"sample_entities\": [\n    {\"name\": \"Sigiriya\", \"labels\": [\"Attraction\"]},\n    {\"name\": \"Galle Fort\", \"labels\": [\"Attraction\"]},\n    {\"name\": \"Kandy\", \"labels\": [\"District\"]}\n  ]\n}\n```\n\n**Demo Points:**\n- ✅ Model now trained (trained: true)\n- ✅ 383 embeddings generated\n- ✅ 9 entity types successfully encoded\n- ✅ Sample entities from knowledge graph"
+                    },
+                    "response": []
+                }
+            ],
+            "description": "Confirm successful training"
+        },
+        {
+            "name": "4. Link Prediction (Same Type)",
+            "item": [
+                {
+                    "name": "Predict Link: Sigiriya ↔ Temple of the Tooth",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"entity1\": \"Sigiriya\",\n  \"entity2\": \"Temple of the Tooth\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/research/gnn/predict-link",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "research",
+                                "gnn",
+                                "predict-link"
+                            ]
+                        },
+                        "description": "Predict if two attractions are related.\n\n**Expected Response:**\n```json\n{\n  \"entity1\": \"Sigiriya\",\n  \"entity2\": \"Temple of the Tooth\",\n  \"confidence\": 0.78,\n  \"exists\": true,\n  \"method\": \"GNN-GAT\"\n}\n```\n\n**Demo Points:**\n- Both are UNESCO World Heritage Sites\n- Both are in Central Province\n- Model learns these implicit connections"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Predict Link: Galle Fort ↔ Unawatuna Beach",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"entity1\": \"Galle Fort\",\n  \"entity2\": \"Unawatuna Beach\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/research/gnn/predict-link",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "research",
+                                "gnn",
+                                "predict-link"
+                            ]
+                        },
+                        "description": "Predict link between nearby attractions in Southern Province.\n\n**Demo Points:**\n- Geographic proximity (5km apart)\n- Often visited together by tourists\n- Model captures spatial relationships"
+                    },
+                    "response": []
+                }
+            ],
+            "description": "Test predictions between entities of the same type"
+        },
+        {
+            "name": "5. Cross-Type Predictions (★ KEY DEMO)",
+            "item": [
+                {
+                    "name": "★ Sigiriya → District (Geographic Inference)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"source_entity\": \"Sigiriya\",\n  \"target_type\": \"District\",\n  \"top_k\": 3\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/research/gnn/predict-cross-type",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "research",
+                                "gnn",
+                                "predict-cross-type"
+                            ]
+                        },
+                        "description": "**🌟 DEMO HIGHLIGHT: Cross-Domain Prediction**\n\nPredict which District(s) Sigiriya is located in using learned embeddings.\n\n**Expected Response:**\n```json\n{\n  \"source_entity\": \"Sigiriya\",\n  \"target_type\": \"District\",\n  \"predictions\": [\n    {\n      \"entity_name\": \"Matale\",\n      \"confidence\": 0.85,\n      \"labels\": [\"District\"],\n      \"properties\": {\"name\": \"Matale\"}\n    },\n    {\n      \"entity_name\": \"Polonnaruwa\",\n      \"confidence\": 0.72,\n      \"labels\": [\"District\"]\n    }\n  ],\n  \"count\": 2,\n  \"method\": \"Heterogeneous GNN Cross-Type Similarity\"\n}\n```\n\n**🎯 Demo Talking Points:**\n- ✅ **Correct Answer:** Sigiriya is in Matale District (top prediction!)\n- ✅ Model learned this WITHOUT explicit location data\n- ✅ Inferred from graph structure and relationships\n- ✅ This is what makes heterogeneous GNN powerful\n- ✅ Enables **implicit knowledge extraction**"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "★ Galle Fort → District",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"source_entity\": \"Galle Fort\",\n  \"target_type\": \"District\",\n  \"top_k\": 3\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/research/gnn/predict-cross-type",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "research",
+                                "gnn",
+                                "predict-cross-type"
+                            ]
+                        },
+                        "description": "Another geographic inference example.\n\n**Expected:** Top prediction should be \"Galle\" District (correct answer)."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Policy → Attraction (Policy Applicability)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"source_entity\": \"visa_on_arrival\",\n  \"target_type\": \"Attraction\",\n  \"top_k\": 5\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/research/gnn/predict-cross-type",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "research",
+                                "gnn",
+                                "predict-cross-type"
+                            ]
+                        },
+                        "description": "**Cross-domain: Policy → Tourism**\n\nFind which attractions are most relevant to visa policies.\n\n**Use Case:**\n- Recommend attractions based on visitor's visa type\n- Understand policy impact on tourism destinations\n\n**Demo Points:**\n- Connects government policy domain with tourism domain\n- Enables policy-aware travel recommendations"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Chunk → Attraction (Content Relevance)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"source_entity\": \"chunk_001\",\n  \"target_type\": \"Attraction\",\n  \"top_k\": 5\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/research/gnn/predict-cross-type",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "research",
+                                "gnn",
+                                "predict-cross-type"
+                            ]
+                        },
+                        "description": "**Cross-domain: Text Content → Tourism**\n\nFind which attractions are most relevant to text chunks (from RAG system).\n\n**Use Case:**\n- Link content to attractions for semantic search\n- Generate content-aware recommendations\n\n**Demo Points:**\n- Integrates RAG (Retrieval Augmented Generation) with GNN\n- Enables content-based attraction discovery"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Attraction → Month (Temporal Patterns)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"source_entity\": \"Yala National Park\",\n  \"target_type\": \"Month\",\n  \"top_k\": 5\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/research/gnn/predict-cross-type",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "research",
+                                "gnn",
+                                "predict-cross-type"
+                            ]
+                        },
+                        "description": "**Cross-domain: Tourism → Temporal**\n\nFind best months to visit an attraction based on learned patterns.\n\n**Use Case:**\n- Seasonal recommendations\n- Weather-based planning\n- Peak/off-peak analysis\n\n**Demo Points:**\n- Model learns temporal patterns from data\n- Enables season-aware travel planning"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "District → Attraction (Reverse Lookup)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"source_entity\": \"Kandy\",\n  \"target_type\": \"Attraction\",\n  \"top_k\": 5\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/research/gnn/predict-cross-type",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "research",
+                                "gnn",
+                                "predict-cross-type"
+                            ]
+                        },
+                        "description": "**Reverse inference: District → Attractions**\n\nFind top attractions in Kandy District.\n\n**Expected predictions:**\n- Temple of the Tooth (Kandy)\n- Royal Botanical Gardens (Peradeniya)\n- Kandy Lake\n\n**Demo Points:**\n- Bidirectional inference capability\n- Works in both directions (Attraction→District and District→Attraction)"
+                    },
+                    "response": []
+                }
+            ],
+            "description": "★ MAIN DEMO: Cross-type predictions showcase heterogeneous GNN power"
+        },
+        {
+            "name": "6. Hybrid Reasoning (Advanced)",
+            "item": [
+                {
+                    "name": "Hybrid Itinerary: Colombo → Kandy",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"start_location\": \"Colombo\",\n  \"end_location\": \"Kandy\",\n  \"interests\": [\"history\", \"culture\"],\n  \"min_rating\": 4.0\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/research/hybrid/reason",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "research",
+                                "hybrid",
+                                "reason"
+                            ]
+                        },
+                        "description": "**Advanced: Hybrid Symbolic-Neural Reasoning**\n\nCombines:\n- **Symbolic:** Rule-based reasoning, explicit knowledge\n- **Neural:** GNN embeddings, learned patterns\n\n**Expected Response:**\n```json\n{\n  \"itinerary\": [\n    {\"attraction\": \"Temple of the Tooth\", \"confidence\": 0.92},\n    {\"attraction\": \"Royal Botanical Gardens\", \"confidence\": 0.87}\n  ],\n  \"start\": \"Colombo\",\n  \"end\": \"Kandy\",\n  \"overall_confidence\": 0.89,\n  \"symbolic_confidence\": 0.85,\n  \"neural_confidence\": 0.93,\n  \"explanation\": {\n    \"symbolic_reasoning\": \"Rule-based filtering\",\n    \"neural_reasoning\": \"GNN similarity scores\"\n  }\n}\n```\n\n**Demo Points:**\n- ✅ Best of both worlds: rules + learning\n- ✅ Interpretable (symbolic) + powerful (neural)\n- ✅ 60% symbolic weight + 40% neural weight"
+                    },
+                    "response": []
+                }
+            ],
+            "description": "Advanced hybrid reasoning combining symbolic and neural approaches"
+        }
+    ],
+    "event": [
+        {
+            "listen": "prerequest",
+            "script": {
+                "type": "text/javascript",
+                "exec": [
+                    ""
+                ]
+            }
+        },
+        {
+            "listen": "test",
+            "script": {
+                "type": "text/javascript",
+                "exec": [
+                    ""
+                ]
+            }
+        }
+    ],
+    "variable": [
+        {
+            "key": "base_url",
+            "value": "http://localhost:8000",
+            "type": "string"
+        }
+    ]
+}
