@@ -15,7 +15,7 @@ from neo4j import Driver
 import numpy as np
 
 from .gnn_embeddings import GNNEmbeddingService
-from models.temporal import TemporalMetadata, ProvenanceMetadata
+from models.graph.temporal import TemporalMetadata, ProvenanceMetadata
 
 logger = logging.getLogger(__name__)
 

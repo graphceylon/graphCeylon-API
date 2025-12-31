@@ -20,7 +20,7 @@ from models.schemas import (
     ConstraintReasonRequest, ConstraintReasonResponse, WriteRequest, WriteResponse
 )
 from api import dependencies as api_deps
-from api import attractions
+from api.routers import attractions
 
 # Configure logging
 logging.basicConfig(
@@ -98,52 +98,56 @@ app.include_router(attractions.router)
 app.dependency_overrides[attractions.get_db_manager] = api_deps.get_db_manager
 
 # Import and include domain router
-from api import domains
+from api.routers import domains
 app.include_router(domains.router)
 app.dependency_overrides[domains.get_db_manager] = api_deps.get_db_manager
 
 # Import and include holidays router
-from api import holidays
+from api.routers import holidays
 app.include_router(holidays.router)
 app.dependency_overrides[holidays.get_db_manager] = api_deps.get_db_manager
 
 # Import and include projects router
-from api import projects
+from api.routers import projects
 app.include_router(projects.router)
 app.dependency_overrides[projects.get_db_manager] = api_deps.get_db_manager
 
 # Import and include news router
-from api import news
+from api.routers import news
 app.include_router(news.router)
 app.dependency_overrides[news.get_db_manager] = api_deps.get_db_manager
 
 # Import and include semantic web router
-from api import semantic
+from api.routers import semantic
 app.include_router(semantic.router)
 app.dependency_overrides[semantic.get_db_manager] = api_deps.get_db_manager
 
 # Import and include agent router
-from api import agent
+from api.routers import agent
 app.include_router(agent.router)
 app.dependency_overrides[agent.get_reasoning_orchestrator] = api_deps.get_reasoning_orchestrator
 app.dependency_overrides[agent.get_db_manager] = api_deps.get_db_manager
 
 # Import and include Enhanced AIL router
-from api import ail_enhanced
+from api.routers import ail_enhanced
 app.include_router(ail_enhanced.router)
 app.dependency_overrides[ail_enhanced.get_db_manager] = api_deps.get_db_manager
 app.dependency_overrides[ail_enhanced.get_driver] = api_deps.get_driver
 
 # Import and include GraphRAG router
-from api import graphrag
+from api.routers import graphrag
 app.include_router(graphrag.router)
 app.dependency_overrides[graphrag.get_db_manager] = api_deps.get_db_manager
 
 # Import and include Research & AI router (GNN, Hybrid Reasoning)
-from api import research
+from api.routers import research
 app.include_router(research.router)
 app.dependency_overrides[research.get_driver] = api_deps.get_driver
 app.dependency_overrides[research.get_db_manager] = api_deps.get_db_manager
+
+# Import and include Hotels router
+from api.routers import hotels
+app.include_router(hotels.router)
 
 # API Endpoints
 
