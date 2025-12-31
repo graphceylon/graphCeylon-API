@@ -1,15 +1,14 @@
 """
 DEPRECATED: This file is maintained for backward compatibility only.
-Please import from the organized model files instead:
-- base_models.py
-- attraction_models.py
-- holiday_models.py
-- project_models.py
-- news_models.py
-- reasoning_models.py
-"""
 
-# Re-export from organized modules for backward compatibility
+This file re-exports models from the organized submodules for backward compatibility.
+
+New code should import directly from:
+- models.base: Core response and base models
+- models.graph: Knowledge graph and temporal models
+- models.domain: Domain-specific models (attractions, holidays, projects, news)
+- models.ai: AI-related models (agent, graphrag)
+"""
 
 # Base models
 from .base import (
@@ -18,8 +17,8 @@ from .base import (
     StatisticsResponse,
 )
 
-# Knowledge Graph models
-from .knowledge_graph import (
+# Knowledge Graph models (from graph submodule)
+from .graph.knowledge_graph import (
     QueryRequest,
     QueryResponse,
     ReasonRequest,
@@ -35,8 +34,8 @@ from .knowledge_graph import (
     ExplainResponse,
 )
 
-# Attraction models
-from .attractions import (
+# Attraction models (from domain submodule)
+from .domain.attraction import (
     CoordinatesModel,
     MapLinksModel,
     AdministrativeAreasModel,
@@ -51,8 +50,8 @@ from .attractions import (
     AttractionResponse,
 )
 
-# Holiday models
-from .holidays import (
+# Holiday models (from domain submodule)
+from .domain.holiday import (
     HolidayModel,
     CreateHolidayRequest,
     HolidayQueryRequest,
@@ -60,16 +59,16 @@ from .holidays import (
     TemporalStructureResponse,
 )
 
-# Project models
-from .projects import (
+# Project models (from domain submodule)
+from .domain.project import (
     TourismProjectModel,
     CreateProjectRequest,
     ProjectQueryRequest,
     ProjectResponse,
 )
 
-# News models
-from .news import (
+# News models (from domain submodule)
+from .domain.news import (
     NewsArticleModel,
     CreateNewsRequest,
     NewsQueryRequest,
