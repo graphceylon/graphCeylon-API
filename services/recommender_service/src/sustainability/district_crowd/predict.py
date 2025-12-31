@@ -12,15 +12,42 @@ import pandas as pd
 from pathlib import Path
 from services.recommender_service.src.forecast.arrivals_sarima import forecast_month_arrivals
 
-ROOT_DATA_ROOT = Path("data/recommender_service")
-SERVICE_DATA_ROOT = Path("services/recommender_service/data/recommender_service")
+from pathlib import Path
 
-ATTRACTIONS_JSON = SERVICE_DATA_ROOT / "clean/kg/attractions_clean.json"
+from pathlib import Path
+
+def _find_repo_root() -> Path:
+    p = Path(__file__).resolve()
+    for parent in [p] + list(p.parents):
+        if (parent / "data").exists() and (parent / "services").exists() and (parent / "configs").exists():
+            return parent
+    return p.parents[5]  # fallback
+
+REPO_ROOT = _find_repo_root()
+ROOT_DATA_ROOT = REPO_ROOT / "data" / "recommender_service"
+
+
+# ✅ attractions must come ONLY from this file
+ATTRACTIONS_JSON = ROOT_DATA_ROOT / "clean/kg/attractions_clean.json"
+if not ATTRACTIONS_JSON.exists():
+    raise FileNotFoundError(f"[FATAL] attractions_clean.json not found at {ATTRACTIONS_JSON.resolve()}")
+
+# ✅ arrivals monthly (used to lookup known months)
 SLTDA_ARRIVALS_MONTHLY = ROOT_DATA_ROOT / "clean/sltda_arrivals_monthly.csv"
+if not SLTDA_ARRIVALS_MONTHLY.exists():
+    raise FileNotFoundError(f"[FATAL] sltda_arrivals_monthly.csv not found at {SLTDA_ARRIVALS_MONTHLY.resolve()}")
 
+# ✅ district crowd artifacts produced by your builders
 BLENDED_SHARE_JSON = ROOT_DATA_ROOT / "clean/sustainability/district_share_blended.json"
-DISTRICT_THRESHOLDS_JSON = ROOT_DATA_ROOT / "clean/sustainability/district_thresholds_2018_2019.json"
-GLOBAL_THRESHOLDS_JSON = ROOT_DATA_ROOT / "clean/sustainability/global_thresholds_2018_2019.json"
+
+# ✅ IMPORTANT: use the *pressure* thresholds you built (domestic multipliers already included)
+DISTRICT_THRESHOLDS_JSON = ROOT_DATA_ROOT / "clean/sustainability/district_thresholds_pressure_2018_2019.json"
+GLOBAL_THRESHOLDS_JSON = ROOT_DATA_ROOT / "clean/sustainability/global_thresholds_pressure_2018_2019.json"
+
+for p in [BLENDED_SHARE_JSON, DISTRICT_THRESHOLDS_JSON, GLOBAL_THRESHOLDS_JSON]:
+    if not p.exists():
+        raise FileNotFoundError(f"[FATAL] required artifact missing: {p.resolve()}")
+
 
 DateLike = Union[str, datetime, date, pd.Timestamp]
 
@@ -34,7 +61,18 @@ def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+# -------------------------
+# Small perf/stability improvement:
+# cache arrivals DF so every request doesn't reload CSV
+# -------------------------
+_ARRIVALS_DF_CACHE: Optional[pd.DataFrame] = None
+
+
 def _load_arrivals_df() -> pd.DataFrame:
+    global _ARRIVALS_DF_CACHE
+    if _ARRIVALS_DF_CACHE is not None:
+        return _ARRIVALS_DF_CACHE
+
     df = pd.read_csv(SLTDA_ARRIVALS_MONTHLY)
     cols = {c.lower(): c for c in df.columns}
     date_col = cols.get("date") or cols.get("ds") or list(df.columns)[0]
@@ -50,7 +88,10 @@ def _load_arrivals_df() -> pd.DataFrame:
     df[date_col] = pd.to_datetime(df[date_col])
     df = df.rename(columns={date_col: "date", arr_col: "arrivals"})
     df["month_start"] = df["date"].dt.to_period("M").dt.to_timestamp()
-    return df[["month_start", "arrivals"]].copy()
+
+    _ARRIVALS_DF_CACHE = df[["month_start", "arrivals"]].copy()
+    return _ARRIVALS_DF_CACHE
+
 
 def _canonicalize_district_name(user_district: str, shares: Dict[str, Any]) -> str:
     """
@@ -64,7 +105,6 @@ def _canonicalize_district_name(user_district: str, shares: Dict[str, Any]) -> s
     return user_district  # fallback as-is
 
 
-
 def get_total_arrivals_for_month(month_start: pd.Timestamp) -> Optional[float]:
     df = _load_arrivals_df()
     row = df[df["month_start"] == month_start]
@@ -75,18 +115,24 @@ def get_total_arrivals_for_month(month_start: pd.Timestamp) -> Optional[float]:
 
 def crowd_level_from_thresholds(value: float, thresholds: Dict[str, float]) -> str:
     """
-    Minimal 4-level crowd mapping using percentiles:
+    Sustainability-friendly crowd mapping using percentiles (pressure-based thresholds):
+
       <= p25 -> Low
       <= p50 -> Moderate
       <= p75 -> High
-      >  p75 -> VeryHigh
+      <= p90 -> VeryHigh
+      >  p90 -> Extreme
 
-    You can tighten to p90 if you want "Extreme".
+    Why this is better:
+    - Avoids "always VeryHigh" behavior when value is just slightly above p75.
+    - Gives a defendable Extreme band for outlier months.
     """
     p25 = thresholds.get("p25")
     p50 = thresholds.get("p50")
     p75 = thresholds.get("p75")
+    p90 = thresholds.get("p90")
 
+    # If thresholds are incomplete, avoid lying
     if p25 is None or p50 is None or p75 is None:
         return "Unknown"
 
@@ -96,8 +142,47 @@ def crowd_level_from_thresholds(value: float, thresholds: Dict[str, float]) -> s
         return "Moderate"
     if value <= p75:
         return "High"
-    return "VeryHigh"
 
+    # If p90 isn't available, keep backward compatibility
+    if p90 is None:
+        return "VeryHigh"
+
+    if value <= p90:
+        return "VeryHigh"
+    return "Extreme"
+
+
+def _compute_crowd_risk(adjusted_pressure: float, thresholds: Dict[str, float]) -> Dict[str, float]:
+    """
+    Continuous metrics for sustainability scoring.
+    - pressure_vs_p90: ratio (e.g., 0.8 means below p90, 1.2 means above p90)
+    - crowd_risk_0_1: clamped 0..1 based on p90 anchor
+
+    Defensibility:
+    - p90 is a robust high-crowd anchor derived from baseline distribution.
+    """
+    p90 = thresholds.get("p90")
+    if not p90 or p90 <= 0:
+        return {"pressure_vs_p90": float("nan"), "crowd_risk_0_1": float("nan")}
+
+    ratio = float(adjusted_pressure) / float(p90)
+    # risk saturates at 1.0 once you reach p90
+    risk = max(0.0, min(1.0, ratio))
+    return {"pressure_vs_p90": float(ratio), "crowd_risk_0_1": float(risk)}
+
+def crowd_level_to_risk_0_1(level: str) -> float:
+    l = (level or "").strip().lower()
+    if l == "low":
+        return 0.2
+    if l == "moderate":
+        return 0.4
+    if l == "high":
+        return 0.6
+    if l == "veryhigh":
+        return 0.8
+    if l == "extreme":
+        return 1.0
+    return 0.5
 
 def predict_district_crowd(district: str, dt: DateLike) -> Dict[str, Any]:
     month_start = to_month_start(dt)
@@ -124,10 +209,25 @@ def predict_district_crowd(district: str, dt: DateLike) -> Dict[str, Any]:
     else:
         arrivals_source = "sltda_csv"
 
-
     expected = float(total_arrivals) * share
+
+    # ---- Domestic pressure adjustment ----
+    DOMESTIC_MULTIPLIERS_JSON = ROOT_DATA_ROOT / "clean/crowd/domestic_multipliers.json"
+    domestic_multipliers = _load_json(DOMESTIC_MULTIPLIERS_JSON)
+
+    month = int(month_start.month)
+    domestic_factor = float(domestic_multipliers.get(str(month), 1.0))
+
+    adjusted_pressure = expected * domestic_factor
+
+    # Use district thresholds if available, else global
     th = district_thresholds.get(district) or global_thresholds
-    level = crowd_level_from_thresholds(expected, th if isinstance(th, dict) else {})
+    level = crowd_level_from_thresholds(adjusted_pressure, th)
+
+    # Sustainability-friendly continuous metrics
+    risk_metrics = _compute_crowd_risk(adjusted_pressure, th)
+    # ✅ actual sustainability risk should come from level
+    crowd_risk_0_1 = crowd_level_to_risk_0_1(level)
 
     return {
         "status": "ok",
@@ -136,8 +236,15 @@ def predict_district_crowd(district: str, dt: DateLike) -> Dict[str, Any]:
         "arrivals_source": arrivals_source,
         "total_arrivals_month": float(total_arrivals),
         "district_share_blended": share,
-        "expected_district_visitors": expected,
+        "foreign_only_district_visitors": expected,
+        "domestic_multiplier_used": domestic_factor,
+        "total_district_pressure": adjusted_pressure,
         "crowd_level": level,
+
+        # ✅ new, defensible metrics for Sustainability Index
+        "pressure_vs_p90": risk_metrics["pressure_vs_p90"],
+        "crowd_risk_0_1": crowd_risk_0_1,
+
         "thresholds_used": "district" if district in district_thresholds else "global",
         "thresholds": th,
     }
@@ -162,7 +269,6 @@ def _iter_attractions(obj):
                 yield v
 
 
-
 def _load_attraction_index() -> Dict[str, Dict[str, Any]]:
     obj = json.loads(ATTRACTIONS_JSON.read_text(encoding="utf-8"))
     idx: Dict[str, Dict[str, Any]] = {}
@@ -171,7 +277,6 @@ def _load_attraction_index() -> Dict[str, Dict[str, Any]]:
         if aid:
             idx[str(aid)] = r
     return idx
-
 
 
 def predict_attraction_crowd(attraction_id: str, dt: DateLike) -> Dict[str, Any]:

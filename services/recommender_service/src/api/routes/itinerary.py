@@ -1,83 +1,71 @@
-# /Users/dev/Desktop/graphCeylon-API/services/recommender_service/src/api/routes/itinerary.py
+# services/recommender_service/src/api/routes/itinerary.py
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
-from pprint import pprint
+from typing import Any, Dict
+from fastapi import APIRouter
 
-
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-
-from src.api.deps import get_db
-from src.poi.store import get_pois_near_city
+from src.poi.store import get_pois_near_city, load_pois, _resolve_anchor_from_json
+from src.itinerary.ranking.enrich_and_rank import enrich_and_rank
+from src.itinerary.planner.simple_planner import build_itinerary  # <-- adjust path to your planner file
 
 router = APIRouter(prefix="/itinerary", tags=["itinerary"])
 
 
 @router.post("/plan")
-def itinerary_plan(payload: Dict[str, Any], db: Session = Depends(get_db)):
-    """
-    Temporary handler to confirm orchestrator → recommender payload correctness.
-    Prints all preference-related fields and optionally a preference_sources map.
-    Later you will replace this with a Pydantic request model + real logic.
-    """
-    print("\n================ FULL ITINERARY REQUEST RECEIVED =================")
-    pprint(payload, width=120)
-    print("=================================================================\n")
-    print("\n================ RECOMMENDER /itinerary/plan RECEIVED =================")
-    print(f"intent     : {payload.get('intent')}")
-    print(f"user_id    : {payload.get('user_id')}")
-    print(f"session_id : {payload.get('session_id')}")
-    print("-----------------------------------------------------------------------")
+def itinerary_plan(payload: Dict[str, Any]):
+    city = payload.get("city") or payload.get("destination")
+    start_date = payload.get("start_date")
+    end_date = payload.get("end_date")
+    days = int(payload.get("days") or 3)
 
-    # Print the main preference fields you care about
-    keys_to_show = [
-        "travel_style",
-        "food_preferences",
-        "eco_preference",
-        "avoid_crowds",
-        "budget_level",
-        "max_trip_budget_lkr",
-        "currency",
-        "preferred_transport",
-        "walking_tolerance_minutes",
-        "accommodation_type",
-        "star_preference",
-        "must_have_amenities",
-        "cancellation_preference",
-        "sun_sensitivity",
-        "rain_preference",
-        "temperature_preference",
-        "motion_sickness",
-        "tags",
-    ]
-    for k in keys_to_show:
-        v = payload.get(k)
-        if v not in (None, "", [], {}):
-            print(f"{k:<24}: {v}")
+    # prefs for ranking/planner
+    final_prefs = payload  # (MVP: payload already contains merged prefs)
 
-    # If you later add this to payload, you'll see it here
-    pref_sources: Optional[Dict[str, str]] = payload.get("preference_sources")
-    if isinstance(pref_sources, dict) and pref_sources:
-        print("\nPreference sources (query vs db):")
-        for k, src in pref_sources.items():
-            print(f"{k:<24}: {src}")
+    # 1) candidates from KG-clean JSON
+    candidates = get_pois_near_city(city)
 
-    print("=======================================================================\n")
+    # 2) anchor lat/lng (reuse same resolver for meta + distance calculations)
+    all_pois = load_pois()
+    anchor_lat, anchor_lng = _resolve_anchor_from_json(all_pois, city)
 
-        # -------- KG substitute: load POIs near base city --------
-    base_city = payload.get("city") or payload.get("destination")
+    # 3) enrich + rank
+    ranked = enrich_and_rank(
+        candidates=candidates,
+        anchor_lat=anchor_lat,
+        anchor_lng=anchor_lng,
+        start_date=start_date,
+        end_date=end_date,
+        final_prefs=final_prefs,
+        city=city,
+        country=payload.get("country") or "Sri Lanka",
+    )
 
-    candidates = get_pois_near_city(base_city)
+    # 4) build itinerary schedule
+    itinerary = build_itinerary(
+        ranked_attractions=ranked,
+        days=days,
+        start_date=start_date,
+        final_prefs=final_prefs,
+    )
 
-    print(f"\nFound {len(candidates)} POIs near {base_city}:")
-    for p in candidates:
-        print(f" - {p.title} ({p.district})")
+    title = f"{days}-day {', '.join(final_prefs.get('travel_style', []) or ['trip'])} to {city}".replace("  ", " ").strip()
 
+    summary = (
+        "KG-based candidate discovery → crowd pressure risk forecast → adaptive weather forecast → "
+        "sustainability scoring (crowd+rain weighted by eco preference) → preference-aware ranking → "
+        "simple itinerary scheduling."
+    )
 
-    # For now return a simple echo (so you can verify in Postman/orchestrator)
     return {
-        "status": "ok",
-        "message": "itinerary/plan received (debug endpoint).",
-        "received_keys": sorted(list(payload.keys())),
+        "title": title,
+        "summary": summary,
+        "ranked_attractions": ranked,
+        "itinerary": itinerary,
+        "ranking_rule": "avoid_crowds=>crowd_risk asc" if final_prefs.get("avoid_crowds") else "blended",
+        "meta": {
+            "num_candidates": len(candidates),
+            "num_ranked": len(ranked),
+            "anchor": {"lat": anchor_lat, "lng": anchor_lng},
+            "rep_date": ranked[0]["context"]["rep_date"] if ranked else None,
+        },
     }
