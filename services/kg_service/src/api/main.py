@@ -19,6 +19,7 @@ from models.schemas import (
     ExplainResponse, StatisticsResponse, ErrorResponse,
     ConstraintReasonRequest, ConstraintReasonResponse, WriteRequest, WriteResponse
 )
+from api import dependencies as api_deps
 from api import attractions
 
 # Configure logging
@@ -45,6 +46,11 @@ async def lifespan(app: FastAPI):
         driver = create_driver()
         db_manager = DatabaseManager(driver)
         reasoning_orchestrator = ReasoningOrchestrator(driver)
+        
+        # Set dependencies for API routes
+        api_deps.set_driver(driver)
+        api_deps.set_db_manager(db_manager)
+        api_deps.set_reasoning_orchestrator(reasoning_orchestrator)
         
         # Test database connection
         db_manager.execute_cypher("RETURN 1 AS test")
@@ -87,67 +93,61 @@ app.add_middleware(
 )
 
 
-# Dependency injection functions
-def get_driver():
-    """Get the Neo4j driver instance."""
-    if driver is None:
-        raise HTTPException(status_code=503, detail="Database not initialized")
-    return driver
-
-
-def get_db_manager():
-    """Get the database manager instance."""
-    if db_manager is None:
-        raise HTTPException(status_code=503, detail="Database manager not initialized")
-    return db_manager
-
-
-def get_reasoning_orchestrator():
-    """Get the reasoning orchestrator instance."""
-    if reasoning_orchestrator is None:
-        raise HTTPException(status_code=503, detail="Reasoning orchestrator not initialized")
-    return reasoning_orchestrator
-
-
 # Include routers and override dependencies
 app.include_router(attractions.router)
-app.dependency_overrides[attractions.get_db_manager] = get_db_manager
+app.dependency_overrides[attractions.get_db_manager] = api_deps.get_db_manager
 
 # Import and include domain router
 from api import domains
 app.include_router(domains.router)
-app.dependency_overrides[domains.get_db_manager] = get_db_manager
+app.dependency_overrides[domains.get_db_manager] = api_deps.get_db_manager
 
 # Import and include holidays router
 from api import holidays
 app.include_router(holidays.router)
-app.dependency_overrides[holidays.get_db_manager] = get_db_manager
+app.dependency_overrides[holidays.get_db_manager] = api_deps.get_db_manager
 
 # Import and include projects router
 from api import projects
 app.include_router(projects.router)
-app.dependency_overrides[projects.get_db_manager] = get_db_manager
+app.dependency_overrides[projects.get_db_manager] = api_deps.get_db_manager
 
 # Import and include news router
 from api import news
 app.include_router(news.router)
-app.dependency_overrides[news.get_db_manager] = get_db_manager
+app.dependency_overrides[news.get_db_manager] = api_deps.get_db_manager
 
 # Import and include semantic web router
 from api import semantic
 app.include_router(semantic.router)
-app.dependency_overrides[semantic.get_db_manager] = get_db_manager
+app.dependency_overrides[semantic.get_db_manager] = api_deps.get_db_manager
 
 # Import and include agent router
 from api import agent
 app.include_router(agent.router)
-app.dependency_overrides[agent.get_reasoning_orchestrator] = get_reasoning_orchestrator
-app.dependency_overrides[agent.get_db_manager] = get_db_manager
+app.dependency_overrides[agent.get_reasoning_orchestrator] = api_deps.get_reasoning_orchestrator
+app.dependency_overrides[agent.get_db_manager] = api_deps.get_db_manager
+
+# Import and include enhanced AIL router (after app is created)
+from api import ail_enhanced
+app.include_router(ail_enhanced.router)
 
 # Import and include GraphRAG router
 from api import graphrag
 app.include_router(graphrag.router)
-app.dependency_overrides[graphrag.get_db_manager] = get_db_manager
+
+# Import and include Enhanced AIL router
+from api import ail_enhanced
+app.include_router(ail_enhanced.router)
+app.dependency_overrides[ail_enhanced.get_db_manager] = api_deps.get_db_manager
+app.dependency_overrides[ail_enhanced.get_driver] = api_deps.get_driver
+app.dependency_overrides[graphrag.get_db_manager] = api_deps.get_db_manager
+
+# Import and include Research & AI router (GNN, Hybrid Reasoning)
+from api import research
+app.include_router(research.router)
+app.dependency_overrides[research.get_driver] = api_deps.get_driver
+app.dependency_overrides[research.get_db_manager] = api_deps.get_db_manager
 
 # API Endpoints
 
@@ -161,7 +161,7 @@ def health_check():
 
 
 @app.post("/kg/initialize", response_model=dict)
-def initialize_database(db: DatabaseManager = Depends(get_db_manager)):
+def initialize_database(db: DatabaseManager = Depends(api_deps.get_db_manager)):
     """Initialize the database with ontology, shapes, and seed data."""
     try:
         logger.info("Database initialization requested")
@@ -173,7 +173,7 @@ def initialize_database(db: DatabaseManager = Depends(get_db_manager)):
 
 
 @app.get("/kg/statistics", response_model=StatisticsResponse)
-def get_statistics(db: DatabaseManager = Depends(get_db_manager)):
+def get_statistics(db: DatabaseManager = Depends(api_deps.get_db_manager)):
     """Get database statistics."""
     try:
         stats = db.get_statistics()
@@ -186,7 +186,7 @@ def get_statistics(db: DatabaseManager = Depends(get_db_manager)):
 @app.post("/kg/query", response_model=QueryResponse)
 def query_kg(
     request: QueryRequest,
-    db: DatabaseManager = Depends(get_db_manager)
+    db: DatabaseManager = Depends(api_deps.get_db_manager)
 ):
     """Query provinces or districts, or execute raw Cypher queries."""
     import time
@@ -277,7 +277,7 @@ def query_kg(
 @app.post("/kg/reason", response_model=ReasonResponse)
 def reason_kg(
     request: ReasonRequest,
-    orchestrator: ReasoningOrchestrator = Depends(get_reasoning_orchestrator)
+    orchestrator: ReasoningOrchestrator = Depends(api_deps.get_reasoning_orchestrator)
 ):
     """Perform reasoning between provinces and districts, with optional constraints."""
     try:
@@ -350,7 +350,7 @@ def reason_kg(
 @app.post("/kg/predict", response_model=PredictResponse)
 def predict_similar(
     request: PredictRequest,
-    orchestrator: ReasoningOrchestrator = Depends(get_reasoning_orchestrator)
+    orchestrator: ReasoningOrchestrator = Depends(api_deps.get_reasoning_orchestrator)
 ):
     """Find similar nodes using lightweight similarity."""
     try:
@@ -371,7 +371,7 @@ def predict_similar(
 
 @app.get("/kg/validate", response_model=ValidationResponse)
 def validate_shacl(
-    orchestrator: ReasoningOrchestrator = Depends(get_reasoning_orchestrator)
+    orchestrator: ReasoningOrchestrator = Depends(api_deps.get_reasoning_orchestrator)
 ):
     """Run SHACL validation and return a summarized report."""
     try:
@@ -387,7 +387,7 @@ def validate_shacl(
 
 
 @app.get("/kg/export", response_model=ExportResponse)
-def export_data(db: DatabaseManager = Depends(get_db_manager)):
+def export_data(db: DatabaseManager = Depends(api_deps.get_db_manager)):
     """Export knowledge graph data."""
     try:
         logger.info("Exporting knowledge graph data")
@@ -407,7 +407,7 @@ def export_data(db: DatabaseManager = Depends(get_db_manager)):
 def explain_relationship(
     province: str,
     district: str,
-    db: DatabaseManager = Depends(get_db_manager)
+    db: DatabaseManager = Depends(api_deps.get_db_manager)
 ):
     """Get evidence path for province-district relationship."""
     try:
@@ -437,7 +437,7 @@ def explain_relationship(
 @app.post("/kg/constraint_reason", response_model=ConstraintReasonResponse)
 def constraint_reason_kg(
     request: ConstraintReasonRequest,
-    orchestrator: ReasoningOrchestrator = Depends(get_reasoning_orchestrator)
+    orchestrator: ReasoningOrchestrator = Depends(api_deps.get_reasoning_orchestrator)
 ):
     """Perform constraint-based reasoning for filtering provinces/districts."""
     try:
@@ -455,7 +455,7 @@ def constraint_reason_kg(
 @app.post("/kg/write", response_model=WriteResponse)
 def write_kg(
     request: WriteRequest,
-    db: DatabaseManager = Depends(get_db_manager)
+    db: DatabaseManager = Depends(api_deps.get_db_manager)
 ):
     """Write/update nodes with provenance tracking."""
     try:
