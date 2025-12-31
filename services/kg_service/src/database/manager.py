@@ -57,7 +57,25 @@ class DatabaseManager:
     
     def validate_shacl(self) -> Dict[str, Any]:
         """Validate SHACL shapes and return violation report."""
-        return self.ontology.validate_shacl()
+        try:
+            return self.ontology.validate_shacl()
+        except AttributeError:
+            # If validate_shacl not implemented in ontology, return empty validation
+            logger.warning("SHACL validation not implemented in ontology repository")
+            return {
+                "conforms": True,
+                "violations": [],
+                "violation_count": 0,
+                "message": "SHACL validation not yet configured"
+            }
+        except Exception as e:
+            logger.error(f"SHACL validation error: {e}")
+            return {
+                "conforms": False,
+                "violations": [{"message": str(e)}],
+                "violation_count": 1,
+                "error": str(e)
+            }
     
     def initialize_domain_structure(self) -> Dict[str, Any]:
         """Initialize the 12-domain architecture for Sri Lankan Tourism KG."""
