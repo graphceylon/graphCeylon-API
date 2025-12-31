@@ -25,7 +25,7 @@ app.include_router(profile_router)
 
 # 1) Instantiate the intent parser
 intent_parser_agent = IntentParserAgent(
-    model_dir="/Users/dev/Desktop/graphCeylon-API/models/orchestrator/intent_multilabel_final",
+    model_dir="C:\Desktop\graphCeylon-API\models\orchestrator\intent_multilabel_final",
     threshold=0.2,
     top_k_if_empty=2,
 )

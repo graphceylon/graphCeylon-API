@@ -65,7 +65,7 @@ class IntentParserAgent:
         """
 
         # --------- Resolve model path (Docker + local) ---------
-        env_dir = os.getenv("INTENT_MODEL_DIR")
+        env_dir = os.getenv("C:\Desktop\graphCeylon-API\models\orchestrator\intent_multilabel_final")
 
         if env_dir:
             # In Docker we set INTENT_MODEL_DIR=/models/orchestrator/intent_multilabel_final

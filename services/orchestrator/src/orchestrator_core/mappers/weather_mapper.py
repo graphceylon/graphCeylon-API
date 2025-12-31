@@ -1,8 +1,10 @@
 # src/orchestrator_core/mappers/weather_mapper.py
 
-from src.api.schemas import ParsedIntent, OrchestrateRequest
-from src.orchestrator_core.contracts.weather import WeatherForecastRequest
+# from src.api.schemas import ParsedIntent, OrchestrateRequest
+# from src.orchestrator_core.contracts.weather import WeatherForecastRequest
 
+from ...api.schemas import ParsedIntent, OrchestrateRequest
+from ..contracts.weather import WeatherForecastRequest
 
 def map_weather_request(
     parsed: ParsedIntent,
