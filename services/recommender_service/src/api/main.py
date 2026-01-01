@@ -19,6 +19,9 @@ from src.api.routes.itinerary import router as itinerary_router
 from src.api.routes.sustainability import router as sustainability_router
 
 
+
+
+
 app = FastAPI(
     title="Component 3 – Recommendation & Sustainability Service",
     version="0.1.0",
