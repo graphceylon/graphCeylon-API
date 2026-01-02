@@ -75,6 +75,23 @@ from .domain.news import (
     NewsResponse,
 )
 
+# Railway models (from domain submodule)
+from .domain.railway import (
+    TrainType,
+    RailwayStation,
+    TrainSchedule,
+    RailwayStationQueryRequest,
+    RailwayStationResponse,
+    TrainScheduleQueryRequest,
+    TrainScheduleResponse,
+    RouteQueryRequest,
+    RouteResponse,
+    CreateRailwayStationRequest,
+    CreateTrainScheduleRequest,
+    StationStatistics,
+    ScheduleStatistics,
+)
+
 # Legacy support - all models are now available through this module
 __all__ = [
     # Base
@@ -124,4 +141,18 @@ __all__ = [
     "CreateNewsRequest",
     "NewsQueryRequest",
     "NewsResponse",
+    # Railway
+    "TrainType",
+    "RailwayStation",
+    "TrainSchedule",
+    "RailwayStationQueryRequest",
+    "RailwayStationResponse",
+    "TrainScheduleQueryRequest",
+    "TrainScheduleResponse",
+    "RouteQueryRequest",
+    "RouteResponse",
+    "CreateRailwayStationRequest",
+    "CreateTrainScheduleRequest",
+    "StationStatistics",
+    "ScheduleStatistics",
 ]
