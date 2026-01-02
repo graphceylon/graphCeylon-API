@@ -74,7 +74,7 @@ class IntentParserAgent:
             # Local dev: interpret model_dir as a folder under models/orchestrator/
             # Project root: .../graphCeylon-API/
             # This file:   .../services/orchestrator/src/orchestrator_core/intent_parser/agent.py
-            project_root = Path(__file__).resolve().parents[6]  # adjust if your depth changes
+            project_root = Path(__file__).resolve().parents[5]  # adjust if your depth changes
             model_path = project_root / "models" / "orchestrator" / model_dir
 
         model_path = str(model_path)

@@ -217,6 +217,33 @@ def load_telecom_2024_counts(path: Path) -> Tuple[Dict[str, float], List[str]]:
     districts = sorted(counts.keys())
     return counts, districts
 
+def blend_shares(
+    share_2024: Dict[str, float],
+    share_2018_2019: Dict[str, float],
+    share_2017: Dict[str, float],
+    w2024: float = 0.6,
+    w1819: float = 0.3,
+    w2017: float = 0.1,
+) -> Dict[str, float]:
+    districts = set(share_2024) | set(share_2018_2019) | set(share_2017)
+    out: Dict[str, float] = {}
+    for d in districts:
+        out[d] = (
+            w2024 * float(share_2024.get(d, 0.0)) +
+            w1819 * float(share_2018_2019.get(d, 0.0)) +
+            w2017 * float(share_2017.get(d, 0.0))
+        )
+    # normalize
+    total = sum(out.values())
+    if total <= 0:
+        n = len(out) if out else 1
+        return {d: 1.0 / n for d in out}
+    return {d: v / total for d, v in out.items()}
+
+
+def save_json(path: Path, obj: dict) -> None:
+    import json
+    path.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
 
 def counts_to_share(counts: Dict[str, float]) -> Dict[str, float]:
     total = float(sum(counts.values()))
@@ -241,9 +268,13 @@ def build_all_district_pressure_artifacts(paths: DistrictPressurePaths) -> Dict[
       - district_pressure_share_2017_from_sltda_prefs.json
       - district_pressure_share_2018_2019_from_sltda_prefs.json
       - district_pressure_shares_all.json
-      - district_pressure_shares_all.csv (easy to inspect)
+      - district_pressure_shares_all.csv
+      - PLUS minimal JSONs used by your new district crowd pipeline:
+        district_share_2024_telecom.json
+        district_share_2017.json
+        district_share_2018_2019.json
+        district_share_blended.json
     """
-
     paths.out_dir.mkdir(parents=True, exist_ok=True)
 
     # 2024 (telecom = ground truth)
@@ -260,9 +291,6 @@ def build_all_district_pressure_artifacts(paths: DistrictPressurePaths) -> Dict[
     all_districts = sorted(set(telecom_districts).union(extra))
 
     # 2017 preferences (SLTDA) -> district share
-    # We try BOTH mapping modes:
-    # - if excel columns match POI-level (e.g., 'galle fort', 'waterfalls', ...) use mapping_mode="poi"
-    # - else use mapping_mode="cat"
     pref17_poi = extract_preference_means_from_excel(paths.prefs_2017_xlsx, mapping_mode="poi")
     pref17_cat = extract_preference_means_from_excel(paths.prefs_2017_xlsx, mapping_mode="cat")
     if len(pref17_poi) >= len(pref17_cat) and len(pref17_poi) > 0:
@@ -282,7 +310,16 @@ def build_all_district_pressure_artifacts(paths: DistrictPressurePaths) -> Dict[
         share_2018_2019 = build_district_share_from_preferences(pref18_cat, "cat", all_districts)
         mode_2018 = "cat"
 
-    # Save JSONs
+    # ✅ Blended share (your research weighting)
+    share_blended = blend_shares(share_2024, share_2018_2019, share_2017)
+
+    # ✅ Save minimal JSONs expected by district crowd pipeline
+    save_json(paths.out_dir / "district_share_2024_telecom.json", share_2024)
+    save_json(paths.out_dir / "district_share_2017.json", share_2017)
+    save_json(paths.out_dir / "district_share_2018_2019.json", share_2018_2019)
+    save_json(paths.out_dir / "district_share_blended.json", share_blended)
+
+    # Save “full” JSONs + CSV (your existing outputs)
     import json
 
     p_2024 = paths.out_dir / "district_pressure_share_2024.json"
@@ -299,14 +336,15 @@ def build_all_district_pressure_artifacts(paths: DistrictPressurePaths) -> Dict[
         "2024": {"source": "telecom", "district_share": share_2024},
         "2017": {"source": f"sltda_prefs_{mode_2017}", "district_share": share_2017},
         "2018_2019": {"source": f"sltda_prefs_{mode_2018}", "district_share": share_2018_2019},
+        "blended": {"source": "0.6*2024 + 0.3*2018_2019 + 0.1*2017", "district_share": share_blended},
     }
     p_all.write_text(json.dumps(all_obj, indent=2))
 
-    # Save CSV (district rows, year columns)
     df = pd.DataFrame({"district": all_districts})
     df["share_2017"] = df["district"].map(share_2017).fillna(0.0)
     df["share_2018_2019"] = df["district"].map(share_2018_2019).fillna(0.0)
     df["share_2024"] = df["district"].map(share_2024).fillna(0.0)
+    df["share_blended"] = df["district"].map(share_blended).fillna(0.0)
     df.to_csv(p_csv, index=False)
 
     return {
@@ -316,4 +354,5 @@ def build_all_district_pressure_artifacts(paths: DistrictPressurePaths) -> Dict[
         "out_2018_2019": str(p_2018),
         "out_all_json": str(p_all),
         "out_all_csv": str(p_csv),
+        "out_blended_json": str(paths.out_dir / "district_share_blended.json"),
     }
