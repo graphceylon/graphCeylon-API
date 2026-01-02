@@ -1,0 +1,1073 @@
+{
+    "info": {
+        "_postman_id": "train-schedules-api-collection",
+        "name": "Train Schedules API - Sri Lanka Railways",
+        "description": "Complete API collection for querying Sri Lanka train schedules from the GraphCeylon Knowledge Graph Service.\n\n## Dataset Info\n- **Total Schedules**: 1,772\n- **Train Types**: Express, Semi Express, Slow\n- **Primary Hub**: Colombo Fort\n- **Date Range**: 2026-01-09\n\n## Important\n⚠️ **schedule_date is REQUIRED** for all schedule queries!\n\n## Quick Start\n1. Set the `base_url` variable to your server URL\n2. Initialize stations first: POST /railway/stations/initialize\n3. Initialize schedules: POST /railway/schedules/initialize\n4. Query schedules using the endpoints below",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "variable": [
+        {
+            "key": "base_url",
+            "value": "http://localhost:8000",
+            "type": "string"
+        },
+        {
+            "key": "schedule_date",
+            "value": "2026-01-09",
+            "type": "string"
+        }
+    ],
+    "item": [
+        {
+            "name": "📊 Statistics & Overview",
+            "item": [
+                {
+                    "name": "Get Schedule Statistics",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules/statistics",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules",
+                                "statistics"
+                            ]
+                        },
+                        "description": "Get overview statistics including total schedules, train types breakdown, unique trains, and date range."
+                    }
+                },
+                {
+                    "name": "Get Station Statistics",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/stations/statistics",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "stations",
+                                "statistics"
+                            ]
+                        },
+                        "description": "Get railway station statistics by province and district."
+                    }
+                }
+            ]
+        },
+        {
+            "name": "🚂 Query Schedules",
+            "item": [
+                {
+                    "name": "Get Schedules for Date",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&limit=50",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "50"
+                                }
+                            ]
+                        },
+                        "description": "Get all schedules for the specified date. schedule_date is REQUIRED."
+                    }
+                },
+                {
+                    "name": "Get Express Trains",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&train_type=Express&limit=20",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "train_type",
+                                    "value": "Express"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "20"
+                                }
+                            ]
+                        },
+                        "description": "Get all Express train schedules for the date."
+                    }
+                },
+                {
+                    "name": "Get Semi Express Trains",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&train_type=Semi Express&limit=20",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "train_type",
+                                    "value": "Semi Express"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "20"
+                                }
+                            ]
+                        },
+                        "description": "Get all Semi Express train schedules for the date."
+                    }
+                },
+                {
+                    "name": "Get Slow Trains",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&train_type=Slow&limit=20",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "train_type",
+                                    "value": "Slow"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "20"
+                                }
+                            ]
+                        },
+                        "description": "Get all Slow train schedules for the date."
+                    }
+                }
+            ]
+        },
+        {
+            "name": "🛤️ Route Queries",
+            "item": [
+                {
+                    "name": "Colombo Fort → Galle",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&start_station=Colombo Fort&end_station=Galle&limit=20",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "start_station",
+                                    "value": "Colombo Fort"
+                                },
+                                {
+                                    "key": "end_station",
+                                    "value": "Galle"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "20"
+                                }
+                            ]
+                        },
+                        "description": "Get trains from Colombo Fort to Galle (Southern Line)."
+                    }
+                },
+                {
+                    "name": "Colombo Fort → Badulla",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&start_station=Colombo Fort&end_station=Badulla&limit=20",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "start_station",
+                                    "value": "Colombo Fort"
+                                },
+                                {
+                                    "key": "end_station",
+                                    "value": "Badulla"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "20"
+                                }
+                            ]
+                        },
+                        "description": "Get trains from Colombo Fort to Badulla (Main/Uva Line)."
+                    }
+                },
+                {
+                    "name": "Colombo Fort → Vavuniya",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&start_station=Colombo Fort&end_station=Vavuniya&limit=20",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "start_station",
+                                    "value": "Colombo Fort"
+                                },
+                                {
+                                    "key": "end_station",
+                                    "value": "Vavuniya"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "20"
+                                }
+                            ]
+                        },
+                        "description": "Get trains from Colombo Fort to Vavuniya (Northern Line)."
+                    }
+                },
+                {
+                    "name": "Colombo Fort → Kandy",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&start_station=Colombo Fort&end_station=Kandy&limit=20",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "start_station",
+                                    "value": "Colombo Fort"
+                                },
+                                {
+                                    "key": "end_station",
+                                    "value": "Kandy"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "20"
+                                }
+                            ]
+                        },
+                        "description": "Get trains from Colombo Fort to Kandy (Main Line)."
+                    }
+                },
+                {
+                    "name": "Colombo Fort → Maradana",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&start_station=Colombo Fort&end_station=Maradana&limit=20",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "start_station",
+                                    "value": "Colombo Fort"
+                                },
+                                {
+                                    "key": "end_station",
+                                    "value": "Maradana"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "20"
+                                }
+                            ]
+                        },
+                        "description": "Get trains from Colombo Fort to Maradana (short urban route)."
+                    }
+                },
+                {
+                    "name": "Colombo Fort → Habarana",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&start_station=Colombo Fort&end_station=Habarana&limit=20",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "start_station",
+                                    "value": "Colombo Fort"
+                                },
+                                {
+                                    "key": "end_station",
+                                    "value": "Habarana"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "20"
+                                }
+                            ]
+                        },
+                        "description": "Get trains from Colombo Fort to Habarana (North Central)."
+                    }
+                },
+                {
+                    "name": "Colombo Fort → Nawalapitiya",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&start_station=Colombo Fort&end_station=Nawalapitiya&limit=20",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "start_station",
+                                    "value": "Colombo Fort"
+                                },
+                                {
+                                    "key": "end_station",
+                                    "value": "Nawalapitiya"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "20"
+                                }
+                            ]
+                        },
+                        "description": "Get trains from Colombo Fort to Nawalapitiya (Hill Country)."
+                    }
+                },
+                {
+                    "name": "Colombo Fort → Ragama",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&start_station=Colombo Fort&end_station=Ragama&limit=20",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "start_station",
+                                    "value": "Colombo Fort"
+                                },
+                                {
+                                    "key": "end_station",
+                                    "value": "Ragama"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "20"
+                                }
+                            ]
+                        },
+                        "description": "Get trains from Colombo Fort to Ragama (Kelani Valley Line)."
+                    }
+                }
+            ]
+        },
+        {
+            "name": "🔗 Combined Filters",
+            "item": [
+                {
+                    "name": "Express Trains to Galle",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&start_station=Colombo Fort&end_station=Galle&train_type=Express&limit=10",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "start_station",
+                                    "value": "Colombo Fort"
+                                },
+                                {
+                                    "key": "end_station",
+                                    "value": "Galle"
+                                },
+                                {
+                                    "key": "train_type",
+                                    "value": "Express"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "10"
+                                }
+                            ]
+                        },
+                        "description": "Get Express trains from Colombo Fort to Galle for the date."
+                    }
+                },
+                {
+                    "name": "Slow Trains from Colombo",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&start_station=Colombo Fort&train_type=Slow&limit=30",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "start_station",
+                                    "value": "Colombo Fort"
+                                },
+                                {
+                                    "key": "train_type",
+                                    "value": "Slow"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "30"
+                                }
+                            ]
+                        },
+                        "description": "Get all Slow trains departing from Colombo Fort."
+                    }
+                },
+                {
+                    "name": "All Trains from Colombo",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&start_station=Colombo Fort&limit=100",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "start_station",
+                                    "value": "Colombo Fort"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "100"
+                                }
+                            ]
+                        },
+                        "description": "Get all trains departing from Colombo Fort on the date."
+                    }
+                },
+                {
+                    "name": "Express to Badulla (Full Filter)",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules?schedule_date={{schedule_date}}&start_station=Colombo Fort&end_station=Badulla&train_type=Express&limit=10",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules"
+                            ],
+                            "query": [
+                                {
+                                    "key": "schedule_date",
+                                    "value": "{{schedule_date}}"
+                                },
+                                {
+                                    "key": "start_station",
+                                    "value": "Colombo Fort"
+                                },
+                                {
+                                    "key": "end_station",
+                                    "value": "Badulla"
+                                },
+                                {
+                                    "key": "train_type",
+                                    "value": "Express"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "10"
+                                }
+                            ]
+                        },
+                        "description": "Query with all available filters applied."
+                    }
+                }
+            ]
+        },
+        {
+            "name": "🔀 Station Connections",
+            "item": [
+                {
+                    "name": "Connections from Colombo Fort",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules/connections/Colombo Fort",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules",
+                                "connections",
+                                "Colombo Fort"
+                            ]
+                        },
+                        "description": "Get all stations directly connected to Colombo Fort."
+                    }
+                },
+                {
+                    "name": "Connections from Galle",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules/connections/Galle",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules",
+                                "connections",
+                                "Galle"
+                            ]
+                        },
+                        "description": "Get all stations directly connected to Galle."
+                    }
+                },
+                {
+                    "name": "Connections from Maradana",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules/connections/Maradana",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules",
+                                "connections",
+                                "Maradana"
+                            ]
+                        },
+                        "description": "Get all stations directly connected to Maradana."
+                    }
+                },
+                {
+                    "name": "Connections from Kandy",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules/connections/Kandy",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules",
+                                "connections",
+                                "Kandy"
+                            ]
+                        },
+                        "description": "Get all stations directly connected to Kandy."
+                    }
+                }
+            ]
+        },
+        {
+            "name": "🚉 Railway Stations",
+            "item": [
+                {
+                    "name": "Get All Stations",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/stations?limit=50",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "stations"
+                            ],
+                            "query": [
+                                {
+                                    "key": "limit",
+                                    "value": "50"
+                                }
+                            ]
+                        },
+                        "description": "Get all railway stations."
+                    }
+                },
+                {
+                    "name": "Stations in Western Province",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/stations/province/Western Province",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "stations",
+                                "province",
+                                "Western Province"
+                            ]
+                        },
+                        "description": "Get all stations in Western Province."
+                    }
+                },
+                {
+                    "name": "Stations in Southern Province",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/stations/province/Southern Province",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "stations",
+                                "province",
+                                "Southern Province"
+                            ]
+                        },
+                        "description": "Get all stations in Southern Province."
+                    }
+                },
+                {
+                    "name": "Stations in Central Province",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/stations/province/Central Province",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "stations",
+                                "province",
+                                "Central Province"
+                            ]
+                        },
+                        "description": "Get all stations in Central Province."
+                    }
+                },
+                {
+                    "name": "Stations in Colombo District",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/stations/district/Colombo",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "stations",
+                                "district",
+                                "Colombo"
+                            ]
+                        },
+                        "description": "Get all stations in Colombo district."
+                    }
+                },
+                {
+                    "name": "Stations in Galle District",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/stations/district/Galle",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "stations",
+                                "district",
+                                "Galle"
+                            ]
+                        },
+                        "description": "Get all stations in Galle district."
+                    }
+                },
+                {
+                    "name": "Get Colombo Fort Station",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/stations/name/Colombo Fort",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "stations",
+                                "name",
+                                "Colombo Fort"
+                            ]
+                        },
+                        "description": "Get detailed info for Colombo Fort station."
+                    }
+                },
+                {
+                    "name": "Get Kandy Station",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/stations/name/Kandy",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "stations",
+                                "name",
+                                "Kandy"
+                            ]
+                        },
+                        "description": "Get detailed info for Kandy station."
+                    }
+                },
+                {
+                    "name": "Search Stations by Name",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/stations?name_pattern=galle&limit=20",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "stations"
+                            ],
+                            "query": [
+                                {
+                                    "key": "name_pattern",
+                                    "value": "galle"
+                                },
+                                {
+                                    "key": "limit",
+                                    "value": "20"
+                                }
+                            ]
+                        },
+                        "description": "Search stations containing 'galle' in name."
+                    }
+                }
+            ]
+        },
+        {
+            "name": "🛠️ Data Management",
+            "item": [
+                {
+                    "name": "Initialize Railway Stations",
+                    "request": {
+                        "method": "POST",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/stations/initialize",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "stations",
+                                "initialize"
+                            ]
+                        },
+                        "description": "Load all 203 railway stations from JSON file into Neo4j."
+                    }
+                },
+                {
+                    "name": "Initialize Train Schedules",
+                    "request": {
+                        "method": "POST",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules/initialize",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules",
+                                "initialize"
+                            ]
+                        },
+                        "description": "Load all 1,772 train schedules from CSV file into Neo4j."
+                    }
+                },
+                {
+                    "name": "⚠️ Cleanup Railway Data",
+                    "request": {
+                        "method": "DELETE",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/railway/stations/cleanup",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "stations",
+                                "cleanup"
+                            ]
+                        },
+                        "description": "⚠️ WARNING: DELETE all railway stations and schedules from database."
+                    }
+                }
+            ]
+        },
+        {
+            "name": "🗺️ Route Finding",
+            "item": [
+                {
+                    "name": "Find Route - Colombo to Galle",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"start_station\": \"Colombo Fort\",\n    \"end_station\": \"Galle\",\n    \"schedule_date\": \"2026-01-09\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules/routes",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules",
+                                "routes"
+                            ]
+                        },
+                        "description": "Find available routes between Colombo Fort and Galle."
+                    }
+                },
+                {
+                    "name": "Find Route - Colombo to Kandy",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"start_station\": \"Colombo Fort\",\n    \"end_station\": \"Kandy\",\n    \"schedule_date\": \"2026-01-09\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules/routes",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules",
+                                "routes"
+                            ]
+                        },
+                        "description": "Find available routes between Colombo Fort and Kandy."
+                    }
+                },
+                {
+                    "name": "Find Route - Colombo to Badulla",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"start_station\": \"Colombo Fort\",\n    \"end_station\": \"Badulla\",\n    \"schedule_date\": \"2026-01-09\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/railway/schedules/routes",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "railway",
+                                "schedules",
+                                "routes"
+                            ]
+                        },
+                        "description": "Find available routes between Colombo Fort and Badulla (scenic hill country route)."
+                    }
+                }
+            ]
+        }
+    ]
+}
