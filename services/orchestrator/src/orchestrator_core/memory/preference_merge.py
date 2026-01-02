@@ -29,14 +29,26 @@ PREFERENCE_KEYS = {
     "motion_sickness",
 }
 
+# values that should NOT override DB prefs when coming from query
+_STR_NOT_PRESENT = {"", "unknown", "any", "n/a", "none", "null"}
+
 def _is_present(v: Any) -> bool:
+    """
+    True only when v is meaningful enough to override.
+    Prevents query placeholders like "unknown"/"any" from overwriting DB values.
+    """
     if v is None:
         return False
+
     if isinstance(v, str):
-        return v.strip() != ""
+        s = v.strip().lower()
+        return s not in _STR_NOT_PRESENT
+
     if isinstance(v, (list, tuple, set, dict)):
         return len(v) > 0
+
     return True
+
 
 def merge_preferences(
     db_prefs: Optional[Dict[str, Any]],
@@ -44,21 +56,23 @@ def merge_preferences(
 ) -> Tuple[Dict[str, Any], Dict[str, Source]]:
     """
     Returns:
-      merged_prefs: effective preferences (query wins)
+      merged_prefs: effective preferences (query wins when meaningful)
       pref_source:  per-field source of the final value ("query" | "db" | "none")
     """
-    base = dict(db_prefs or {})
-    q = dict(query_overrides or {})
+    # keep unfiltered originals so we can carry metadata like created_at/schema_version
+    base_all = dict(db_prefs or {})
+    q_all = dict(query_overrides or {})
 
-    base = {k: v for k, v in base.items() if k in PREFERENCE_KEYS}
-    q = {k: v for k, v in q.items() if k in PREFERENCE_KEYS}
+    # Only merge the preference keys
+    base = {k: v for k, v in base_all.items() if k in PREFERENCE_KEYS}
+    q = {k: v for k, v in q_all.items() if k in PREFERENCE_KEYS}
 
     merged: Dict[str, Any] = {}
     source: Dict[str, Source] = {}
 
     for k in PREFERENCE_KEYS:
-        q_has = k in q and _is_present(q.get(k))
-        db_has = k in base and _is_present(base.get(k))
+        q_has = _is_present(q.get(k)) if k in q else False
+        db_has = _is_present(base.get(k)) if k in base else False
 
         if q_has:
             merged[k] = q[k]
@@ -70,14 +84,14 @@ def merge_preferences(
             source[k] = "none"
 
     # keep created_at/schema_version if present in query or db (optional)
-    if "created_at" in q:
-        merged["created_at"] = q["created_at"]
-    elif "created_at" in base:
-        merged["created_at"] = base["created_at"]
+    if "created_at" in q_all and _is_present(q_all.get("created_at")):
+        merged["created_at"] = q_all["created_at"]
+    elif "created_at" in base_all and _is_present(base_all.get("created_at")):
+        merged["created_at"] = base_all["created_at"]
 
-    if "schema_version" in q:
-        merged["schema_version"] = q["schema_version"]
-    elif "schema_version" in base:
-        merged["schema_version"] = base["schema_version"]
+    if "schema_version" in q_all and _is_present(q_all.get("schema_version")):
+        merged["schema_version"] = q_all["schema_version"]
+    elif "schema_version" in base_all and _is_present(base_all.get("schema_version")):
+        merged["schema_version"] = base_all["schema_version"]
 
     return merged, source

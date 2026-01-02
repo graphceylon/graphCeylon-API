@@ -136,6 +136,7 @@ app.dependency_overrides[news.get_db_manager] = get_db_manager
 # Import and include semantic web router
 from api import semantic
 app.include_router(semantic.router)
+app.dependency_overrides[semantic.get_db_manager] = get_db_manager
 
 # Import and include agent router
 from api import agent

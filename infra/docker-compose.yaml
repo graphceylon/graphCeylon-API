@@ -3,7 +3,7 @@ version: '3.9'
 services:
   # PostgreSQL Database for User Service
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: graphceylon-postgres
     ports:
       - "5432:5432"
@@ -21,6 +21,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
  
   # Redis for Auth Service
   redis:
@@ -38,6 +39,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
  
   # Neo4j Database for Knowledge Graph
   neo4j:
@@ -70,6 +72,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
  
   # Auth Service (Node.js)
   auth_service:
@@ -104,6 +107,7 @@ services:
       interval: 30s
       timeout: 3s
       retries: 3
+
  
   # User Service (Node.js)
   user_service:
@@ -143,6 +147,7 @@ services:
       interval: 30s
       timeout: 3s
       retries: 3
+
  
   # Component 1: Language Service
   language_service:
@@ -226,6 +231,9 @@ services:
       - AUTH_SERVICE_URL=http://auth_service:8004
       - USER_SERVICE_URL=http://user_service:8005
       - INTENT_MODEL_DIR=/models/orchestrator/intent_multilabel_final
+      - PROFILE_AGENT_URL=http://profile_agent:8007
+      - SERVICE_TOKEN=your-internal-service-secret-token-change-in-production
+
     volumes:
       - ../services/orchestrator:/app
       - ../models/orchestrator:/models/orchestrator
@@ -235,10 +243,33 @@ services:
       - recommender_service
       - auth_service
       - user_service
+      - profile_agent
     networks:
       - graphceylon-network
     restart: unless-stopped
- 
+  # Profile Agent (Phase 1: context + event memory)
+  profile_agent:
+    build:
+      context: ../services/profile_agent
+      dockerfile: ../../docker/profile_agent/Dockerfile
+    container_name: graphceylon-profile-agent
+    ports:
+      - "8007:8007"
+    environment:
+      - SERVICE_NAME=profile_agent
+      - SERVICE_PORT=8007
+      - PROFILE_DB_URL=postgresql+psycopg://postgres:postgres@postgres:5432/graphceylon_users
+      - SERVICE_TOKEN=your-internal-service-secret-token-change-in-production
+      - USER_SERVICE_URL=http://user_service:8005
+    depends_on:
+      postgres:
+        condition: service_healthy
+      user_service:
+        condition: service_started
+    networks:
+      - graphceylon-network
+    restart: unless-stopped
+
 networks:
   graphceylon-network:
     driver: bridge
@@ -255,4 +286,4 @@ volumes:
   neo4j_plugins:
     driver: local
  
- 
+   # Profile Agent (Phase 1: context + event memory)
