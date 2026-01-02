@@ -149,6 +149,16 @@ app.dependency_overrides[research.get_db_manager] = api_deps.get_db_manager
 from api.routers import hotels
 app.include_router(hotels.router)
 
+# Import and include Railway Stations router
+from api.routers import railway_stations
+app.include_router(railway_stations.router)
+app.dependency_overrides[railway_stations.get_db_manager] = api_deps.get_db_manager
+
+# Import and include Train Schedules router
+from api.routers import train_schedules
+app.include_router(train_schedules.router)
+app.dependency_overrides[train_schedules.get_db_manager] = api_deps.get_db_manager
+
 # API Endpoints
 
 @app.get("/health", response_model=HealthResponse)

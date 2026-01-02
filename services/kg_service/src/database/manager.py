@@ -10,6 +10,7 @@ from .repositories import (
     ProjectRepository,
     NewsRepository,
     OntologyRepository,
+    RailwayRepository,
     BaseRepository
 )
 from services.embeddings import embedding_service
@@ -29,6 +30,7 @@ class DatabaseManager:
         self.projects = ProjectRepository(driver)
         self.news = NewsRepository(driver)
         self.ontology = OntologyRepository(driver)
+        self.railway = RailwayRepository(driver)
     
     # Delegate common operations to base repository
     def execute_cypher(self, cypher: str, parameters: Dict[str, Any] = None) -> List[Dict[str, Any]]:
