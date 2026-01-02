@@ -1,15 +1,18 @@
-# # AssemblyAI streaming/batch STT (depending on your plan)
-# # services/language_service/src/voice/stt/assemblyai.py
+# AssemblyAI streaming/batch STT (depending on your plan)
+# services/language_service/src/voice/stt/assemblyai.py
 
 from __future__ import annotations
 
 import asyncio
 import base64
 import re
+import json
+import httpx
+import websockets
+
 from pathlib import Path
 from typing import Optional
-
-import httpx
+from typing import Callable, Awaitable
 
 from ...core.settings import settings
 from ...core.errors import STTError
@@ -153,3 +156,116 @@ class AssemblyAIManager:
                 await asyncio.sleep(1)
 
             raise STTError("AssemblyAI transcript timeout (took too long)")
+
+    STREAMING_WS = "wss://streaming.assemblyai.com/v3/ws"
+
+    async def transcribe_stream(
+        self,
+        session_id: str,
+        audio_queue: "asyncio.Queue[bytes]",
+        stop_event: "asyncio.Event",
+        on_partial: Callable[[str], Awaitable[None]],
+        on_final: Callable[[str], Awaitable[None]],
+        confidence_threshold: float = 0.3,  # kept for signature compatibility
+    ) -> None:
+        """
+        Streaming STT over AssemblyAI Universal Streaming WebSocket.
+
+        EXPECTATION:
+          audio_queue contains raw PCM16LE frames at 16kHz mono (no WAV header).
+          Each chunk ~50–500ms is ideal.
+
+        on_partial: called for interim turns
+        on_final: called when end_of_turn=True (utterance boundary)
+        """
+
+        url = f"{self.STREAMING_WS}?sample_rate=16000"
+
+        async def _sender(ws):
+            # send audio bytes as they arrive
+            while True:
+                if stop_event.is_set() and audio_queue.empty():
+                    break
+                try:
+                    chunk = await asyncio.wait_for(audio_queue.get(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    continue
+
+                try:
+                    if chunk:
+                        await ws.send(chunk)
+                finally:
+                    audio_queue.task_done()
+
+            # Terminate gracefully
+            try:
+                await ws.send(json.dumps({"type": "Terminate"}))
+            except Exception:
+                pass
+
+        async def _receiver(ws):
+            # receive Turn messages
+            async for msg in ws:
+                # websockets returns str for text frames, bytes for binary frames
+                if isinstance(msg, (bytes, bytearray)):
+                    continue
+
+                try:
+                    data = json.loads(msg)
+                except Exception:
+                    continue
+
+                msg_type = data.get("type")
+                if msg_type == "Turn":
+                    text = (data.get("transcript") or "").strip()
+                    if not text:
+                        continue
+
+                    if bool(data.get("end_of_turn")):
+                        await on_final(text)
+                    else:
+                        await on_partial(text)
+
+                elif msg_type == "Error":
+                    err = data.get("error") or data.get("message") or "Streaming STT error"
+                    raise STTError(f"AssemblyAI streaming error: {err}")
+
+                elif msg_type in ("SessionTerminated", "SessionEnded"):
+                    # treat as clean shutdown unless an error is included
+                    err = data.get("error") or data.get("message")
+                    if err:
+                        raise STTError(f"AssemblyAI session terminated: {err}")
+                    return
+
+        headers = {"Authorization": self.api_key}
+
+        try:
+            async with websockets.connect(url, 
+                                          additional_headers=headers, 
+                                          ping_interval=20
+                                          ) as ws:
+                logger.info(f"[{session_id}] AAI-STREAM connected")
+
+                sender_task = asyncio.create_task(_sender(ws))
+                receiver_task = asyncio.create_task(_receiver(ws))
+
+                done, pending = await asyncio.wait(
+                    {sender_task, receiver_task},
+                    return_when=asyncio.FIRST_EXCEPTION,
+                )
+
+                # propagate exceptions
+                for t in done:
+                    exc = t.exception()
+                    if exc:
+                        raise exc
+
+                for t in pending:
+                    t.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        except Exception as e:
+            logger.exception(f"[{session_id}] AAI-STREAM failed")
+            raise STTError(str(e)) from e
+        finally:
+            logger.info(f"[{session_id}] AAI-STREAM closed")
