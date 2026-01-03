@@ -15,42 +15,70 @@ This guide will help you:
 
 ## 🏗️ Architecture Overview
 
-GraphCeylon-API is built as a distributed system with 4 independent microservices:
+GraphCeylon-API is built as a distributed system with 6 independent microservices:
 
-### Component 1: Multilingual Language Service
+### Component 1: Authentication Service ⭐ NEW
+
+- **Purpose**: Secure user authentication and authorization
+- **Location**: `services/auth_service/`
+- **Technology**: Node.js + Express + TypeScript + Redis
+- **Key Features**:
+  - JWT-based authentication (Access + Refresh tokens)
+  - Email verification workflow
+  - Password reset functionality
+  - Rate limiting & brute-force protection
+  - Token management with Redis
+
+### Component 2: User Management Service ⭐ NEW
+
+- **Purpose**: User profile and account management
+- **Location**: `services/user_service/`
+- **Technology**: Node.js + Express + TypeScript + PostgreSQL
+- **Key Features**:
+  - Complete user CRUD operations
+  - Role-based access control (RBAC)
+  - Profile management with preferences
+  - User search & analytics
+  - PostgreSQL with TypeORM
+
+### Component 3: Multilingual Language Service
 
 - **Purpose**: Natural language processing and understanding for multiple languages (Sinhala, Tamil, English)
 - **Location**: `services/language_service/`
+- **Technology**: Python + FastAPI
 - **Key Features**:
   - Multi-language text processing
   - Intent recognition
   - Entity extraction
   - Language translation
 
-### Component 2: Tourism Knowledge Graph
+### Component 4: Tourism Knowledge Graph
 
 - **Purpose**: Structured knowledge representation of Sri Lankan tourism domain
 - **Location**: `services/kg_service/`
+- **Technology**: Python + FastAPI + Neo4j
 - **Key Features**:
   - Graph database management
   - Entity relationships
   - Query processing
   - Knowledge base maintenance
 
-### Component 3: Proactive Recommendation & Sustainability Engine
+### Component 5: Proactive Recommendation & Sustainability Engine
 
 - **Purpose**: Intelligent recommendation system with sustainability focus
 - **Location**: `services/recommender_service/`
+- **Technology**: Python + FastAPI
 - **Key Features**:
   - Personalized recommendations
   - Sustainability scoring
   - User preference learning
   - Context-aware suggestions
 
-### Component 4: Multi-Agent Orchestrator
+### Component 6: Multi-Agent Orchestrator
 
 - **Purpose**: Coordination layer managing service interactions and workflows
 - **Location**: `services/orchestrator/`
+- **Technology**: Python + FastAPI
 - **Key Features**:
   - Service orchestration
   - Request routing
@@ -62,18 +90,26 @@ GraphCeylon-API is built as a distributed system with 4 independent microservice
 ```
 graphCeylon-API/
 ├── services/                    # Microservices source code
-│   ├── language_service/       # Component 1
-│   ├── kg_service/            # Component 2
-│   ├── recommender_service/   # Component 3
-│   └── orchestrator/          # Component 4
+│   ├── auth_service/          # Component 1: Authentication (Node.js) ⭐ NEW
+│   ├── user_service/          # Component 2: User Management (Node.js) ⭐ NEW
+│   ├── language_service/      # Component 3: NLP (Python)
+│   ├── kg_service/            # Component 4: Knowledge Graph (Python)
+│   ├── recommender_service/   # Component 5: Recommendations (Python)
+│   └── orchestrator/          # Component 6: Orchestration (Python)
 ├── docker/                     # Docker configurations per service
+│   ├── auth_service/          # ⭐ NEW
+│   ├── user_service/          # ⭐ NEW
+│   └── ...
 ├── infra/                      # Infrastructure as Code
-│   ├── docker-compose.yaml    # Local development
+│   ├── docker-compose.yaml    # Local development (Updated) ⭐
 │   └── k8s/                   # Kubernetes manifests
 ├── configs/                    # Service configurations
 ├── data/                       # Data storage (gitignored)
 ├── models/                     # ML models (gitignored)
 ├── docs/                       # Documentation
+│   ├── AUTH_USER_SERVICES_GUIDE.md  # ⭐ NEW
+│   ├── API_TESTING_GUIDE.md         # ⭐ NEW
+│   └── IMPLEMENTATION_SUMMARY.md     # ⭐ NEW
 └── README.md
 ```
 
