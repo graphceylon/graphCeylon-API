@@ -159,6 +159,10 @@ from api.routers import train_schedules
 app.include_router(train_schedules.router)
 app.dependency_overrides[train_schedules.get_db_manager] = api_deps.get_db_manager
 
+# Import and include GNN router
+from api.routers import gnn
+app.include_router(gnn.router)
+
 # API Endpoints
 
 @app.get("/health", response_model=HealthResponse)
