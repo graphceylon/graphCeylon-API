@@ -44,3 +44,6 @@ logs/
 # Testing
 .pytest_cache/
 .coverage
+
+**/reports/
+**/docs/
