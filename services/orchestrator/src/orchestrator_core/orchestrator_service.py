@@ -744,17 +744,31 @@ class OrchestratorService:
         print("==================================================\n")
 
         payload = contract_obj.model_dump(mode="json", exclude_none=True)
-        payload["preference_sources"] = pref_source  # ✅ add this
+
+        # ✅ If using envelope, store debug/trace inside trace{}
+        if "trace" in payload and isinstance(payload["trace"], dict):
+            payload["trace"]["preference_sources"] = pref_source
+        else:
+            payload["preference_sources"] = pref_source  # fallback for old-style payloads
+
+        # ✅ Attach semantic recall
         if req.user_id and intent_name in {"plan_itinerary", "modify_itinerary", "recommend_pois"}:
             recall = self._semantic_recall_for_request(
                 user_id=req.user_id,
-                q=req.input_text,   # use raw current user query text
+                q=req.input_text,
                 k=int(os.getenv("PHASE3_RECALL_TOPK", "5")),
             )
-            payload["semantic_context"] = {
+            semantic_context = {
                 "recall": recall.get("results", []),
                 "recall_ok": bool(recall.get("ok", False)),
             }
+
+            if "trace" in payload and isinstance(payload["trace"], dict):
+                payload["trace"]["semantic_context"] = semantic_context
+            else:
+                payload["semantic_context"] = semantic_context
+
+           
 
 
         print(f"=== {contract_obj.__class__.__name__} payload ({intent_name}) ===")
