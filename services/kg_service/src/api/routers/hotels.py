@@ -467,13 +467,14 @@ async def recommend_hotels(
             hotel["amenity_matches"] = record["amenity_match_count"]
             
             recommendations.append(hotel)
-            total_cost += hotel.get("rate_per_night", 0) * query.num_nights
+            rate = hotel.get("rate_per_night") or 0
+            total_cost += rate * query.num_nights
         
         # Calculate optimization score (0-100)
         if recommendations:
-            avg_rating = sum(h.get("rating", 0) for h in recommendations) / len(recommendations)
-            avg_distance = sum(h.get("distance_km", 0) for h in recommendations) / len(recommendations)
-            avg_price = total_cost / (len(recommendations) * query.num_nights)
+            avg_rating = sum(h.get("rating") or 0 for h in recommendations) / len(recommendations)
+            avg_distance = sum(h.get("distance_km") or 0 for h in recommendations) / len(recommendations)
+            avg_price = total_cost / (len(recommendations) * query.num_nights) if total_cost > 0 else 0
             
             # Normalize and combine
             rating_score = (avg_rating / 5.0) * 40  # 40% weight
