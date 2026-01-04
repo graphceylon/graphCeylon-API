@@ -68,6 +68,28 @@ def get_train_schedules(
         # Convert to response model - schedules_raw is already a list of schedule dicts
         schedules = []
         for schedule_dict in schedules_raw:
+            # Convert numeric fields properly
+            distance_val = schedule_dict.get("distance")
+            if distance_val is not None:
+                try:
+                    distance_val = float(distance_val)
+                except (ValueError, TypeError):
+                    distance_val = None
+            
+            train_stops_val = schedule_dict.get("train_stops")
+            if train_stops_val is not None:
+                try:
+                    train_stops_val = int(train_stops_val)
+                except (ValueError, TypeError):
+                    train_stops_val = None
+            
+            daily_train_count_val = schedule_dict.get("daily_train_count")
+            if daily_train_count_val is not None:
+                try:
+                    daily_train_count_val = int(daily_train_count_val)
+                except (ValueError, TypeError):
+                    daily_train_count_val = None
+            
             schedules.append({
                 "schedule_id": schedule_dict.get("schedule_id"),
                 "schedule_date": schedule_dict.get("schedule_date"),
@@ -78,8 +100,8 @@ def get_train_schedules(
                 "duration": schedule_dict.get("duration"),
                 "train_number": schedule_dict.get("train_number"),
                 "train_type": schedule_dict.get("train_type"),
-                "distance": schedule_dict.get("distance"),
-                "train_stops": schedule_dict.get("train_stops"),
+                "distance": distance_val,
+                "train_stops": train_stops_val,
                 "ends_at": schedule_dict.get("ends_at"),
                 "price_2nd_class": schedule_dict.get("price_2nd_class"),
                 "price_3rd_class": schedule_dict.get("price_3rd_class"),
@@ -87,7 +109,7 @@ def get_train_schedules(
                 "end_contact": schedule_dict.get("end_contact"),
                 "first_train_time": schedule_dict.get("first_train_time"),
                 "last_train_time": schedule_dict.get("last_train_time"),
-                "daily_train_count": schedule_dict.get("daily_train_count"),
+                "daily_train_count": daily_train_count_val,
             })
         
         return TrainScheduleResponse(
@@ -168,11 +190,42 @@ def find_routes_between_stations(
             limit=10
         )
         
+        logger.info(f"Retrieved {len(schedules_raw)} raw schedules from database")
+        
         routes = []
+        skipped_count = 0
         
         # Convert direct schedules to route options
-        for item in schedules_raw:
-            schedule_dict = item.get("schedule", {})
+        for schedule_dict in schedules_raw:
+            # Validate train_type - assign default if missing or invalid
+            train_type_str = schedule_dict.get("train_type")
+            if not train_type_str:
+                # Assign default train type based on train number pattern or default to Slow
+                train_number = schedule_dict.get("train_number", "")
+                if "express" in train_number.lower():
+                    train_type = TrainType.EXPRESS
+                elif "intercity" in train_number.lower():
+                    train_type = TrainType.INTERCITY
+                else:
+                    train_type = TrainType.SLOW  # Default fallback
+                logger.info(f"Assigned default train_type '{train_type.value}' to schedule {train_number}")
+            else:
+                try:
+                    train_type = TrainType(train_type_str)
+                except ValueError:
+                    # Invalid train type, assign default
+                    train_type = TrainType.SLOW
+                    logger.warning(f"Invalid train_type '{train_type_str}' for {schedule_dict.get('train_number')}, using default: Slow")
+            
+            # Convert distance to float
+            distance_val = schedule_dict.get("distance")
+            if distance_val is not None:
+                try:
+                    distance_km_float = float(distance_val)
+                except (ValueError, TypeError):
+                    distance_km_float = None
+            else:
+                distance_km_float = None
             
             # Parse price
             price_2nd = schedule_dict.get("price_2nd_class", "")
@@ -195,8 +248,8 @@ def find_routes_between_stations(
                 arrival_time=schedule_dict.get("arrival_time"),
                 duration=schedule_dict.get("duration"),
                 train_number=schedule_dict.get("train_number"),
-                train_type=TrainType(schedule_dict.get("train_type")),
-                distance_km=schedule_dict.get("distance_km"),
+                train_type=train_type,
+                distance_km=distance_km_float,
                 price_2nd_class=price_2nd,
                 price_3rd_class=price_3rd,
             )
@@ -204,13 +257,15 @@ def find_routes_between_stations(
             route = RouteOption(
                 segments=[segment],
                 total_duration=schedule_dict.get("duration"),
-                total_distance_km=schedule_dict.get("distance_km"),
+                total_distance_km=distance_km_float,
                 transfer_count=0,
                 total_price_2nd_class=price_2nd_val,
                 total_price_3rd_class=price_3rd_val,
             )
             
             routes.append(route)
+        
+        logger.info(f"Created {len(routes)} routes (skipped {skipped_count} invalid schedules)")
         
         # If transfers are allowed, find multi-leg routes
         if request.max_transfers > 0 and len(routes) == 0:
