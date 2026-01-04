@@ -21,7 +21,6 @@ from ..core.errors import STTError, TranslationError
 from ..core.logging import get_logger
 from ..translate.google_translate import GoogleTranslator
 from ..translate.openai_translate import OpenAITranslator
-from ..metrics.store import metrics
 
 logger = get_logger("language_service.health.checks")
 

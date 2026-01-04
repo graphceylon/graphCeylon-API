@@ -79,7 +79,7 @@ async def ws_ingest_voice(ws: WebSocket):
             if not session_id:
                 raise RuntimeError("session_id is not set. Send 'start' first.")
 
-            stt = get_stt()  # ✅ lazy init
+            stt = get_stt()
             await stt.transcribe_stream(
                 session_id=session_id,
                 audio_queue=audio_q,

@@ -5,7 +5,6 @@ from fastapi import APIRouter
 from typing import Dict, Any
 
 from ..core.settings import settings
-from ..metrics.store import metrics
 from .checks import (
     check_stt_rest,
     check_stt_streaming,
@@ -56,14 +55,3 @@ async def health_orchestrator() -> Dict[str, Any]:
     Orchestrator diagnostics: reachability + basic status.
     """
     return await check_orchestrator()
-
-
-@router.get("/metrics")
-async def get_metrics() -> Dict[str, Any]:
-    """
-    Returns in-memory latency/error metrics snapshots.
-    """
-    return {
-        "service": settings.SERVICE_NAME,
-        "metrics": metrics.snapshot(),
-    }
