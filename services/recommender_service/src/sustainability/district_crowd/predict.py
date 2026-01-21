@@ -152,37 +152,27 @@ def crowd_level_from_thresholds(value: float, thresholds: Dict[str, float]) -> s
     return "Extreme"
 
 
+import math
+
 def _compute_crowd_risk(adjusted_pressure: float, thresholds: Dict[str, float]) -> Dict[str, float]:
     """
-    Continuous metrics for sustainability scoring.
-    - pressure_vs_p90: ratio (e.g., 0.8 means below p90, 1.2 means above p90)
-    - crowd_risk_0_1: clamped 0..1 based on p90 anchor
-
-    Defensibility:
-    - p90 is a robust high-crowd anchor derived from baseline distribution.
+    Smooth crowd risk using ratio = pressure/p90 (no hard saturation).
+    - ratio=1.0 -> 0.50
+    - ratio=1.3 -> ~0.77
+    - ratio=1.6 -> ~0.90
     """
     p90 = thresholds.get("p90")
     if not p90 or p90 <= 0:
-        return {"pressure_vs_p90": float("nan"), "crowd_risk_0_1": float("nan")}
+        return {"pressure_vs_p90": float("nan"), "crowd_risk_0_1": 0.5}
 
-    ratio = float(adjusted_pressure) / float(p90)
-    # risk saturates at 1.0 once you reach p90
-    risk = max(0.0, min(1.0, ratio))
+    pressure = float(adjusted_pressure)
+    ratio = pressure / float(p90)
+
+    k = 4.0  # steepness
+    risk = 1.0 / (1.0 + math.exp(-k * (ratio - 1.0)))  # sigmoid centered at 1.0
+
     return {"pressure_vs_p90": float(ratio), "crowd_risk_0_1": float(risk)}
 
-def crowd_level_to_risk_0_1(level: str) -> float:
-    l = (level or "").strip().lower()
-    if l == "low":
-        return 0.2
-    if l == "moderate":
-        return 0.4
-    if l == "high":
-        return 0.6
-    if l == "veryhigh":
-        return 0.8
-    if l == "extreme":
-        return 1.0
-    return 0.5
 
 def predict_district_crowd(district: str, dt: DateLike) -> Dict[str, Any]:
     month_start = to_month_start(dt)
@@ -221,15 +211,26 @@ def predict_district_crowd(district: str, dt: DateLike) -> Dict[str, Any]:
     adjusted_pressure = expected * domestic_factor
 
     # Use district thresholds if available, else global
-    th = district_thresholds.get(district) or global_thresholds
-    level = crowd_level_from_thresholds(adjusted_pressure, th)
+    # keep district thresholds only for label (optional)
+    th_label = district_thresholds.get(district) or global_thresholds
+    p25 = float(global_thresholds.get("p25", 0))
+    p90 = float(global_thresholds.get("p90", 0))
 
-    # Sustainability-friendly continuous metrics
-    risk_metrics = _compute_crowd_risk(adjusted_pressure, th)
+    print(
+        f"[CROWD-DBG] {district} {month_start.date()} "
+        f"share={share:.6f} total={total_arrivals:.0f} dom={domestic_factor:.2f} "
+        f"pressure={adjusted_pressure:.0f} p25={p25:.0f} p90={p90:.0f} "
+        f"pressure/p90={(adjusted_pressure/p90 if p90 else float('nan')):.2f}"
+)
 
-    # ✅ force crowd_risk_0_1 to be derived from ratio
+    # ✅ use GLOBAL thresholds for risk so districts differ
+    risk_metrics = _compute_crowd_risk(adjusted_pressure, global_thresholds)
+
     crowd_risk = risk_metrics["crowd_risk_0_1"]
     pressure_vs_p90 = risk_metrics["pressure_vs_p90"]
+
+    level = crowd_level_from_thresholds(adjusted_pressure, th_label)
+
 
     return {
         "status": "ok",
@@ -242,15 +243,11 @@ def predict_district_crowd(district: str, dt: DateLike) -> Dict[str, Any]:
         "domestic_multiplier_used": domestic_factor,
         "total_district_pressure": adjusted_pressure,
         "crowd_level": level,
-
-        # ✅ new, defensible metrics for Sustainability Index
         "pressure_vs_p90": pressure_vs_p90,
-
-        # ✅ FIX: this variable must exist
         "crowd_risk_0_1": crowd_risk,
-
-        "thresholds_used": "district" if district in district_thresholds else "global",
-        "thresholds": th,
+        "thresholds_used": "district_for_label + global_for_risk",
+        "thresholds_label": th_label,
+        "thresholds_risk": global_thresholds,
     }
 
 

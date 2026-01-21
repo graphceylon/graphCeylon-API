@@ -92,6 +92,12 @@ def enrich_attraction(
 ) -> Dict[str, Any]:
     # 1) crowd
     crowd = predict_attraction_crowd(attraction_id, date_str)
+    # print(
+    #     f"[CROWD] attraction_id={attraction_id} date={date_str} "
+    #     f"district={crowd.get('district')} "
+    #     f"crowd_risk_0_1={crowd.get('crowd_risk_0_1')} "
+    #     f"source={crowd.get('source')}"
+    # )
 
     district = str(crowd.get("district") or "").strip() or None
     city_used = _resolve_weather_city(district=district, explicit_city=explicit_city)

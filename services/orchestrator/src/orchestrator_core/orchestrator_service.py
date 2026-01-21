@@ -96,6 +96,27 @@ def normalize_executor_output(out: Any) -> tuple[dict, list]:
             return a, b if isinstance(b, list) else []
 
     return {}, []
+def _resolve_weather_city(self, entities: Dict[str, Any]) -> Optional[str]:
+    city = (entities.get("city") or "").strip()
+    if city:
+        return city
+
+    region = (entities.get("region") or "").strip().lower()
+
+    REGION_DEFAULT_CITY = {
+        "south": "Galle",
+        "southern": "Galle",
+        "hill country": "Kandy",
+        "central": "Kandy",
+        "east": "Trincomalee",
+        "eastern": "Trincomalee",
+        "north": "Jaffna",
+        "northern": "Jaffna",
+        "west": "Colombo",
+        "western": "Colombo",
+    }
+
+    return REGION_DEFAULT_CITY.get(region)
 
 
 def build_exec_tasks(builder: TaskGraphBuilder, parsed_intent) -> List[ExecTask]:
@@ -744,17 +765,49 @@ class OrchestratorService:
         print("==================================================\n")
 
         payload = contract_obj.model_dump(mode="json", exclude_none=True)
-        payload["preference_sources"] = pref_source  # ✅ add this
+        # ✅ Weather location resolver (prevents 500 when city is missing)
+        if intent_name == "forecast_weather":
+            # entities could be a Pydantic model or dict
+            ents = (
+                patched_intent.entities.model_dump(exclude_none=True)
+                if hasattr(patched_intent.entities, "model_dump")
+                else (patched_intent.entities or {})
+            )
+
+            resolved_city = self._resolve_weather_city(ents)
+
+            if resolved_city:
+                payload["city"] = resolved_city  # enforce a real city
+            else:
+                # no location → fail gracefully (don’t call downstream)
+                print("[orchestrator] forecast_weather missing location (no city/region mapping)")
+                return {"ok": False, "error": "Missing location for weather forecast"}
+
+
+        # ✅ If using envelope, store debug/trace inside trace{}
+        if "trace" in payload and isinstance(payload["trace"], dict):
+            payload["trace"]["preference_sources"] = pref_source
+        else:
+            payload["preference_sources"] = pref_source  # fallback for old-style payloads
+
+        # ✅ Attach semantic recall
         if req.user_id and intent_name in {"plan_itinerary", "modify_itinerary", "recommend_pois"}:
             recall = self._semantic_recall_for_request(
                 user_id=req.user_id,
-                q=req.input_text,   # use raw current user query text
+                q=req.input_text,
                 k=int(os.getenv("PHASE3_RECALL_TOPK", "5")),
             )
-            payload["semantic_context"] = {
+            semantic_context = {
                 "recall": recall.get("results", []),
                 "recall_ok": bool(recall.get("ok", False)),
             }
+
+            if "trace" in payload and isinstance(payload["trace"], dict):
+                payload["trace"]["semantic_context"] = semantic_context
+            else:
+                payload["semantic_context"] = semantic_context
+
+           
 
 
         print(f"=== {contract_obj.__class__.__name__} payload ({intent_name}) ===")
@@ -992,7 +1045,9 @@ class OrchestratorService:
         # 🔥 Update task status based on DAG execution
         task_status_by_id: Dict[str, str] = {}
         for task in exec_tasks:
-            task_status_by_id[task.id] = "completed" if task.id in dag_results else "pending"
+            out = dag_results.get(task.id, None)
+            task_status_by_id[task.id] = "completed" if out not in (None, {"ok": False}) else "failed"
+
 
             
         print("[orchestrator] dag_results keys =", list(dag_results.keys()))
