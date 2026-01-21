@@ -6,7 +6,7 @@ from pathlib import Path
 from neo4j import Driver
 
 from services.embeddings import embedding_service
-from models.graphrag import GraphExtraction
+from models.ai.graphrag import GraphExtraction
 from services.graphrag.config import graphrag_config
 from services.graphrag.entity_extractor import EntityExtractor
 from services.graphrag.chunk_processor import ChunkProcessor

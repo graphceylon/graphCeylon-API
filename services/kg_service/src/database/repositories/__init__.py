@@ -6,6 +6,7 @@ from .holiday_repository import HolidayRepository
 from .project_repository import ProjectRepository
 from .news_repository import NewsRepository
 from .ontology_repository import OntologyRepository
+from .railway_repository import RailwayRepository
 
 __all__ = [
     "BaseRepository",
@@ -14,4 +15,5 @@ __all__ = [
     "ProjectRepository",
     "NewsRepository",
     "OntologyRepository",
+    "RailwayRepository",
 ]

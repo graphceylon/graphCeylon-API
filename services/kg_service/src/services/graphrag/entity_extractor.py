@@ -3,7 +3,7 @@
 import logging
 from typing import Optional
 
-from models.graphrag import GraphExtraction, GraphNode, GraphRelationship
+from models.ai.graphrag import GraphExtraction, GraphNode, GraphRelationship
 from services.graphrag.config import graphrag_config
 from services.llm import LLMFactory
 from core.config import settings

@@ -18,12 +18,12 @@ class HolidayRepository(BaseRepository):
         """Initialize holiday repository."""
         super().__init__(driver)
     
-    def initialize_temporal_structure(self, start_year: int = 2020, end_year: int = 2030) -> Dict[str, Any]:
+    def initialize_temporal_structure(self, start_year: int = 2020, end_year: int = 2026) -> Dict[str, Any]:
         """Initialize the temporal structure (Year -> Month hierarchy).
         
         Args:
             start_year: Starting year (default: 2020)
-            end_year: Ending year (default: 2030)
+            end_year: Ending year (default: 2026)
             
         Returns:
             Dictionary with success status and counts
