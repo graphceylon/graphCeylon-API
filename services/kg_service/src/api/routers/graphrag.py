@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from database.manager import DatabaseManager
 from services.graphrag import GraphRAGService
 from core.config import settings
-from models.graphrag import (
+from models.ai.graphrag import (
     IngestImmigrationDataRequest,
     IngestImmigrationDataResponse,
     RAGQueryRequest,

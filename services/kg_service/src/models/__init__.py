@@ -1,4 +1,11 @@
-"""Models package for the Knowledge Graph application."""
+"""Models package for the Knowledge Graph application.
+
+This package organizes models into logical submodules:
+- base: Core response and base models
+- graph: Knowledge graph and temporal models
+- domain: Domain-specific models (attractions, holidays, projects, news)
+- ai: AI-related models (agent, graphrag)
+"""
 
 # Base models
 from .base import (
@@ -8,8 +15,8 @@ from .base import (
     StatisticsResponse,
 )
 
-# Knowledge Graph models
-from .knowledge_graph import (
+# Knowledge Graph models (from graph submodule)
+from .graph.knowledge_graph import (
     QueryRequest,
     ReasonRequest,
     PredictRequest,
@@ -25,8 +32,8 @@ from .knowledge_graph import (
     ExplainResponse,
 )
 
-# Attraction models
-from .attractions import (
+# Attraction models (from domain submodule)
+from .domain.attraction import (
     AttractionModel,
     CreateAttractionRequest,
     AttractionQueryRequest,
@@ -36,8 +43,8 @@ from .attractions import (
     GooglePlaceDataModel,
 )
 
-# Holiday models
-from .holidays import (
+# Holiday models (from domain submodule)
+from .domain.holiday import (
     HolidayModel,
     CreateHolidayRequest,
     HolidayQueryRequest,
@@ -45,30 +52,30 @@ from .holidays import (
     TemporalStructureResponse,
 )
 
-# Project models
-from .projects import (
+# Project models (from domain submodule)
+from .domain.project import (
     TourismProjectModel,
     CreateProjectRequest,
     ProjectQueryRequest,
     ProjectResponse,
 )
 
-# News models
-from .news import (
+# News models (from domain submodule)
+from .domain.news import (
     NewsArticleModel,
     CreateNewsRequest,
     NewsQueryRequest,
     NewsResponse,
 )
 
-# Agent models
-from .agent import (
+# Agent models (from ai submodule)
+from .ai.agent import (
     AgentSearchRequest,
     AgentPlanRequest,
 )
 
-# GraphRAG models
-from .graphrag import (
+# GraphRAG models (from ai submodule)
+from .ai.graphrag import (
     IngestImmigrationDataRequest,
     IngestImmigrationDataResponse,
     RAGQueryRequest,
@@ -78,6 +85,12 @@ from .graphrag import (
     GraphNode,
     GraphRelationship,
     GraphExtraction,
+    TravelWindow,
+    VisaPolicyQueryRequest,
+    EvidenceSource,
+    RuleConditions,
+    VisaRule,
+    VisaPolicyResponse,
 )
 
 __all__ = [
@@ -137,4 +150,11 @@ __all__ = [
     "GraphNode",
     "GraphRelationship",
     "GraphExtraction",
+    # Visa Policy
+    "TravelWindow",
+    "VisaPolicyQueryRequest",
+    "EvidenceSource",
+    "RuleConditions",
+    "VisaRule",
+    "VisaPolicyResponse",
 ]

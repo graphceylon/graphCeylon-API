@@ -29,7 +29,7 @@ class ReasoningOrchestrator:
             
             cypher = (
                 "MATCH path=shortestPath((p:Province {name:$start})-[*..4]-(t:District {name:$end})) "
-                "RETURN [n IN nodes(path) | {id:id(n), labels:labels(n), name:coalesce(n.name,'')} ] AS nodes, "
+                "RETURN [n IN nodes(path) | {id:elementId(n), labels:labels(n), name:coalesce(n.name,'')} ] AS nodes, "
                 "[r IN relationships(path) | type(r)] AS rels LIMIT 1"
             )
             
