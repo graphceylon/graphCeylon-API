@@ -51,14 +51,13 @@ class IntentParserAgent:
 
     def __init__(
         self,
-        model_dir: str = "intent_multilabel_final",
+        model_dir: str = "intent_multilabel_final_v2",
         threshold: float = 0.2,
         top_k_if_empty: int = 2,
         enable_entity_extraction: bool = True,
     ) -> None:
         """
         :param model_dir: Folder name of the final model (relative in local dev),
-                          e.g. 'intent_multilabel_final'
         :param threshold: Probability threshold for selecting labels
         :param top_k_if_empty: Fallback number of labels if none exceed threshold
         :param enable_entity_extraction: If True, call LLM+rules to fill entities and preference_overrides
@@ -68,13 +67,13 @@ class IntentParserAgent:
         env_dir = os.getenv("INTENT_MODEL_DIR")
 
         if env_dir:
-            # In Docker we set INTENT_MODEL_DIR=/models/orchestrator/intent_multilabel_final
+            # In Docker we set INTENT_MODEL_DIR=/models/orchestrator/intent_multilabel_final_v2
             model_path = env_dir
         else:
             # Local dev: interpret model_dir as a folder under models/orchestrator/
             # Project root: .../graphCeylon-API/
             # This file:   .../services/orchestrator/src/orchestrator_core/intent_parser/agent.py
-            project_root = Path(__file__).resolve().parents[6]  # adjust if your depth changes
+            project_root = Path(__file__).resolve().parents[5]  # adjust if your depth changes
             model_path = project_root / "models" / "orchestrator" / model_dir
 
         model_path = str(model_path)
@@ -82,6 +81,10 @@ class IntentParserAgent:
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_path)
+        print("[IntentParserAgent] num_labels:", self.model.config.num_labels)
+        print("[IntentParserAgent] problem_type:", getattr(self.model.config, "problem_type", None))
+        print("[IntentParserAgent] id2label:", self.model.config.id2label)
+
         self.model.eval()
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -121,6 +124,11 @@ class IntentParserAgent:
             outputs = self.model(**inputs)
             logits = outputs.logits.detach().cpu().numpy()
             probs = expit(logits)[0]
+            print("[IntentParserAgent] logits min/max:", float(logits.min()), float(logits.max()))
+            print("[IntentParserAgent] probs  min/max:", float(probs.min()), float(probs.max()))
+            top = probs.argsort()[-5:][::-1]
+            print("[IntentParserAgent] top5:", [(id2label[i], float(probs[i])) for i in top])
+
 
         # Thresholding
         pred_indices = np.where(probs >= self.threshold)[0]

@@ -1,83 +1,117 @@
-# /Users/dev/Desktop/graphCeylon-API/services/recommender_service/src/api/routes/itinerary.py
-from __future__ import annotations
-
-from typing import Any, Dict, Optional
+from datetime import date, timedelta
+from typing import Any, Dict, Optional, List, Union
+from fastapi import APIRouter
+from pydantic import BaseModel, Field
 from pprint import pprint
 
-
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-
-from src.api.deps import get_db
-from src.poi.store import get_pois_near_city
+from services.recommender_service.src.itinerary.planner.itinerary_planner import (
+    build_itinerary_from_payload,
+    PlannerConfig,
+)
+from fastapi.encoders import jsonable_encoder
+import json
 
 router = APIRouter(prefix="/itinerary", tags=["itinerary"])
 
 
+class ItineraryPlanRequest(BaseModel):
+    intent: str = Field(default="plan_itinerary")
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    raw_text: Optional[str] = None
+
+    city: Optional[str] = None
+    destination: Optional[str] = None
+    country: str = "Sri Lanka"
+    origin_city: Optional[str] = None
+
+
+    start_date: Optional[str] = None  # YYYY-MM-DD
+    end_date: Optional[str] = None
+    days: int = 3
+
+    eco_preference: float = 0.5
+    travel_style: Optional[List[str]] = None
+    food_preferences: Optional[List[str]] = None
+
+    max_trip_budget_lkr: Optional[int] = None
+    currency: str = "LKR"
+
+
+class C3RequestEnvelope(BaseModel):
+    intent: str = Field(default="plan_itinerary")
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    query: Dict[str, Any] = Field(default_factory=dict)
+    prefs: Dict[str, Any] = Field(default_factory=dict)
+    constraints: Dict[str, Any] = Field(default_factory=dict)
+    trace: Dict[str, Any] = Field(default_factory=dict)
+
+
+def normalize_payload(req: Union[ItineraryPlanRequest, C3RequestEnvelope]) -> Dict[str, Any]:
+    # If envelope: merge query+prefs+constraints into a single dict your planner expects
+    if isinstance(req, C3RequestEnvelope):
+        payload = {}
+        payload.update(req.query or {})
+        payload.update(req.prefs or {})
+        payload.update(req.constraints or {})
+
+        # carry identity + intent
+        payload["intent"] = req.intent
+        payload["user_id"] = req.user_id
+        payload["session_id"] = req.session_id
+
+        # optional: keep trace for debug (won’t hurt)
+        payload["trace"] = req.trace or {}
+        return payload
+
+    # Else: flat request
+    return req.model_dump()
+
+
 @router.post("/plan")
-def itinerary_plan(payload: Dict[str, Any], db: Session = Depends(get_db)):
-    """
-    Temporary handler to confirm orchestrator → recommender payload correctness.
-    Prints all preference-related fields and optionally a preference_sources map.
-    Later you will replace this with a Pydantic request model + real logic.
-    """
-    print("\n================ FULL ITINERARY REQUEST RECEIVED =================")
-    pprint(payload, width=120)
-    print("=================================================================\n")
-    print("\n================ RECOMMENDER /itinerary/plan RECEIVED =================")
-    print(f"intent     : {payload.get('intent')}")
-    print(f"user_id    : {payload.get('user_id')}")
-    print(f"session_id : {payload.get('session_id')}")
-    print("-----------------------------------------------------------------------")
+def itinerary_plan(req: Union[ItineraryPlanRequest, C3RequestEnvelope]) -> Dict[str, Any]:
+    try:
+        payload = normalize_payload(req)
 
-    # Print the main preference fields you care about
-    keys_to_show = [
-        "travel_style",
-        "food_preferences",
-        "eco_preference",
-        "avoid_crowds",
-        "budget_level",
-        "max_trip_budget_lkr",
-        "currency",
-        "preferred_transport",
-        "walking_tolerance_minutes",
-        "accommodation_type",
-        "star_preference",
-        "must_have_amenities",
-        "cancellation_preference",
-        "sun_sensitivity",
-        "rain_preference",
-        "temperature_preference",
-        "motion_sickness",
-        "tags",
-    ]
-    for k in keys_to_show:
-        v = payload.get(k)
-        if v not in (None, "", [], {}):
-            print(f"{k:<24}: {v}")
+        print("\n================ C3 /itinerary/plan RECEIVED PAYLOAD ================")
+        pprint(payload)
+        print("====================================================================\n")
 
-    # If you later add this to payload, you'll see it here
-    pref_sources: Optional[Dict[str, str]] = payload.get("preference_sources")
-    if isinstance(pref_sources, dict) and pref_sources:
-        print("\nPreference sources (query vs db):")
-        for k, src in pref_sources.items():
-            print(f"{k:<24}: {src}")
+        # ✅ days: always read from payload (not hardcoded)
+        days = int(payload.get("days") or 3)
+        if days <= 0:
+            days = 1
+        payload["days"] = days
 
-    print("=======================================================================\n")
+        # ✅ default start_date
+        if not payload.get("start_date"):
+            payload["start_date"] = date.today().isoformat()
 
-        # -------- KG substitute: load POIs near base city --------
-    base_city = payload.get("city") or payload.get("destination")
+        # ✅ default end_date (computed using days)
+        if not payload.get("end_date"):
+            d0 = date.fromisoformat(payload["start_date"])
+            payload["end_date"] = (d0 + timedelta(days=days - 1)).isoformat()
 
-    candidates = get_pois_near_city(base_city)
+        cfg = PlannerConfig(
+            per_day_attractions=int(payload.get("per_day_attractions") or 2),
+            meals_per_day=int(payload.get("meals_per_day") or 1),
+            max_candidates=int(payload.get("max_candidates") or 80),
+        )
 
-    print(f"\nFound {len(candidates)} POIs near {base_city}:")
-    for p in candidates:
-        print(f" - {p.title} ({p.district})")
+        # ✅ build itinerary
+        result = build_itinerary_from_payload(payload, cfg=cfg)
 
+        # ✅ PRINT RESPONSE (pretty)
+        print("\n================ C3 /itinerary/plan RESPONSE ================")
+        # make sure it's json-serializable (handles dates, pydantic, etc.)
+        safe = jsonable_encoder(result)
+        print(json.dumps(safe, indent=2, ensure_ascii=False))
+        print("=============================================================\n")
 
-    # For now return a simple echo (so you can verify in Postman/orchestrator)
-    return {
-        "status": "ok",
-        "message": "itinerary/plan received (debug endpoint).",
-        "received_keys": sorted(list(payload.keys())),
-    }
+        return result
+
+    except Exception as e:
+        print("\n🔥 C3 ITINERARY ERROR 🔥")
+        print(type(e).__name__, str(e))
+        raise

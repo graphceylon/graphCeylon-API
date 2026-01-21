@@ -1,0 +1,28 @@
+{
+  "baseline_years": [
+    2018,
+    2019
+  ],
+  "baseline_rows_used": 24,
+  "district_count": 25,
+  "quantiles": [
+    0.25,
+    0.5,
+    0.75,
+    0.9
+  ],
+  "winsorization": {
+    "enabled": true,
+    "lower_quantile": 0.02,
+    "upper_quantile": 0.98,
+    "rationale": "Reduce outlier influence in baseline distribution; improves robustness of p75/p90 thresholds."
+  },
+  "domestic_multiplier": {
+    "file": "data/recommender_service/clean/crowd/domestic_multipliers.json",
+    "applied_per_month": true,
+    "rationale": "District crowd pressure includes domestic tourism seasonality; multiplier inflates foreign-only baseline into total pressure."
+  },
+  "shares_file": "data/recommender_service/clean/sustainability/district_share_blended.json",
+  "arrivals_file": "data/recommender_service/clean/sltda_arrivals_monthly.csv",
+  "warnings": []
+}

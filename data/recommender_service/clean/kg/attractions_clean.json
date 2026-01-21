@@ -229,6 +229,8 @@
   "district": "Kandy",
   "province": "Central Province",
   "source": "sltda",
+  "types": ["culture", "history", "religious", "heritage"],
+
   "place_id": "ChIJd8BlQY5m4zoR8Lus9iFqBRQ",
   "description": "Sri Dalada Maligawa is the most sacred Buddhist temple in Sri Lanka and houses the tooth relic of Lord Buddha.",
   "image_url": "",
@@ -242,6 +244,8 @@
   "district": "Kandy",
   "province": "Central Province",
   "source": "sltda",
+  "types": ["nature", "city_walk", "family", "outdoor"]
+,
   "place_id": "",
   "description": "Scenic walking path around Kandy Lake, ideal for families and evening leisure walks.",
   "image_url": "",
@@ -256,6 +260,8 @@
   "province": "Central Province",
   "source": "sltda",
   "place_id": "",
+  "types": ["nature", "wildlife", "eco", "outdoor"]
+,
   "description": "Protected forest reserve above Kandy city, home to birdlife and nature trails.",
   "image_url": "",
   "maps_url": ""
@@ -268,6 +274,8 @@
   "district": "Kandy",
   "province": "Central Province",
   "source": "sltda",
+  "types": ["culture", "history", "museum", "heritage"]
+,
   "place_id": "",
   "description": "Museum showcasing global Buddhist heritage located near the Temple of the Tooth.",
   "image_url": "",
@@ -281,6 +289,8 @@
   "district": "Kandy",
   "province": "Central Province",
   "source": "sltda",
+  "types": ["nature", "eco", "family", "outdoor"]
+,
   "place_id": "",
   "description": "Large botanical garden featuring over 4000 species of plants and orchids.",
   "image_url": "",
@@ -295,6 +305,8 @@
       "district": "Gampaha",
       "province": "Western Province",
       "source": "sltda",
+      "types": ["city", "transport", "commercial"]
+,
       "place_id": "ChIJT4n389fv4joR8b2A_vpE4rw",
       "description": "Katunayake a town is situated on the west coast of the island of Sri Lanka near Negombo and close to the commercial capital of Colombo. It is the site of Bandaranaike International Airport, the primary international air gateway to Sri Lanka. With the change of government in 1977 and the introduction of the open economy policy a large area was allocated to create a free trade zone. This created a large amount of job opportunities for the local youth and has contributed substantially towards the country's economy.",
       "image_url": "https://www.sltda.gov.lk/storage/common_media/BIA_Airport-6003438601877.jpg",
@@ -308,6 +320,8 @@
       "district": "Kegalle",
       "province": "Central Province",
       "source": "sltda",
+      "types": ["adventure", "nature", "outdoor", "eco"]
+,
       "place_id": "ChIJezMqSx2g4zoRSrAT2Ku5q1Q",
       "description": "Kitulgala is a small town in the west of Sri Lanka. It is in the wet zone rainforest, which gets two monsoons each year, and is one of the wettest places in the country. Nevertheless, it comes alive in the first three months of the year, especially in February, the driest month. The Academy Award-winning \"The Bridge on the River Kwai\" was filmed on the Kelani River near Kitulgala, although nothing remains now except the concrete foundations for the bridge Kitulgala is also a base for white-water rafting, which starts a few kilometres upstream.",
       "image_url": "https://www.sltda.gov.lk/storage/common_media/kitulgala06_3526839061_o429146313.jpg",
@@ -321,6 +335,8 @@
       "district": "Matale",
       "province": "Central Province",
       "source": "sltda",
+      "types": ["nature", "adventure", "eco", "outdoor", "wildlife"]
+,
       "place_id": "ChIJmejum2Vf4zoRjYiKBiPM9zs",
       "description": "The Knuckles Mountain Range lies in central Sri Lanka, north-east of the city of Kandy. The range takes its name from a series of recumbent folds and peaks in the west of the massif which resemble the knuckles of clenched fist when viewed from certain locations in the Kandy District. Whilst this name was assigned by early British surveyors, the Sinhalese residents have traditionally referred to the area as Dumbara Kanduvetiya meaning mist-laden mountain range (Cooray, 1984). The entire area is characterised by its striking landscapes often robed in thick layers of cloud but in addition to its aesthetic value the range is of great scientific interest. It is a climatic microcosm of the rest of Sri Lanka.",
       "image_url": "https://www.sltda.gov.lk/storage/common_media/mistymountains07_3526857553_o2058697105.jpg",
@@ -334,6 +350,8 @@
       "district": "Mannar",
       "province": "Northern Province",
       "source": "sltda",
+      "types": ["beach", "nature", "culture"]
+,
       "place_id": "ChIJbUbZugF2_joRFX1exJHg38U",
       "description": "Mannar Island is part of Mannar District, Sri Lanka. It is linked to the rest of Sri Lanka by a causeway.",
       "image_url": "https://www.sltda.gov.lk/storage/common_media/mannar-02_3526902423_o575699680.jpg",
@@ -347,6 +365,8 @@
       "district": "Matara",
       "province": "Southern Province",
       "source": "sltda",
+      "types": ["culture", "history", "heritage", "city"]
+,
       "place_id": "ChIJ2XyTUdE44ToRowlwiUUfcR0",
       "description": "Matara historically belongs to the area called Ruhana, one of the three kingdoms in Sri Lanka (Thun Sinhalaya). First Indians who arrived to the island country according to the Mahawansa settled in the area, along the banks of Nilwala river. Matara was ruled by Sinhala kings for thousands of years and this is evident by the ancient temples and shrines built by them such as temples in Dondra (Devinuwara) and Weherahena. The temple in the middle of the town is also built by ancient kings and now it is a very popular sacred place among the Buddhists in the area. In 16th and 18th centuries Matara was ruled by Portuguese and Dutch respectively.",
       "image_url": "https://www.sltda.gov.lk/storage/common_media/matara3_6_3527738882_o3816677461.jpg",
@@ -559,6 +579,203 @@
       "description": "Yala National Park is a national park in Sri Lanka. The reserve covers 979 km², although only the original 141 km² are open to the public. It was established in 1894 as a Game Sanctuary. Much of the reserve is parkland, but it also contains jungle, beaches, freshwater lakes and rivers and scrubland. The latter zone is punctuated with enormous rocky outcrops. The range of habitats give rise to a good range of wildlife.",
       "image_url": "https://www.sltda.gov.lk/storage/common_media/no-image3259671102.png",
       "maps_url": "https://maps.google.com/?cid=4302665900514489108"
-    }
+    },
+      {
+    "attraction_id": "kandy_view_point",
+    "title": "Kandy View Point",
+    "lat": 7.2906,
+    "lng": 80.6350,
+    "district": "Kandy",
+    "province": "Central Province",
+    "source": "sltda",
+    "types": ["scenic", "viewpoint", "nature", "photography"],
+    "place_id": "",
+    "description": "Popular viewpoint overlooking Kandy city, the lake and surrounding hills, especially beautiful at sunset.",
+    "image_url": "",
+    "maps_url": ""
+  },
+  {
+    "attraction_id": "three_temple_loop",
+    "title": "Three-Temple Loop Walk",
+    "lat": 7.3014,
+    "lng": 80.6379,
+    "district": "Kandy",
+    "province": "Central Province",
+    "source": "sltda",
+    "types": ["culture", "heritage", "walking", "religious"],
+    "place_id": "",
+    "description": "A short walking trail connecting Asgiriya, Malwatte and International Buddhist temples, ideal for cultural exploration.",
+    "image_url": "",
+    "maps_url": ""
+  },
+  {
+    "attraction_id": "asgirigiriya_rock",
+    "title": "Asgiri Giri Rock Cave Temple",
+    "lat": 7.3001,
+    "lng": 80.6363,
+    "district": "Kandy",
+    "province": "Central Province",
+    "source": "sltda",
+    "types": ["heritage", "culture", "buddhist", "rock_temple"],
+    "place_id": "",
+    "description": "Ancient rock cave temple complex associated with Asgiriya monastery, offering panoramic city views.",
+    "image_url": "",
+    "maps_url": ""
+  },
+  {
+    "attraction_id": "international_buddhist_library",
+    "title": "International Buddhist Library & Museum",
+    "lat": 7.2953,
+    "lng": 80.6412,
+    "district": "Kandy",
+    "province": "Central Province",
+    "source": "sltda",
+    "types": ["culture", "history", "library", "museum"],
+    "place_id": "",
+    "description": "Buddhist research library and cultural center located close to the Temple of the Tooth Relic.",
+    "image_url": "",
+    "maps_url": ""
+  },
+  {
+    "attraction_id": "kandy_city_walk",
+    "title": "Kandy City Heritage Walk",
+    "lat": 7.2925,
+    "lng": 80.6388,
+    "district": "Kandy",
+    "province": "Central Province",
+    "source": "sltda",
+    "types": ["culture", "heritage", "walking", "city_tour"],
+    "place_id": "",
+    "description": "Guided or self-guided walking tour around the historic streets, markets and colonial landmarks of Kandy.",
+    "image_url": "",
+    "maps_url": ""
+  },{
+  "attraction_id": "gregory_lake",
+  "title": "Gregory Lake",
+  "lat": 6.9514,
+  "lng": 80.7900,
+  "district": "Nuwara Eliya",
+  "province": "Central Province",
+  "source": "sltda",
+  "types": ["nature", "lake", "family", "walking", "boating"],
+  "place_id": "",
+  "description": "A scenic lake in the heart of Nuwara Eliya offering boating, lakeside walks, and cool-climate relaxation.",
+  "image_url": "",
+  "maps_url": ""
+}
+,{
+  "attraction_id": "hakgala_botanical_garden",
+  "title": "Hakgala Botanical Garden",
+  "lat": 6.9288,
+  "lng": 80.8186,
+  "district": "Nuwara Eliya",
+  "province": "Central Province",
+  "source": "sltda",
+  "types": ["nature", "botanical_garden", "flowers", "family", "eco"],
+  "place_id": "",
+  "description": "A high-altitude botanical garden famous for seasonal blooms, forest trails, and biodiversity near Hakgala.",
+  "image_url": "",
+  "maps_url": ""
+}
+,{
+  "attraction_id": "horton_plains_national_park",
+  "title": "Horton Plains National Park (World’s End)",
+  "lat": 6.8016,
+  "lng": 80.8047,
+  "district": "Nuwara Eliya",
+  "province": "Central Province",
+  "source": "sltda",
+  "types": ["nature", "national_park", "hiking", "eco", "wildlife"],
+  "place_id": "",
+  "description": "A protected montane plateau with iconic viewpoints like World’s End, cloud forests, and trekking routes.",
+  "image_url": "",
+  "maps_url": ""
+}
+,{
+  "attraction_id": "nine_arch_bridge",
+  "title": "Nine Arch Bridge",
+  "lat": 6.8767,
+  "lng": 81.0602,
+  "district": "Badulla",
+  "province": "Uva Province",
+  "source": "sltda",
+  "types": ["heritage", "architecture", "walking", "viewpoint", "history"],
+  "place_id": "",
+  "description": "A colonial-era railway viaduct near Ella, popular for scenic views, train sightings, and short hikes.",
+  "image_url": "",
+  "maps_url": ""
+}
+,{
+  "attraction_id": "ravana_falls",
+  "title": "Ravana Falls",
+  "lat": 6.8609,
+  "lng": 81.0552,
+  "district": "Badulla",
+  "province": "Uva Province",
+  "source": "sltda",
+  "types": ["nature", "waterfall", "eco", "photography", "outdoor"],
+  "place_id": "",
+  "description": "A dramatic roadside waterfall near Ella, linked to local legends and surrounded by lush hill-country scenery.",
+  "image_url": "",
+  "maps_url": ""
+}
+,{
+  "attraction_id": "ella_rock_hike",
+  "title": "Ella Rock Hike",
+  "lat": 6.8472,
+  "lng": 81.0466,
+  "district": "Badulla",
+  "province": "Uva Province",
+  "source": "sltda",
+  "types": ["hiking", "nature", "viewpoint", "adventure", "eco"],
+  "place_id": "",
+  "description": "A popular hill trek offering panoramic views of tea estates and valleys, ideal for adventurous travelers.",
+  "image_url": "",
+  "maps_url": ""
+}
+,{
+  "attraction_id": "aluvihare_rock_temple",
+  "title": "Aluvihare Rock Temple",
+  "lat": 7.4670,
+  "lng": 80.6215,
+  "district": "Matale",
+  "province": "Central Province",
+  "source": "sltda",
+  "types": ["culture", "history", "religious", "heritage", "buddhist"],
+  "place_id": "",
+  "description": "A historic Buddhist temple complex known for cave shrines and cultural significance in Sri Lankan Buddhism.",
+  "image_url": "",
+  "maps_url": ""
+}
+,{
+  "attraction_id": "sembuwatta_lake",
+  "title": "Sembuwatta Lake",
+  "lat": 7.4055,
+  "lng": 80.7176,
+  "district": "Matale",
+  "province": "Central Province",
+  "source": "sltda",
+  "types": ["nature", "lake", "eco", "family", "outdoor"],
+  "place_id": "",
+  "description": "A tranquil man-made lake surrounded by pine forests, offering peaceful walks, viewpoints, and cool climate scenery.",
+  "image_url": "",
+  "maps_url": ""
+}
+,{
+  "attraction_id": "nalanda_gedige",
+  "title": "Nalanda Gedige",
+  "lat": 7.7493,
+  "lng": 80.6254,
+  "district": "Matale",
+  "province": "Central Province",
+  "source": "sltda",
+  "types": ["heritage", "history", "archaeology", "culture"],
+  "place_id": "",
+  "description": "An ancient stone structure with South Indian influence, considered a unique archaeological site in Sri Lanka.",
+  "image_url": "",
+  "maps_url": ""
+}
+
+
   ]
 }

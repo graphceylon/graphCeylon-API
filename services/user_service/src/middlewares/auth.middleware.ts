@@ -6,6 +6,30 @@ import { JwtPayload, UserRole } from '../types';
 
 export const authenticate = (req: Request, _res: Response, next: NextFunction): void => {
   try {
+    // ✅ 0) INTERNAL SERVICE-TO-SERVICE AUTH (Orchestrator → User Service)
+    const expectedServiceToken = process.env.SERVICE_TOKEN;
+    const serviceToken = req.headers['x-service-token'];
+
+    if (
+      expectedServiceToken &&
+      typeof serviceToken === 'string' &&
+      serviceToken === expectedServiceToken
+    ) {
+      // Mark internal call (optional)
+      (req as any).isInternal = true;
+
+      // Attach a system user context (so authorize() can pass)
+      req.userId = 'internal-service';
+      req.user = {
+        id: 'internal-service',
+        email: 'internal@graphceylon',
+        role: 'admin' as any, // IMPORTANT: must be allowed by authorize() if used
+      };
+
+      return next();
+    }
+
+    // ✅ 1) NORMAL USER JWT AUTH
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -14,10 +38,8 @@ export const authenticate = (req: Request, _res: Response, next: NextFunction): 
 
     const token = authHeader.split(' ')[1];
 
-    // Verify token
     const decoded = jwt.verify(token, config.jwt.secret) as JwtPayload;
 
-    // Attach user info to request
     req.userId = decoded.userId;
     req.user = {
       id: decoded.userId,
@@ -36,7 +58,6 @@ export const authenticate = (req: Request, _res: Response, next: NextFunction): 
     }
   }
 };
-
 export const authorize = (...roles: UserRole[]) => {
   return (req: Request, _res: Response, next: NextFunction): void => {
     try {
@@ -44,7 +65,8 @@ export const authorize = (...roles: UserRole[]) => {
         throw new AuthenticationError('User not authenticated');
       }
 
-      if (!roles.includes(req.user.role as UserRole)) {
+      // If route says authorize('admin', 'user') etc.
+      if (roles.length > 0 && !roles.includes(req.user.role as UserRole)) {
         throw new AuthorizationError('Insufficient permissions');
       }
 
@@ -57,28 +79,44 @@ export const authorize = (...roles: UserRole[]) => {
 
 export const optionalAuth = (req: Request, _res: Response, next: NextFunction): void => {
   try {
-    const authHeader = req.headers.authorization;
+    // allow internal service token
+    const expectedServiceToken = process.env.SERVICE_TOKEN;
+    const serviceToken = req.headers['x-service-token'];
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (
+      expectedServiceToken &&
+      typeof serviceToken === 'string' &&
+      serviceToken === expectedServiceToken
+    ) {
+      (req as any).isInternal = true;
+      req.userId = 'internal-service';
+      req.user = {
+        id: 'internal-service',
+        email: 'internal@graphceylon',
+        role: 'admin' as any,
+      };
       return next();
     }
 
-    const token = authHeader.split(' ')[1];
-
-    try {
-      const decoded = jwt.verify(token, config.jwt.secret) as JwtPayload;
-      req.userId = decoded.userId;
-      req.user = {
-        id: decoded.userId,
-        email: decoded.email,
-        role: decoded.role,
-      };
-    } catch (error) {
-      // Ignore token errors for optional auth
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return next(); // optional: skip if no token
     }
 
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, config.jwt.secret) as JwtPayload;
+
+    req.userId = decoded.userId;
+    req.user = {
+      id: decoded.userId,
+      email: decoded.email,
+      role: decoded.role,
+    };
+
     next();
-  } catch (error) {
-    next(error);
+  } catch {
+    // optional: ignore token errors
+    next();
   }
 };
+

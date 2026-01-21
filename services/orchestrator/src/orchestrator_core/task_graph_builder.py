@@ -117,12 +117,12 @@ class TaskGraphBuilder:
 
         # ---- T3: primary intent task ----
         primary_intent = parsed.intent
-        primary_action = INTENT_TO_ACTION.get(primary_intent, f"handle_{primary_intent}")
+        # primary_action = INTENT_TO_ACTION.get(primary_intent, f"handle_{primary_intent}")
         primary_agent = INTENT_TO_AGENT.get(primary_intent, "OrchestratorAgent")
 
         t_primary = TaskNode(
             id=new_id(),
-            type=primary_action,
+            type=primary_intent,
             assigned_agent=primary_agent,
             depends_on=[anchor_dep],
             timeout_ms=self._default_timeout_for_intent(primary_intent),
@@ -135,12 +135,12 @@ class TaskGraphBuilder:
         # ---- Secondary tasks fan-out (parallel) ----
         secondary_ids: List[str] = []
         for sec_intent in (parsed.secondary_intents or []):
-            sec_action = INTENT_TO_ACTION.get(sec_intent, f"handle_{sec_intent}")
+            # sec_action = INTENT_TO_ACTION.get(sec_intent, f"handle_{sec_intent}")
             sec_agent = INTENT_TO_AGENT.get(sec_intent, "OrchestratorAgent")
 
             t_sec = TaskNode(
                 id=new_id(),
-                type=sec_action,
+                type=sec_intent,
                 assigned_agent=sec_agent,
                 depends_on=[anchor_dep],   # run in parallel after entities exist
                 timeout_ms=self._default_timeout_for_intent(sec_intent),

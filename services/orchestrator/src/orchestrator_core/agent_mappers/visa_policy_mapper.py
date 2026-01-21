@@ -43,7 +43,14 @@ def _normalize_country_name(s: Optional[str]) -> Optional[str]:
     return synonyms.get(x.lower(), x)
 
 
-def _infer_ask_type(raw_lower: str) -> Optional[VisaAskType]:
+def _default_ask_type() -> VisaAskType:
+    for name in ("procedure", "requirements", "general", "info"):
+        if hasattr(VisaAskType, name):
+            return getattr(VisaAskType, name)
+    return list(VisaAskType)[0]
+
+
+def _infer_ask_type(raw_lower: str) -> VisaAskType:
     if any(k in raw_lower for k in ["fee", "fees", "cost", "price", "how much"]):
         return VisaAskType.fees
     if any(k in raw_lower for k in ["how long", "processing", "processing time"]):
@@ -52,23 +59,20 @@ def _infer_ask_type(raw_lower: str) -> Optional[VisaAskType]:
         return VisaAskType.extension
     if any(k in raw_lower for k in ["need a visa", "do i need a visa", "eligible", "eligibility"]):
         return VisaAskType.eligibility
-    return None
+    return _default_ask_type()
+
 
 
 def _infer_purpose(entities: dict, raw_lower: str) -> VisaPurpose:
-    # If your entity extractor adds these, use them.
     legal_service = entities.get("legal_service")
     citizenship_type = entities.get("citizenship_type")
 
-    # 1) Citizenship flows
     if legal_service == "citizenship" or citizenship_type:
-        # Use enum if exists; otherwise fall back safely
         dual = getattr(VisaPurpose, "dual_citizenship", None)
         if citizenship_type == "dual_citizenship" and dual is not None:
             return dual
         return getattr(VisaPurpose, "other", VisaPurpose.tourism)
 
-    # 2) Visa purposes inferred from text
     if "business" in raw_lower:
         return getattr(VisaPurpose, "business", VisaPurpose.tourism)
     if "transit" in raw_lower:
@@ -87,14 +91,14 @@ def map_visa_policy_request(parsed_intent: ParsedIntent, req: OrchestrateRequest
     raw_text = parsed_intent.raw_text or req.input_text or ""
     raw_lower = raw_text.lower()
 
-    # --- travel_window: compute early so it exists even in early returns ---
+    # --- travel_window ---
     travel_start = entities.get("start_date")
     travel_end = entities.get("end_date")
     travel_window: Optional[TravelWindow] = None
     if travel_start or travel_end:
         travel_window = TravelWindow(start_date=travel_start, end_date=travel_end)
 
-    # --- ask_type: compute early so it exists even in early returns ---
+    # ✅ ask_type ALWAYS set (no more None)
     ask_type = _infer_ask_type(raw_lower)
 
     # --- countries ---
@@ -107,18 +111,19 @@ def map_visa_policy_request(parsed_intent: ParsedIntent, req: OrchestrateRequest
     # --- purpose ---
     purpose = _infer_purpose(entities, raw_lower)
 
-    # ✅ If missing nationality, do NOT crash — return a contract with missing_fields
+    # If missing nationality, return contract + missing_fields
     if not nationality:
         return VisaPolicyRequest(
+            intent=parsed_intent.intent or "info_visa_policy",  # ✅ explicit
+            ask_type=ask_type,                                  # ✅ always present
             user_id=req.user_id,
             session_id=req.session_id,
             raw_text=raw_text,
-            nationality_country="",  # empty indicates missing
+            nationality_country="",
             destination_country=str(destination),
             intended_stay_days=entities.get("days"),
             travel_window=travel_window,
             purpose=purpose,
-            ask_type=ask_type,
             extra={
                 "domain_category": parsed_intent.domain_category,
                 "confidence": parsed_intent.confidence,
@@ -126,8 +131,9 @@ def map_visa_policy_request(parsed_intent: ParsedIntent, req: OrchestrateRequest
             },
         )
 
-    # Normal path
     return VisaPolicyRequest(
+        intent=parsed_intent.intent or "info_visa_policy",      # ✅ explicit
+        ask_type=ask_type,                                      # ✅ always present
         user_id=req.user_id,
         session_id=req.session_id,
         raw_text=raw_text,
@@ -136,7 +142,6 @@ def map_visa_policy_request(parsed_intent: ParsedIntent, req: OrchestrateRequest
         intended_stay_days=entities.get("days"),
         travel_window=travel_window,
         purpose=purpose,
-        ask_type=ask_type,
         extra={
             "domain_category": parsed_intent.domain_category,
             "confidence": parsed_intent.confidence,
