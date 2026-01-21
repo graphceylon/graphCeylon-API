@@ -96,6 +96,27 @@ def normalize_executor_output(out: Any) -> tuple[dict, list]:
             return a, b if isinstance(b, list) else []
 
     return {}, []
+def _resolve_weather_city(self, entities: Dict[str, Any]) -> Optional[str]:
+    city = (entities.get("city") or "").strip()
+    if city:
+        return city
+
+    region = (entities.get("region") or "").strip().lower()
+
+    REGION_DEFAULT_CITY = {
+        "south": "Galle",
+        "southern": "Galle",
+        "hill country": "Kandy",
+        "central": "Kandy",
+        "east": "Trincomalee",
+        "eastern": "Trincomalee",
+        "north": "Jaffna",
+        "northern": "Jaffna",
+        "west": "Colombo",
+        "western": "Colombo",
+    }
+
+    return REGION_DEFAULT_CITY.get(region)
 
 
 def build_exec_tasks(builder: TaskGraphBuilder, parsed_intent) -> List[ExecTask]:
@@ -744,6 +765,24 @@ class OrchestratorService:
         print("==================================================\n")
 
         payload = contract_obj.model_dump(mode="json", exclude_none=True)
+        # ✅ Weather location resolver (prevents 500 when city is missing)
+        if intent_name == "forecast_weather":
+            # entities could be a Pydantic model or dict
+            ents = (
+                patched_intent.entities.model_dump(exclude_none=True)
+                if hasattr(patched_intent.entities, "model_dump")
+                else (patched_intent.entities or {})
+            )
+
+            resolved_city = self._resolve_weather_city(ents)
+
+            if resolved_city:
+                payload["city"] = resolved_city  # enforce a real city
+            else:
+                # no location → fail gracefully (don’t call downstream)
+                print("[orchestrator] forecast_weather missing location (no city/region mapping)")
+                return {"ok": False, "error": "Missing location for weather forecast"}
+
 
         # ✅ If using envelope, store debug/trace inside trace{}
         if "trace" in payload and isinstance(payload["trace"], dict):
@@ -1006,7 +1045,9 @@ class OrchestratorService:
         # 🔥 Update task status based on DAG execution
         task_status_by_id: Dict[str, str] = {}
         for task in exec_tasks:
-            task_status_by_id[task.id] = "completed" if task.id in dag_results else "pending"
+            out = dag_results.get(task.id, None)
+            task_status_by_id[task.id] = "completed" if out not in (None, {"ok": False}) else "failed"
+
 
             
         print("[orchestrator] dag_results keys =", list(dag_results.keys()))
