@@ -1076,7 +1076,7 @@ class OrchestratorService:
 
 
 
-        return OrchestrateResponse(
+        response = OrchestrateResponse(
             status="ok",
             message="Orchestration executed.",
             parsed_intent=parsed_intent,
@@ -1089,4 +1089,5 @@ class OrchestratorService:
             modify_result=results["modify_result"],
             visa_result=results["visa_result"],
         )
-
+        print(f"[orchestrator] response={response}")
+        return response
