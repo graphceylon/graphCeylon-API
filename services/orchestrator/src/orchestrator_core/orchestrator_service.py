@@ -42,11 +42,21 @@ from .contracts.price import PriceForecastResponse
 from .mappers.itinerary_mapper import map_itinerary_request
 from .contracts.itinerary import ItineraryPlanResponse
 
+from .mappers.transport_mapper import map_transport_request
+from .contracts.transport import TransportInfoResponse  # optional
+from .mappers.attraction_mapper import map_attraction_request
+from .contracts.attraction import AttractionInfoResponse  # optional
+
 from .mappers.itinerary_modify_mapper import map_itinerary_modify_request
 from .contracts.itinerary_modify import ItineraryModifyResponse
 
 from .mappers.sustainability_mapper import map_sustainability_request
 from .mappers.recommend_pois_mapper import map_recommend_pois_request
+
+from .mappers.accommodation_mapper import map_accommodation_request
+from .contracts.accommodation import AccommodationSearchRequest, AccommodationSearchResponse
+
+
 
 from .agent_mappers.visa_policy_mapper import map_visa_policy_request
 from .agent_contracts.visa_policy import VisaPolicyResponse  # optional (enable later)
@@ -201,6 +211,28 @@ class OrchestratorService:
 
         # ✅ 1) capability handlers
         self.handlers: Dict[str, IntentHandler] = {
+            "info_transport": IntentHandler(
+                endpoint="/graphrag/transport",      # ✅ your KG endpoint here
+                mapper=map_transport_request,
+                response_model=None,                # or TransportInfoResponse later
+                timeout=20,
+                result_field="transport_result",
+            ),
+            "info_attraction": IntentHandler(
+                endpoint="/attractions/top",        # <-- your attraction agent endpoint
+                mapper=map_attraction_request,
+                response_model=None,
+                timeout=20,
+                result_field="attraction_result",
+            ),
+             "info_accommodation": IntentHandler(
+                endpoint="/graphrag/hotels/search",
+                mapper=map_accommodation_request,
+                response_model= AccommodationSearchResponse,
+                timeout=20,
+                result_field="accommodation_result",
+            ),
+
             "forecast_weather": IntentHandler(
                 endpoint="/forecast/weather",
                 mapper=map_weather_request,
@@ -285,7 +317,9 @@ class OrchestratorService:
                     agent_id="visa_kg",
                     base_url=VISA_KG_BASE_URL,
                     protocols=["a2a"],
-                    capabilities=["info_visa_policy"],
+                    capabilities=["info_visa_policy", "info_accommodation", "info_transport", "info_attraction"],
+
+
                     sla=SLA(p95_ms=1500, success_rate=0.98),
                     cost_weight=1.0,
                 ),
@@ -952,6 +986,9 @@ class OrchestratorService:
             "itinerary_result": None,
             "modify_result": None,
             "visa_result": None,
+            "accommodation_result": None,
+            "transport_result": None,
+            "attraction_result": None,
         }
 
                 # ---------------------------
@@ -1023,6 +1060,13 @@ class OrchestratorService:
 
             if ttype == "info_visa_policy":
                 results["visa_result"] = out
+            elif ttype == "info_accommodation":
+                results["accommodation_result"] = out
+            elif ttype == "info_transport":
+                results["transport_result"] = out
+            elif ttype == "info_attraction":
+                results["attraction_result"] = out
+
             elif ttype == "forecast_weather":
                 results["weather_result"] = out
             elif ttype == "crowd_forecast":
@@ -1076,7 +1120,7 @@ class OrchestratorService:
 
 
 
-        response = OrchestrateResponse(
+        return OrchestrateResponse(
             status="ok",
             message="Orchestration executed.",
             parsed_intent=parsed_intent,
@@ -1088,6 +1132,7 @@ class OrchestratorService:
             itinerary_result=results["itinerary_result"],
             modify_result=results["modify_result"],
             visa_result=results["visa_result"],
+            accommodation_result=results["accommodation_result"],
+            transport_result=results["transport_result"],
+            attraction_result=results["attraction_result"],
         )
-        print(f"[orchestrator] response={response}")
-        return response
