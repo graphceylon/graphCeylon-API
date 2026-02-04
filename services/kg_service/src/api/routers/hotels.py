@@ -6,7 +6,7 @@ RESTful endpoints for hotel queries, search, recommendations, and ingestion
 
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Query, Depends, UploadFile, File
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import json
 import time
 from datetime import datetime
@@ -24,6 +24,12 @@ from models.domain.hotel import (
     ProximityLevel
 )
 from services.hotel_ingestion_service import HotelIngestionService
+from services.orchestrator_hotel_service import OrchestratorHotelService
+from models.domain.orchestrator import (
+    AccommodationSearchRequest,
+    HotelItemResponse,
+    OrchestratorSearchResponse
+)
 
 
 router = APIRouter(
@@ -858,6 +864,52 @@ async def ingest_hotels(
             detail=f"Ingestion failed: {str(e)}"
         )
 
+
+# ========== Orchestrator Endpoints ==========
+
+@router.post("/orchestrator/call/hotels/search", response_model=OrchestratorSearchResponse, response_model_exclude_none=True)
+async def orchestrator_hotel_search(
+    request: AccommodationSearchRequest,
+    driver = Depends(get_neo4j_driver)
+):
+    """
+    Hotel search endpoint for orchestrator service
+    
+    Filters hotels by:
+    - City and country
+    - Star rating range (min/max)
+    - Required amenities (normalized: wifi, ac, pool, breakfast, parking, gym, spa, family_rooms)
+    - Budget (max price in LKR)
+    
+    Returns hotels in orchestrator-expected format with:
+    - Hotel details
+    - Price range in LKR (±10% from base rate)
+    - Available amenities
+    - Geographic coordinates
+    - Neo4j node ID
+    
+    **Example Request:**
+    ```json
+    {
+        "intent": "info_accommodation",
+        "raw_text": "What are 3-star hotels in Colombo?",
+        "user_id": "abfe4e3e-06d7-4081-815d-150d92f3070a",
+        "session_id": "auto_test",
+        "city": "Colombo",
+        "country": "Sri Lanka",
+        "min_star_rating": 3,
+        "max_star_rating": 3,
+        "must_have_amenities": ["wifi", "ac"],
+        "max_price_lkr": 50000,
+        "limit": 10
+    }
+    ```
+    """
+    service = OrchestratorHotelService(driver)
+    return service.search_hotels(request)
+
+
+# ========== Management Endpoints ==========
 
 @router.delete("/{hotel_id}")
 async def delete_hotel(

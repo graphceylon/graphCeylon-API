@@ -1,0 +1,109 @@
+[
+  {
+    "description": "Hotels in Galle (most common city)",
+    "body": {
+      "intent": "info_accommodation",
+      "raw_text": "Hotels in Galle",
+      "user_id": "test-user-001",
+      "session_id": "postman-test-1",
+      "city": "Galle",
+      "limit": 10
+    },
+    "expected": "Should return hotels in Galle"
+  },
+  {
+    "description": "5-star hotels",
+    "body": {
+      "intent": "info_accommodation",
+      "raw_text": "5-star hotels",
+      "user_id": "test-user-002",
+      "session_id": "postman-test-2",
+      "min_star_rating": 5,
+      "max_star_rating": 5,
+      "limit": 10
+    },
+    "expected": "Should return 5-star hotels"
+  },
+  {
+    "description": "Hotels with kid-friendly and wi-fi",
+    "body": {
+      "intent": "info_accommodation",
+      "raw_text": "Hotels with kid-friendly and wi-fi",
+      "user_id": "test-user-003",
+      "session_id": "postman-test-3",
+      "must_have_amenities": [
+        "kid-friendly",
+        "wi-fi"
+      ],
+      "limit": 10
+    },
+    "expected": "Should return hotels with both amenities"
+  },
+  {
+    "description": "Budget hotels (under 15300 LKR)",
+    "body": {
+      "intent": "info_accommodation",
+      "raw_text": "Affordable hotels",
+      "user_id": "test-user-004",
+      "session_id": "postman-test-4",
+      "max_price_lkr": 15300,
+      "limit": 10
+    },
+    "expected": "Should return hotels under 15300 LKR per night"
+  },
+  {
+    "description": "5-star hotels in Galle",
+    "body": {
+      "intent": "info_accommodation",
+      "raw_text": "5-star hotels in Galle",
+      "user_id": "test-user-005",
+      "session_id": "postman-test-5",
+      "city": "Galle",
+      "min_star_rating": 5,
+      "max_star_rating": 5,
+      "limit": 10
+    },
+    "expected": "Should return 5-star hotels in Galle"
+  },
+  {
+    "description": "Luxury hotels (under 24900 LKR)",
+    "body": {
+      "intent": "info_accommodation",
+      "raw_text": "Luxury hotels",
+      "user_id": "test-user-006",
+      "session_id": "postman-test-6",
+      "min_star_rating": 4,
+      "max_price_lkr": 24900,
+      "limit": 10
+    },
+    "expected": "Should return 4+ star hotels under 24900 LKR"
+  },
+  {
+    "description": "All filters combined",
+    "body": {
+      "intent": "info_accommodation",
+      "raw_text": "Best hotels with amenities",
+      "user_id": "test-user-007",
+      "session_id": "postman-test-7",
+      "city": "Galle",
+      "min_star_rating": 4,
+      "must_have_amenities": [
+        "kid-friendly"
+      ],
+      "max_price_lkr": 24900,
+      "limit": 10
+    },
+    "expected": "Should return hotels matching all criteria"
+  },
+  {
+    "description": "All hotels (no filters)",
+    "body": {
+      "intent": "info_accommodation",
+      "raw_text": "Show me all hotels",
+      "user_id": "test-user-008",
+      "session_id": "postman-test-8",
+      "limit": 20
+    },
+    "expected": "Should return up to 20 hotels"
+  }
+]
