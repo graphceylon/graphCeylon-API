@@ -22,6 +22,11 @@ from models.domain.railway import (
     ScheduleStatistics,
     TrainType,
 )
+from models.domain.transport_orchestrator import (
+    TransportSearchRequest,
+    TransportSearchResponse,
+)
+from services.orchestrator_transport_service import OrchestratorTransportService
 from models.schemas import WriteResponse
 
 logger = logging.getLogger(__name__)
@@ -428,3 +433,85 @@ def get_station_connections(
     except Exception as e:
         logger.error(f"Failed to get station connections: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get connections: {str(e)}")
+
+
+# ========== Orchestrator Endpoints ==========
+
+@router.post("/orchestrator/call/transport", response_model=TransportSearchResponse, response_model_exclude_none=True)
+def orchestrator_transport_search(
+    request: TransportSearchRequest,
+    db: DatabaseManager = Depends(get_db_manager)
+):
+    """
+    Transport search endpoint for orchestrator service
+    
+    Finds transport options (currently trains) between origin and destination.
+    
+    **Currently Supported:**
+    - Train routes from Sri Lanka Railways
+    
+    **Future Support:**
+    - Bus routes
+    - Private transport options
+    
+    **Example Request:**
+    ```json
+    {
+        "origin": "Colombo",
+        "destination": "Kandy",
+        "city": null,
+        "country": "Sri Lanka",
+        "time_of_day": null,
+        "days": null,
+        "budget_level": null,
+        "preferred_transport": [],
+        "tags": [],
+        "user_id": "abfe4e3e-06d7-4081-815d-150d92f3070a",
+        "session_id": "auto_test",
+        "query": "How can I travel from Colombo to Kandy?"
+    }
+    ```
+    
+    **Example Response:**
+    ```json
+    {
+        "ok": true,
+        "origin": "Colombo",
+        "destination": "Kandy",
+        "country": "Sri Lanka",
+        "options": [
+            {
+                "mode": "train",
+                "summary": "Colombo Fort to Kandy scenic train route",
+                "estimated_time_min": 180,
+                "estimated_cost_lkr": 300,
+                "tips": "Reserve seats in advance",
+                "source": "Sri Lanka Railways"
+            }
+        ],
+        "summary": "Train is the most scenic option"
+    }
+    ```
+    """
+    try:
+        # Get Neo4j driver from database manager
+        driver = db.driver
+        
+        # Create service instance
+        service = OrchestratorTransportService(driver)
+        
+        # Search for transport options
+        return service.search_transport(request)
+        
+    except Exception as e:
+        logger.error(f"Orchestrator transport search failed: {e}")
+        return TransportSearchResponse(
+            ok=False,
+            origin=request.origin,
+            destination=request.destination,
+            country=request.country,
+            options=[],
+            summary="",
+            error="Transport search failed",
+            details=str(e)
+        )
