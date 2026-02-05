@@ -6,7 +6,7 @@ RESTful endpoints for hotel queries, search, recommendations, and ingestion
 
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Query, Depends, UploadFile, File
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import json
 import time
 from datetime import datetime
@@ -24,6 +24,12 @@ from models.domain.hotel import (
     ProximityLevel
 )
 from services.hotel_ingestion_service import HotelIngestionService
+from services.orchestrator_hotel_service import OrchestratorHotelService
+from models.domain.orchestrator import (
+    AccommodationSearchRequest,
+    HotelItemResponse,
+    OrchestratorSearchResponse
+)
 
 
 router = APIRouter(
@@ -467,13 +473,14 @@ async def recommend_hotels(
             hotel["amenity_matches"] = record["amenity_match_count"]
             
             recommendations.append(hotel)
-            total_cost += hotel.get("rate_per_night", 0) * query.num_nights
+            rate = hotel.get("rate_per_night") or 0
+            total_cost += rate * query.num_nights
         
         # Calculate optimization score (0-100)
         if recommendations:
-            avg_rating = sum(h.get("rating", 0) for h in recommendations) / len(recommendations)
-            avg_distance = sum(h.get("distance_km", 0) for h in recommendations) / len(recommendations)
-            avg_price = total_cost / (len(recommendations) * query.num_nights)
+            avg_rating = sum(h.get("rating") or 0 for h in recommendations) / len(recommendations)
+            avg_distance = sum(h.get("distance_km") or 0 for h in recommendations) / len(recommendations)
+            avg_price = total_cost / (len(recommendations) * query.num_nights) if total_cost > 0 else 0
             
             # Normalize and combine
             rating_score = (avg_rating / 5.0) * 40  # 40% weight
@@ -857,6 +864,52 @@ async def ingest_hotels(
             detail=f"Ingestion failed: {str(e)}"
         )
 
+
+# ========== Orchestrator Endpoints ==========
+
+@router.post("/orchestrator/call/hotels/search", response_model=OrchestratorSearchResponse, response_model_exclude_none=True)
+async def orchestrator_hotel_search(
+    request: AccommodationSearchRequest,
+    driver = Depends(get_neo4j_driver)
+):
+    """
+    Hotel search endpoint for orchestrator service
+    
+    Filters hotels by:
+    - City and country
+    - Star rating range (min/max)
+    - Required amenities (normalized: wifi, ac, pool, breakfast, parking, gym, spa, family_rooms)
+    - Budget (max price in LKR)
+    
+    Returns hotels in orchestrator-expected format with:
+    - Hotel details
+    - Price range in LKR (±10% from base rate)
+    - Available amenities
+    - Geographic coordinates
+    - Neo4j node ID
+    
+    **Example Request:**
+    ```json
+    {
+        "intent": "info_accommodation",
+        "raw_text": "What are 3-star hotels in Colombo?",
+        "user_id": "abfe4e3e-06d7-4081-815d-150d92f3070a",
+        "session_id": "auto_test",
+        "city": "Colombo",
+        "country": "Sri Lanka",
+        "min_star_rating": 3,
+        "max_star_rating": 3,
+        "must_have_amenities": ["wifi", "ac"],
+        "max_price_lkr": 50000,
+        "limit": 10
+    }
+    ```
+    """
+    service = OrchestratorHotelService(driver)
+    return service.search_hotels(request)
+
+
+# ========== Management Endpoints ==========
 
 @router.delete("/{hotel_id}")
 async def delete_hotel(

@@ -22,6 +22,11 @@ from models.domain.railway import (
     ScheduleStatistics,
     TrainType,
 )
+from models.domain.transport_orchestrator import (
+    TransportSearchRequest,
+    TransportSearchResponse,
+)
+from services.orchestrator_transport_service import OrchestratorTransportService
 from models.schemas import WriteResponse
 
 logger = logging.getLogger(__name__)
@@ -68,6 +73,28 @@ def get_train_schedules(
         # Convert to response model - schedules_raw is already a list of schedule dicts
         schedules = []
         for schedule_dict in schedules_raw:
+            # Convert numeric fields properly
+            distance_val = schedule_dict.get("distance")
+            if distance_val is not None:
+                try:
+                    distance_val = float(distance_val)
+                except (ValueError, TypeError):
+                    distance_val = None
+            
+            train_stops_val = schedule_dict.get("train_stops")
+            if train_stops_val is not None:
+                try:
+                    train_stops_val = int(train_stops_val)
+                except (ValueError, TypeError):
+                    train_stops_val = None
+            
+            daily_train_count_val = schedule_dict.get("daily_train_count")
+            if daily_train_count_val is not None:
+                try:
+                    daily_train_count_val = int(daily_train_count_val)
+                except (ValueError, TypeError):
+                    daily_train_count_val = None
+            
             schedules.append({
                 "schedule_id": schedule_dict.get("schedule_id"),
                 "schedule_date": schedule_dict.get("schedule_date"),
@@ -78,8 +105,8 @@ def get_train_schedules(
                 "duration": schedule_dict.get("duration"),
                 "train_number": schedule_dict.get("train_number"),
                 "train_type": schedule_dict.get("train_type"),
-                "distance": schedule_dict.get("distance"),
-                "train_stops": schedule_dict.get("train_stops"),
+                "distance": distance_val,
+                "train_stops": train_stops_val,
                 "ends_at": schedule_dict.get("ends_at"),
                 "price_2nd_class": schedule_dict.get("price_2nd_class"),
                 "price_3rd_class": schedule_dict.get("price_3rd_class"),
@@ -87,7 +114,7 @@ def get_train_schedules(
                 "end_contact": schedule_dict.get("end_contact"),
                 "first_train_time": schedule_dict.get("first_train_time"),
                 "last_train_time": schedule_dict.get("last_train_time"),
-                "daily_train_count": schedule_dict.get("daily_train_count"),
+                "daily_train_count": daily_train_count_val,
             })
         
         return TrainScheduleResponse(
@@ -168,11 +195,42 @@ def find_routes_between_stations(
             limit=10
         )
         
+        logger.info(f"Retrieved {len(schedules_raw)} raw schedules from database")
+        
         routes = []
+        skipped_count = 0
         
         # Convert direct schedules to route options
-        for item in schedules_raw:
-            schedule_dict = item.get("schedule", {})
+        for schedule_dict in schedules_raw:
+            # Validate train_type - assign default if missing or invalid
+            train_type_str = schedule_dict.get("train_type")
+            if not train_type_str:
+                # Assign default train type based on train number pattern or default to Slow
+                train_number = schedule_dict.get("train_number", "")
+                if "express" in train_number.lower():
+                    train_type = TrainType.EXPRESS
+                elif "intercity" in train_number.lower():
+                    train_type = TrainType.INTERCITY
+                else:
+                    train_type = TrainType.SLOW  # Default fallback
+                logger.info(f"Assigned default train_type '{train_type.value}' to schedule {train_number}")
+            else:
+                try:
+                    train_type = TrainType(train_type_str)
+                except ValueError:
+                    # Invalid train type, assign default
+                    train_type = TrainType.SLOW
+                    logger.warning(f"Invalid train_type '{train_type_str}' for {schedule_dict.get('train_number')}, using default: Slow")
+            
+            # Convert distance to float
+            distance_val = schedule_dict.get("distance")
+            if distance_val is not None:
+                try:
+                    distance_km_float = float(distance_val)
+                except (ValueError, TypeError):
+                    distance_km_float = None
+            else:
+                distance_km_float = None
             
             # Parse price
             price_2nd = schedule_dict.get("price_2nd_class", "")
@@ -195,8 +253,8 @@ def find_routes_between_stations(
                 arrival_time=schedule_dict.get("arrival_time"),
                 duration=schedule_dict.get("duration"),
                 train_number=schedule_dict.get("train_number"),
-                train_type=TrainType(schedule_dict.get("train_type")),
-                distance_km=schedule_dict.get("distance_km"),
+                train_type=train_type,
+                distance_km=distance_km_float,
                 price_2nd_class=price_2nd,
                 price_3rd_class=price_3rd,
             )
@@ -204,13 +262,15 @@ def find_routes_between_stations(
             route = RouteOption(
                 segments=[segment],
                 total_duration=schedule_dict.get("duration"),
-                total_distance_km=schedule_dict.get("distance_km"),
+                total_distance_km=distance_km_float,
                 transfer_count=0,
                 total_price_2nd_class=price_2nd_val,
                 total_price_3rd_class=price_3rd_val,
             )
             
             routes.append(route)
+        
+        logger.info(f"Created {len(routes)} routes (skipped {skipped_count} invalid schedules)")
         
         # If transfers are allowed, find multi-leg routes
         if request.max_transfers > 0 and len(routes) == 0:
@@ -373,3 +433,85 @@ def get_station_connections(
     except Exception as e:
         logger.error(f"Failed to get station connections: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get connections: {str(e)}")
+
+
+# ========== Orchestrator Endpoints ==========
+
+@router.post("/orchestrator/call/transport", response_model=TransportSearchResponse, response_model_exclude_none=True)
+def orchestrator_transport_search(
+    request: TransportSearchRequest,
+    db: DatabaseManager = Depends(get_db_manager)
+):
+    """
+    Transport search endpoint for orchestrator service
+    
+    Finds transport options (currently trains) between origin and destination.
+    
+    **Currently Supported:**
+    - Train routes from Sri Lanka Railways
+    
+    **Future Support:**
+    - Bus routes
+    - Private transport options
+    
+    **Example Request:**
+    ```json
+    {
+        "origin": "Colombo",
+        "destination": "Kandy",
+        "city": null,
+        "country": "Sri Lanka",
+        "time_of_day": null,
+        "days": null,
+        "budget_level": null,
+        "preferred_transport": [],
+        "tags": [],
+        "user_id": "abfe4e3e-06d7-4081-815d-150d92f3070a",
+        "session_id": "auto_test",
+        "query": "How can I travel from Colombo to Kandy?"
+    }
+    ```
+    
+    **Example Response:**
+    ```json
+    {
+        "ok": true,
+        "origin": "Colombo",
+        "destination": "Kandy",
+        "country": "Sri Lanka",
+        "options": [
+            {
+                "mode": "train",
+                "summary": "Colombo Fort to Kandy scenic train route",
+                "estimated_time_min": 180,
+                "estimated_cost_lkr": 300,
+                "tips": "Reserve seats in advance",
+                "source": "Sri Lanka Railways"
+            }
+        ],
+        "summary": "Train is the most scenic option"
+    }
+    ```
+    """
+    try:
+        # Get Neo4j driver from database manager
+        driver = db.driver
+        
+        # Create service instance
+        service = OrchestratorTransportService(driver)
+        
+        # Search for transport options
+        return service.search_transport(request)
+        
+    except Exception as e:
+        logger.error(f"Orchestrator transport search failed: {e}")
+        return TransportSearchResponse(
+            ok=False,
+            origin=request.origin,
+            destination=request.destination,
+            country=request.country,
+            options=[],
+            summary="",
+            error="Transport search failed",
+            details=str(e)
+        )

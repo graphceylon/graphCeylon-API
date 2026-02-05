@@ -10,6 +10,11 @@ from models.schemas import (
     AttractionResponse,
     CreateAttractionRequest
 )
+from models.domain.attraction_orchestrator import (
+    AttractionSearchRequest,
+    AttractionSearchResponse
+)
+from services.orchestrator_attraction_service import OrchestratorAttractionService
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +24,84 @@ router = APIRouter(prefix="/attractions", tags=["attractions"])
 def get_db_manager():
     """Dependency to get database manager - will be overridden by main app."""
     raise HTTPException(status_code=503, detail="Database manager not initialized")
+
+
+@router.post("/orchestrator/call/attractions", response_model=AttractionSearchResponse, response_model_exclude_none=True)
+def search_attractions_for_orchestrator(
+    request: AttractionSearchRequest,
+    db: DatabaseManager = Depends(get_db_manager)
+):
+    """
+    Search attractions for orchestrator service using vector similarity search.
+    
+    This endpoint uses embeddings and vector similarity search on attraction descriptions
+    when poi_category is provided, ensuring semantically relevant results filtered by category.
+    
+    **Features:**
+    - **Vector Search**: Uses embeddings to search attraction descriptions semantically
+    - **Category Filtering**: Filters by poi_category (e.g., "temple", "museum", "park")
+    - **City Filtering**: Results limited to specified city
+    - **Relevance Ranking**: Results ranked by similarity score to query
+    
+    Example Request:
+    ```json
+    {
+        "city": "Kandy",
+        "country": "Sri Lanka",
+        "poi_category": "temple",
+        "days": 2,
+        "query": "What are the main tourist attractions in Kandy?"
+    }
+    ```
+    
+    Example Response:
+    ```json
+    {
+        "ok": true,
+        "city": "Kandy",
+        "country": "Sri Lanka",
+        "items": [
+            {
+                "name": "Temple of the Sacred Tooth Relic",
+                "category": "temple",
+                "description": "Buddhist temple housing the relic of the tooth of Buddha",
+                "location": "Sri Dalada Veediya, Kandy",
+                "open_hours": "5:30 AM - 8:00 PM",
+                "entry_fee_lkr": "1500",
+                "source": "kg_service"
+            }
+        ],
+        "summary": "Found 5 attractions in Kandy including 3 temples, 1 garden, 1 museum."
+    }
+    ```
+    
+    **Note**: When poi_category is provided, the endpoint uses vector similarity search
+    on attraction descriptions for better semantic matching. Without poi_category,
+    it falls back to city-based filtering only.
+    """
+    try:
+        logger.info(f"Orchestrator attraction search: city={request.city}, country={request.country}")
+        
+        # Initialize service
+        service = OrchestratorAttractionService(db.driver)
+        
+        # Search attractions
+        response = service.search_attractions(request)
+        
+        logger.info(f"Found {len(response.items)} attractions")
+        return response
+        
+    except Exception as e:
+        logger.error(f"Attraction search failed: {e}")
+        return AttractionSearchResponse(
+            ok=False,
+            city=request.city,
+            country=request.country,
+            items=[],
+            summary="",
+            error="Search failed",
+            details=str(e)
+        )
 
 
 @router.get("", response_model=AttractionResponse)
@@ -102,6 +185,48 @@ def create_vector_index(db: DatabaseManager = Depends(get_db_manager)):
     except Exception as e:
         logger.error(f"Failed to create vector index: {e}")
         raise HTTPException(status_code=500, detail=f"Vector index creation failed: {str(e)}")
+
+
+@router.get("/embeddings/status", response_model=dict)
+def check_embeddings_status(db: DatabaseManager = Depends(get_db_manager)):
+    """Check if embeddings are created for attractions."""
+    try:
+        logger.info("Checking embeddings status...")
+        
+        # Check if vector index exists
+        index_query = """
+        SHOW INDEXES
+        YIELD name, type, entityType, labelsOrTypes, properties
+        WHERE name = $index_name
+        RETURN name, type, entityType, labelsOrTypes, properties
+        """
+        
+        from core.config import settings
+        index_result = db.execute_cypher(index_query, {"index_name": settings.vector_index_name})
+        
+        # Count attractions with and without embeddings
+        count_query = """
+        MATCH (a:Attraction)
+        RETURN 
+            count(a) AS total,
+            count(a.embedding) AS with_embeddings,
+            count(a) - count(a.embedding) AS without_embeddings
+        """
+        
+        count_result = db.execute_cypher(count_query)
+        
+        return {
+            "success": True,
+            "index_exists": len(index_result) > 0,
+            "index_details": index_result[0] if index_result else None,
+            "total_attractions": count_result[0]["total"] if count_result else 0,
+            "with_embeddings": count_result[0]["with_embeddings"] if count_result else 0,
+            "without_embeddings": count_result[0]["without_embeddings"] if count_result else 0,
+            "embeddings_ready": count_result[0]["without_embeddings"] == 0 if count_result else False
+        }
+    except Exception as e:
+        logger.error(f"Failed to check embeddings status: {e}")
+        raise HTTPException(status_code=500, detail=f"Status check failed: {str(e)}")
 
 
 @router.post("/embeddings/update", response_model=dict)
