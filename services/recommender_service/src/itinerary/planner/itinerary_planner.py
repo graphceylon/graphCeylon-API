@@ -1,24 +1,20 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 import json
-from pathlib import Path
 import re
-from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple, Optional
 from pathlib import Path
-from services.recommender_service.src.itinerary.json_kg import query_attractions_from_json
-from services.recommender_service.src.itinerary.enrichment.enrich_candidates import (
-    enrich_and_rerank_candidates,
-    EnrichConfig,
-)
-from ..enrichment.enrich_candidates import enrich_and_rerank_candidates
+
+from ..enrichment.enrich_candidates import enrich_and_rerank_candidates, EnrichConfig
+from ..enrichment.enrich_item import enrich_attraction
 from ..nsga.objectives import build_objectives
 from ..nsga.pareto import pareto_front
-from ..json_kg import query_attractions_from_json
-from ..ranking.corridor import query_attractions_along_route
+
+from .resolve_travel_mode import resolve_travel_mode
+from .gate import needs_clarification
+from .city_planner import get_candidates_city
+from .corridor_planner import get_candidates_corridor
 
 
 
@@ -511,6 +507,8 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     city = str(payload.get("city") or payload.get("destination") or "").strip() or "Colombo"
     country = str(payload.get("country") or "Sri Lanka").strip() or "Sri Lanka"
     eco_pref = float(payload.get("eco_preference") or 0.5)
+
+    # days used multiple times
     days = int(payload.get("days") or 3)
 
     start_str = str(payload.get("start_date") or "").strip()
@@ -522,21 +520,47 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
 
     warnings: List[str] = []
 
-    # ✅ call your JSON-KG query
-    res = query_attractions_from_json(
-        payload,
-        kg_path=Path("/Users/dev/Desktop/graphCeylon-API/data/recommender_service/clean/kg/attractions_clean.json"),
-        limit=int(payload.get("max_candidates", cfg.max_candidates)),
-        prefilter_limit=300,
-    )
+    # =========================
+    # NEW: travel_mode decision
+    # =========================
+    tm = resolve_travel_mode(payload)
+
+    clarify = needs_clarification(payload, tm)
+    if clarify:
+        clarify["debug"] = {"travel_mode": tm.__dict__}
+        return clarify
+
+
+    # ✅ priorities exist in this scope
+    priorities: List[Priority] = extract_priorities(payload) or []
+
+    # ==========================================================
+    # NEW: switch KG query mode (corridor vs destination-only)
+    # ==========================================================
+    repo_root = _find_repo_root()
+    kg_path = repo_root / "data" / "recommender_service" / "clean" / "kg" / "attractions_clean.json"
+
+    if tm.type == "corridor" and tm.include_stops and tm.origin_city and tm.origin_city != tm.destination_city:
+        res = get_candidates_corridor(
+            payload=payload,
+            origin_city=tm.origin_city,
+            destination_city=tm.destination_city,
+            limit=int(payload.get("max_candidates", cfg.max_candidates)),
+        )
+        kg_mode = "corridor"
+    else:
+        res = get_candidates_city(
+            payload=payload,
+            kg_path=kg_path,
+            limit=int(payload.get("max_candidates", cfg.max_candidates)),
+        )
+        kg_mode = "city"
+
 
     # ✅ debug dict (safe)
     dbg = getattr(res, "debug", None) or {}
 
-    # ✅ FIX: ensure `priorities` exists in THIS scope (Priority objects)
-    priorities: List[Priority] = extract_priorities(payload) or []
-
-    # ✅ OPTIONAL: keep dbg priorities in sync (dict form) so printing always works
+    # keep dbg priorities in sync for your printing
     dbg["priorities"] = [
         {"key": p.key, "weight": p.weight, "source": p.source, "matched_phrase": p.matched_phrase}
         for p in priorities
@@ -544,7 +568,6 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
 
     # ---------------- DEBUG PRINTS ----------------
     print("\n================ JSON-KG QUERY OUTPUT =================")
-
     print("\n--- Debug Keys ---")
     print(list(dbg.keys()))
 
@@ -562,21 +585,15 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     for k, v in pref_src.items():
         print(f"{k:25s} -> {v}")
 
-    print("\n--- Top Ranked Attractions ---")
-    for a in (getattr(res, "candidates", []) or [])[:10]:
-        feat = a.get("_features", {}) or {}
-        print(
-            f"{a.get('title','?'):<25} | score={a.get('_score', 0.0):.3f} | "
-            f"eco={feat.get('eco_hint', 0.0):.2f} | prox={feat.get('proximity', 0.0):.2f}"
-        )
-
     print("=======================================================\n")
     # -----------------------------------------------------
 
-    # ✅ candidates already ranked by your query function
+    # ✅ candidates
     kg_atts = getattr(res, "candidates", None) or []
+    if not kg_atts:
+        warnings.append(f"No attractions found for destination='{city}'.")
 
-    # Print old KG top-10
+    # Print KG top-10
     print("\n--- Top KG Ranked Attractions (base _score) ---")
     for a in kg_atts[:10]:
         feat = a.get("_features", {}) or {}
@@ -585,7 +602,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             f"eco={feat.get('eco_hint', 0.0):.2f} | prox={feat.get('proximity', 0.0):.2f}"
         )
 
-    # ✅ dynamic enrichment + reranking (adds _final_score + _dynamic + _enrichment)
+    # ✅ dynamic enrichment + reranking
     reranked = enrich_and_rerank_candidates(
         candidates=kg_atts,
         payload=payload,
@@ -594,10 +611,9 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             w_crowd_avoid=0.8,
             w_rain_avoid=0.6,
         ),
-        day_offset=0,  # rerank using start_date day (day 0)
+        day_offset=0,
     )
 
-    # Print new reranked top-10
     print("\n--- Top Reranked Attractions (base + dynamic) ---")
     for a in reranked[:10]:
         dyn = a.get("_dynamic", {}) or {}
@@ -609,8 +625,8 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             f"crowd={float(dyn.get('crowd_risk_0_1', 0.0)):.2f} | "
             f"rain={float(dyn.get('rain_risk_0_1', 0.0)):.2f}"
         )
-    # ================= NSGA-II PARETO SELECTION =================
 
+    # ================= NSGA-II PARETO SELECTION =================
     obj_vectors = []
     for i, cand in enumerate(reranked):
         objectives, explain = build_objectives(cand, payload)
@@ -619,7 +635,6 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         obj_vectors.append((objectives, i))
 
     front_indices = pareto_front(obj_vectors)
-
     pareto_candidates = [reranked[i] for i in front_indices]
 
     print("\n--- NSGA-II Pareto Front (multi-objective optimal set) ---")
@@ -631,31 +646,30 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             f"crowd={e['crowd_risk_0_1']:.2f} rain={e['rain_risk_0_1']:.2f}"
         )
 
-    # ✅ use reranked list for planning
+    # ✅ plan using Pareto list
     norm_atts = pareto_candidates
 
-
-    if not norm_atts:
-        warnings.append(f"No attractions found for city='{city}'.")
-
-    # ✅ days and per_day must come from user payload (not hardcoded)
-    days = int(payload.get("days") or 1)
     per_day = int(payload.get("per_day_attractions") or cfg.per_day_attractions)
 
-    # ✅ get anchor coords if your JSON-KG query stored it in debug
-    anchor = None
+    # ==========================
+    # NEW: route anchor coords
+    # ==========================
+    # corridor query should set something like origin coords / anchor coords in dbg.
+    route_anchor_coords = None
     if isinstance(dbg, dict):
-        anchor = dbg.get("anchor_coords") or dbg.get("anchor")  # whichever you store
+        route_anchor_coords = (
+            dbg.get("anchor_coords")
+            or dbg.get("origin_coords")
+            or dbg.get("anchor")
+        )
 
-    # ✅ build a day-wise district-rotating plan
     simple_itinerary = build_itinerary(
         ranked_candidates=norm_atts,
         days=days,
         per_day=per_day,
-        anchor=anchor,
+        anchor=route_anchor_coords,
     )
 
-    # ✅ convert to your response format (date/slots + enrichment)
     itinerary_days: List[Dict[str, Any]] = []
     slots = ["morning", "afternoon", "evening", "night"]
 
@@ -696,6 +710,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             "items": day_items
         })
 
+    warnings.extend(getattr(tm, "assumptions", []) or [])
 
     return {
         "status": "ok",
@@ -703,6 +718,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         "country": country,
         "start_date": start_dt.isoformat(),
         "days": days,
+        "travel_mode_used": tm.__dict__,
         "priorities": [
             {"key": p.key, "weight": p.weight, "source": p.source, "matched_phrase": p.matched_phrase}
             for p in priorities
@@ -716,4 +732,9 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         },
         "warnings": warnings,
         "itinerary": itinerary_days,
+        "debug": {
+            "route_anchor_coords": route_anchor_coords,
+            "kg_mode": kg_mode,
+        }
     }
+
