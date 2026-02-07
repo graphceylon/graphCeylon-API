@@ -27,7 +27,7 @@ def get_all_news(
     try:
         logger.info(f"Getting all news with limit={limit}")
         
-        articles = db.query_news({"limit": limit})
+        articles = db.news.query({"limit": limit})
         
         return NewsResponse(
             articles=articles,
@@ -60,7 +60,7 @@ def query_news(
         filters = request.dict(exclude_none=True)
         logger.info(f"Querying news with filters: {filters}")
         
-        articles = db.query_news(filters)
+        articles = db.news.query(filters)
         
         return NewsResponse(
             articles=articles,
@@ -108,7 +108,7 @@ def get_news_by_year(
     try:
         logger.info(f"Getting news for year: {year}")
         
-        articles = db.query_news({"year": year, "limit": limit})
+        articles = db.news.query({"year": year, "limit": limit})
         
         return NewsResponse(
             articles=articles,
@@ -134,7 +134,7 @@ def get_news_by_month(
         
         logger.info(f"Getting news for {year}-{month:02d}")
         
-        articles = db.query_news({"year": year, "month": month, "limit": limit})
+        articles = db.news.query({"year": year, "month": month, "limit": limit})
         
         return NewsResponse(
             articles=articles,
@@ -187,10 +187,10 @@ def initialize_news(db: DatabaseManager = Depends(get_db_manager)):
         logger.info("Initializing tourism news...")
         
         # Load schema
-        schema_result = db.load_news_schema()
+        schema_result = db.news.load_schema()
         
         # Load news data
-        load_result = db.load_news_from_json()
+        load_result = db.news.load_from_json()
         
         return {
             "success": True,
@@ -212,7 +212,7 @@ def create_news(
     try:
         logger.info(f"Creating news article: {request.title}")
         
-        result = db.create_news(request.dict(exclude_none=True))
+        result = db.news.create(request.dict(exclude_none=True))
         
         return WriteResponse(
             success=True,
@@ -266,7 +266,7 @@ def get_news_statistics(db: DatabaseManager = Depends(get_db_manager)):
     try:
         logger.info("Getting news statistics")
         
-        stats = db.get_news_statistics()
+        stats = db.news.get_statistics()
         
         return stats
     except Exception as e:

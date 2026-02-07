@@ -28,7 +28,7 @@ async def initialize_temporal_structure(db: DatabaseManager = Depends(get_db_man
     - Indexes for performance
     """
     try:
-        result = db.initialize_temporal_structure()
+        result = db.holidays.initialize_temporal_structure()
         return result
     except Exception as e:
         logger.error(f"Failed to initialize temporal structure: {e}")
@@ -48,7 +48,7 @@ async def load_holidays_from_json(db: DatabaseManager = Depends(get_db_manager))
     - Links to Temporal domain
     """
     try:
-        result = db.load_holidays_from_json()
+        result = db.holidays.load_from_json()
         return result
     except Exception as e:
         logger.error(f"Failed to load holidays: {e}")
@@ -74,7 +74,7 @@ async def query_holidays(
     """
     try:
         filters = request.dict(exclude_none=True)
-        holidays = db.query_holidays(filters)
+        holidays = db.holidays.query_holidays(filters)
         
         return HolidayResponse(
             holidays=holidays,
@@ -96,7 +96,7 @@ async def get_holidays_by_year(
 ):
     """Get all holidays for a specific year."""
     try:
-        holidays = db.get_holidays_by_year(year)
+        holidays = db.holidays.get_by_year(year)
         return HolidayResponse(
             holidays=holidays,
             count=len(holidays),
@@ -118,7 +118,7 @@ async def get_holidays_by_month(
         if month < 1 or month > 12:
             raise HTTPException(status_code=400, detail="Month must be between 1 and 12")
         
-        holidays = db.get_holidays_by_year_month(year, month)
+        holidays = db.holidays.query_holidays({"year": year, "month": month})
         return HolidayResponse(
             holidays=holidays,
             count=len(holidays),
@@ -143,7 +143,7 @@ async def get_holidays_by_category(
     Optional year parameter to filter by specific year.
     """
     try:
-        holidays = db.get_holidays_by_category(category, year)
+        holidays = db.holidays.get_by_category(category, year)
         return HolidayResponse(
             holidays=holidays,
             count=len(holidays),
@@ -166,7 +166,10 @@ async def get_holidays_by_type(
     Optional year parameter to filter by specific year.
     """
     try:
-        holidays = db.get_holidays_by_type(holiday_type, year)
+        filters = {"holiday_type": holiday_type, "limit": 100}
+        if year:
+            filters["year"] = year
+        holidays = db.holidays.query_holidays(filters)
         return HolidayResponse(
             holidays=holidays,
             count=len(holidays),
@@ -188,7 +191,10 @@ async def get_public_holidays(
     Optional year parameter to filter by specific year.
     """
     try:
-        holidays = db.get_public_holidays(year)
+        filters = {"is_public_holiday": True, "limit": 100}
+        if year:
+            filters["year"] = year
+        holidays = db.holidays.query_holidays(filters)
         return HolidayResponse(
             holidays=holidays,
             count=len(holidays),
@@ -210,10 +216,30 @@ async def get_temporal_structure(db: DatabaseManager = Depends(get_db_manager)):
     - Holiday counts per year/month
     """
     try:
-        structure = db.get_temporal_structure()
+        # Get years with month counts
+        year_query = """
+        MATCH (y:Year)
+        OPTIONAL MATCH (y)-[:HAS_MONTH]->(m:Month)
+        WITH y, count(m) as month_count
+        OPTIONAL MATCH (h:Holiday {year: y.year})
+        RETURN y.year as year, month_count, count(h) as holiday_count
+        ORDER BY y.year
+        """
+        years_data = db.execute_cypher(year_query)
+        
+        structure = {
+            "years": years_data,
+            "total_years": len(years_data)
+        }
+        
+        summary = {
+            "total_years": len(years_data),
+            "total_holidays": sum(y.get("holiday_count", 0) for y in years_data)
+        }
+        
         return TemporalStructureResponse(
-            structure=structure.get("structure", {}),
-            summary=structure.get("summary", {})
+            structure=structure,
+            summary=summary
         )
     except Exception as e:
         logger.error(f"Failed to get temporal structure: {e}")
@@ -233,7 +259,7 @@ async def get_holiday_statistics(db: DatabaseManager = Depends(get_db_manager)):
     - Count by month
     """
     try:
-        stats = db.get_holiday_statistics()
+        stats = db.holidays.get_statistics()
         return stats
     except Exception as e:
         logger.error(f"Failed to get holiday statistics: {e}")
@@ -252,7 +278,7 @@ async def create_holiday(
     based on the start_date.
     """
     try:
-        result = db.create_holiday(request.dict())
+        result = db.holidays.create_holiday(request.dict())
         return result
     except Exception as e:
         logger.error(f"Failed to create holiday: {e}")
@@ -270,7 +296,7 @@ async def get_upcoming_holidays(
     Returns holidays sorted by date, starting from today.
     """
     try:
-        holidays = db.get_upcoming_holidays(limit)
+        holidays = db.holidays.get_upcoming(limit)
         return HolidayResponse(
             holidays=holidays,
             count=len(holidays),
@@ -293,7 +319,8 @@ async def search_holidays(
     Case-insensitive search across holiday names and descriptions.
     """
     try:
-        holidays = db.search_holidays(query, limit)
+        # Search holidays by name using query_holidays with name filter
+        holidays = db.holidays.query_holidays({"name": query, "limit": limit})
         return HolidayResponse(
             holidays=holidays,
             count=len(holidays),

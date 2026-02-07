@@ -29,7 +29,8 @@ if __name__ == "__main__":
         host=settings.api_host,
         port=settings.api_port,
         reload=settings.debug,
-        log_level="info"
+        log_level="info",
+        timeout_graceful_shutdown=1  # 1 second timeout for graceful shutdown
     )
     
     

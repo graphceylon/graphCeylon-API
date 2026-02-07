@@ -27,7 +27,7 @@ def get_all_projects(
     try:
         logger.info(f"Getting all projects with limit={limit}")
         
-        projects = db.query_projects({"limit": limit})
+        projects = db.projects.query({"limit": limit})
         
         return ProjectResponse(
             projects=projects,
@@ -58,7 +58,7 @@ def query_projects(
         filters = request.dict(exclude_none=True)
         logger.info(f"Querying projects with filters: {filters}")
         
-        projects = db.query_projects(filters)
+        projects = db.projects.query(filters)
         
         return ProjectResponse(
             projects=projects,
@@ -147,10 +147,10 @@ def initialize_projects(db: DatabaseManager = Depends(get_db_manager)):
         logger.info("Initializing tourism projects...")
         
         # Load schema
-        schema_result = db.load_projects_schema()
+        schema_result = db.projects.load_schema()
         
         # Load projects data
-        load_result = db.load_projects_from_json()
+        load_result = db.projects.load_from_json()
         
         return {
             "success": True,
@@ -172,7 +172,7 @@ def create_project(
     try:
         logger.info(f"Creating project: {request.title}")
         
-        result = db.create_project(request.dict(exclude_none=True))
+        result = db.projects.create(request.dict(exclude_none=True))
         
         return WriteResponse(
             success=True,
@@ -226,7 +226,7 @@ def get_project_statistics(db: DatabaseManager = Depends(get_db_manager)):
     try:
         logger.info("Getting project statistics")
         
-        stats = db.get_project_statistics()
+        stats = db.projects.get_statistics()
         
         return stats
     except Exception as e:

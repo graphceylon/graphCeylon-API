@@ -107,7 +107,7 @@ def get_all_attractions(
     try:
         logger.info(f"Getting all attractions with limit={limit}")
         
-        attractions = db.query_attractions({"limit": limit})
+        attractions = db.attractions.query_attractions({"limit": limit})
         
         return AttractionResponse(
             attractions=attractions,
@@ -148,14 +148,14 @@ def initialize_attractions(db: DatabaseManager = Depends(get_db_manager)):
         logger.info("Initializing attractions...")
         
         # Cleanup existing relationships first
-        cleanup_result = db.cleanup_attractions()
+        cleanup_result = db.attractions.cleanup_relationships()
         logger.info(f"Cleanup: {cleanup_result}")
         
         # Load schema
-        schema_result = db.load_attractions_schema()
+        schema_result = db.attractions.load_schema()
         
         # Load attractions data with clean relationships
-        load_result = db.load_attractions_from_json()
+        load_result = db.attractions.load_from_json()
         
         return {
             "success": True,
@@ -256,7 +256,7 @@ def create_attraction(
             "rating": request.rating
         }
         
-        result = db.create_attraction(attraction_data)
+        result = db.attractions.create_attraction(attraction_data)
         
         return WriteResponse(
             success=result["success"],
@@ -289,7 +289,7 @@ def query_attractions(
             "limit": request.limit
         }
         
-        attractions = db.query_attractions(filters)
+        attractions = db.attractions.query_attractions(filters)
         
         return AttractionResponse(
             attractions=attractions,
@@ -313,7 +313,7 @@ def get_attractions_by_district(
     try:
         logger.info(f"Getting attractions for district: {district_name}")
         
-        attractions = db.get_attractions_by_district(district_name)
+        attractions = db.attractions.get_by_district(district_name)
         
         if not attractions:
             raise HTTPException(
@@ -342,7 +342,7 @@ def get_attractions_by_province(
     try:
         logger.info(f"Getting attractions for province: {province_name}")
         
-        attractions = db.get_attractions_by_province(province_name)
+        attractions = db.attractions.get_by_province(province_name)
         
         if not attractions:
             raise HTTPException(

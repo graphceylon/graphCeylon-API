@@ -61,7 +61,11 @@ async def lifespan(app: FastAPI):
     finally:
         logger.info("Shutting down Knowledge Graph application...")
         if driver:
-            driver.close()
+            try:
+                # Non-blocking close - driver will be cleaned up when process exits
+                driver.close()
+            except Exception:
+                pass  # Ignore close errors on shutdown
         logger.info("Application shutdown complete")
 
 

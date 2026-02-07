@@ -24,7 +24,7 @@ async def initialize_domains(db: DatabaseManager = Depends(get_db_manager)):
     - Links existing attractions to Destination & Attraction domain
     """
     try:
-        result = db.initialize_domain_structure()
+        result = db.ontology.initialize_domain_structure()
         return result
     except Exception as e:
         logger.error(f"Failed to initialize domains: {e}")
@@ -42,7 +42,7 @@ async def get_domain_overview(db: DatabaseManager = Depends(get_db_manager)):
     - Count of entities in each domain
     """
     try:
-        result = db.get_domain_overview()
+        result = db.ontology.get_domain_overview()
         return result
     except Exception as e:
         logger.error(f"Failed to get domain overview: {e}")
@@ -63,7 +63,7 @@ async def get_domain_entities(
     - limit: Maximum number of entities to return (default: 100)
     """
     try:
-        result = db.get_domain_entities(domain_name, limit)
+        result = db.ontology.get_domain_entities(domain_name, limit)
         return result
     except Exception as e:
         logger.error(f"Failed to get domain entities: {e}")
@@ -83,7 +83,7 @@ async def get_graph_structure(db: DatabaseManager = Depends(get_db_manager)):
     - Complete hierarchy
     """
     try:
-        result = db.get_graph_structure()
+        result = db.ontology.get_graph_structure()
         return result
     except Exception as e:
         logger.error(f"Failed to get graph structure: {e}")
@@ -105,7 +105,7 @@ async def cleanup_duplicate_relationships(db: DatabaseManager = Depends(get_db_m
     Returns a summary of remaining relationship counts.
     """
     try:
-        result = db.cleanup_duplicate_relationships()
+        result = db.ontology.cleanup_duplicate_relationships()
         return result
     except Exception as e:
         logger.error(f"Failed to cleanup duplicates: {e}")
