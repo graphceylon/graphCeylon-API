@@ -158,7 +158,24 @@ class ReasoningOrchestrator:
             YIELD node, score
             RETURN node.title AS title,
                    node.description AS description,
+                   node.imageUrl AS imageUrl,
                    node.rating AS rating,
+                   node.latitude AS latitude,
+                   node.longitude AS longitude,
+                   node.district AS district,
+                   node.province AS province,
+                   node.formattedAddress AS formattedAddress,
+                   node.googlePlaceId AS googlePlaceId,
+                   node.website AS website,
+                   node.phoneNumber AS phoneNumber,
+                   node.priceLevel AS priceLevel,
+                   node.placeTypes AS placeTypes,
+                   node.googleMapsUrl AS googleMapsUrl,
+                   node.googleMapsDirectionsUrl AS googleMapsDirectionsUrl,
+                   node.googleEarthUrl AS googleEarthUrl,
+                   node.userRatingsTotal AS userRatingsTotal,
+                   node.editorialSummary AS editorialSummary,
+                   node.placeUrl AS placeUrl,
                    score
             """
             

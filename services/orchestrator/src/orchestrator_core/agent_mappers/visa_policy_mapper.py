@@ -85,20 +85,76 @@ def _infer_purpose(entities: dict, raw_lower: str) -> VisaPurpose:
     return VisaPurpose.tourism
 
 
+# def map_visa_policy_request(parsed_intent: ParsedIntent, req: OrchestrateRequest) -> BaseModel:
+#     entities = _as_dict(getattr(parsed_intent, "entities", None))
+
+#     raw_text = parsed_intent.raw_text or req.input_text or ""
+#     raw_lower = raw_text.lower()
+
+#     # --- travel_window ---
+#     travel_start = entities.get("start_date")
+#     travel_end = entities.get("end_date")
+#     travel_window: Optional[TravelWindow] = None
+#     if travel_start or travel_end:
+#         travel_window = TravelWindow(start_date=travel_start, end_date=travel_end)
+
+#     # ✅ ask_type ALWAYS set (no more None)
+#     ask_type = _infer_ask_type(raw_lower)
+
+#     # --- countries ---
+#     nationality = entities.get("nationality_country") or entities.get("origin")
+#     destination = entities.get("destination") or entities.get("country") or "Sri Lanka"
+
+#     nationality = _normalize_country_name(nationality)
+#     destination = _normalize_country_name(destination)
+
+#     # --- purpose ---
+#     purpose = _infer_purpose(entities, raw_lower)
+
+#     # If missing nationality, return contract + missing_fields
+#     if not nationality:
+#         return VisaPolicyRequest(
+#             intent=parsed_intent.intent or "info_visa_policy",  # ✅ explicit
+#             ask_type=ask_type,                                  # ✅ always present
+#             user_id=req.user_id,
+#             session_id=req.session_id,
+#             raw_text=raw_text,
+#             nationality_country="",
+#             destination_country=str(destination),
+#             intended_stay_days=entities.get("days"),
+#             travel_window=travel_window,
+#             purpose=purpose,
+#             extra={
+#                 "domain_category": parsed_intent.domain_category,
+#                 "confidence": parsed_intent.confidence,
+#                 "missing_fields": ["nationality_country"],
+#             },
+#         )
+
+#     return VisaPolicyRequest(
+#         intent=parsed_intent.intent or "info_visa_policy",      # ✅ explicit
+#         ask_type=ask_type,                                      # ✅ always present
+#         user_id=req.user_id,
+#         session_id=req.session_id,
+#         raw_text=raw_text,
+#         nationality_country=nationality,
+#         destination_country=destination,
+#         intended_stay_days=entities.get("days"),
+#         travel_window=travel_window,
+#         purpose=purpose,
+#         extra={
+#             "domain_category": parsed_intent.domain_category,
+#             "confidence": parsed_intent.confidence,
+#         },
+#     )
+
 def map_visa_policy_request(parsed_intent: ParsedIntent, req: OrchestrateRequest) -> BaseModel:
     entities = _as_dict(getattr(parsed_intent, "entities", None))
 
     raw_text = parsed_intent.raw_text or req.input_text or ""
     raw_lower = raw_text.lower()
 
-    # --- travel_window ---
-    travel_start = entities.get("start_date")
-    travel_end = entities.get("end_date")
-    travel_window: Optional[TravelWindow] = None
-    if travel_start or travel_end:
-        travel_window = TravelWindow(start_date=travel_start, end_date=travel_end)
-
-    # ✅ ask_type ALWAYS set (no more None)
+    # ✅ ask_type ALWAYS set
     ask_type = _infer_ask_type(raw_lower)
 
     # --- countries ---
@@ -108,42 +164,49 @@ def map_visa_policy_request(parsed_intent: ParsedIntent, req: OrchestrateRequest
     nationality = _normalize_country_name(nationality)
     destination = _normalize_country_name(destination)
 
+    # ✅ ensure non-empty strings (KG requires fields)
+    missing_fields = []
+    if not nationality:
+        nationality = "unknown"
+        missing_fields.append("nationality_country")
+    if not destination:
+        destination = "Sri Lanka"
+        missing_fields.append("destination_country")
+
     # --- purpose ---
     purpose = _infer_purpose(entities, raw_lower)
 
-    # If missing nationality, return contract + missing_fields
-    if not nationality:
-        return VisaPolicyRequest(
-            intent=parsed_intent.intent or "info_visa_policy",  # ✅ explicit
-            ask_type=ask_type,                                  # ✅ always present
-            user_id=req.user_id,
-            session_id=req.session_id,
-            raw_text=raw_text,
-            nationality_country="",
-            destination_country=str(destination),
-            intended_stay_days=entities.get("days"),
-            travel_window=travel_window,
-            purpose=purpose,
-            extra={
-                "domain_category": parsed_intent.domain_category,
-                "confidence": parsed_intent.confidence,
-                "missing_fields": ["nationality_country"],
-            },
-        )
+    # ✅ intended_stay_days ALWAYS set (KG requires)
+    days = entities.get("days")
+    try:
+        intended_stay_days = int(days) if days is not None else 30
+    except Exception:
+        intended_stay_days = 30
+
+    # ✅ travel_window ALWAYS set (KG requires object + string fields)
+    travel_start = entities.get("start_date")
+    travel_end = entities.get("end_date")
+
+    travel_window = TravelWindow(
+        start_date=str(travel_start).strip() if travel_start else "unknown",
+        end_date=str(travel_end).strip() if travel_end else "unknown",
+    )
 
     return VisaPolicyRequest(
-        intent=parsed_intent.intent or "info_visa_policy",      # ✅ explicit
-        ask_type=ask_type,                                      # ✅ always present
-        user_id=req.user_id,
-        session_id=req.session_id,
+        intent=parsed_intent.intent or "info_visa_policy",
+        ask_type=ask_type,
+        user_id=req.user_id or "unknown",
+        session_id=req.session_id or "no_session",
         raw_text=raw_text,
         nationality_country=nationality,
         destination_country=destination,
-        intended_stay_days=entities.get("days"),
+        intended_stay_days=intended_stay_days,
         travel_window=travel_window,
         purpose=purpose,
         extra={
             "domain_category": parsed_intent.domain_category,
             "confidence": parsed_intent.confidence,
+            **({"missing_fields": missing_fields} if missing_fields else {}),
         },
     )
+

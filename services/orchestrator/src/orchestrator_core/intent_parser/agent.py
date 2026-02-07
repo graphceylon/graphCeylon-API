@@ -12,31 +12,38 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from ..entity_extractor import extract_entities_and_prefs
 
 
-# Keep this synced with your training code
 INTENT_LABELS: List[str] = [
+    # ===== Planning & Recommendation =====
     "plan_itinerary",
     "recommend_pois",
     "modify_itinerary",
 
-    # Forecasting-related intents (NEW)
+    # ===== Forecasting =====
     "crowd_forecast",
     "forecast_weather",
     "forecast_price",
     "forecast_sustainability",
 
-    # Information-based intents
+    # ===== Information =====
     "info_attraction",
     "info_accommodation",
     "info_transport",
     "info_visa_policy",
 
-    # Preference & meta intents
+    # ===== Hotel ACTION intents (NEW – REQUIRED) =====
+    "check_availability",   # dates-based hotel availability
+    "book_hotel",           # booking intent (HITL start)
+    "modify_booking",       # change dates / guests / room
+    "cancel_booking",       # cancel reservation
+
+    # ===== Preferences & Meta =====
     "update_preferences",
     "explanation_request",
 
-    # General fallback
+    # ===== Fallback =====
     "generic_fact_query",
 ]
+
 
 id2label = {i: lbl for i, lbl in enumerate(INTENT_LABELS)}
 

@@ -1,5 +1,5 @@
 # api/schemas.py
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict,Any
 from pydantic import BaseModel, Field
 from ..orchestrator_core.contracts.weather import WeatherForecastResponse
 from ..orchestrator_core.contracts.crowd import CrowdForecastResponse
@@ -112,6 +112,12 @@ class OrchestrateResponse(BaseModel):
     itinerary_result :Optional[ItineraryPlanResponse] = None
     modify_result :Optional[ItineraryModifyResponse] = None
     visa_result: Optional[VisaPolicyResponse] = None
+    accommodation_result: Optional[Any] = None
+    transport_result: Optional[Any] = None
+    attraction_result: Optional[Any] = None
+
+
+
 
 
 
