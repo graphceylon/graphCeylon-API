@@ -1,6 +1,7 @@
 """Repository for holiday-related database operations."""
 
 import logging
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from neo4j import Driver

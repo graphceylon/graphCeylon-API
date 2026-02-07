@@ -359,7 +359,7 @@ def initialize_train_schedules(db: DatabaseManager = Depends(get_db_manager)):
         logger.info("Initializing train schedules from CSV...")
         
         # Path to the schedules CSV file (absolute path from workspace root)
-        csv_file = str(Path(__file__).parent.parent.parent.parent.parent.parent / "data" / "kg_service" / "data" / "train_schedule" / "schedules" / "train_schedules.csv")
+        csv_file = str(Path(__file__).parent.parent.parent.parent.parent.parent.parent / "data" / "kg_service" / "data" / "train_schedule" / "schedules" / "train_schedules.csv")
         
         result = db.railway.load_schedules_from_csv(csv_file)
         

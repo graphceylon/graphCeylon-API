@@ -73,11 +73,11 @@ class FilePaths(BaseSettings):
     """File paths for data imports and resources."""
     
     ontology_file: str = Field(
-        default="neo4j/import/lk-tourism-ontology.ttl",
+        default="neo4j/import/data/lk-admin.ttl",
         description="RDF/OWL ontology file path"
     )
     shapes_file: str = Field(
-        default="neo4j/import/lk-tourism-shapes.ttl",
+        default="neo4j/import/data/lk-shapes.ttl",
         description="SHACL shapes file path"
     )
     seed_file: str = Field(

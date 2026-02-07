@@ -5,6 +5,7 @@ from typing import List, Dict, Any
 from pathlib import Path
 from neo4j import Driver
 from neo4j.time import DateTime, Date, Time
+from ..utils import DatabasePaths
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +198,7 @@ class BaseRepository:
         """
         try:
             logger.info(f"Loading schema from {schema_filename}...")
-            schema_path = self.paths.get_schema_file(schema_filename)
+            schema_path = DatabasePaths.get_schema_file(schema_filename)
             
             if not schema_path.exists():
                 logger.warning(f"Schema file not found: {schema_path}")
@@ -234,7 +235,7 @@ class BaseRepository:
         """
         try:
             logger.info(f"Loading {node_label} data from {json_filename}...")
-            data_path = self.paths.get_data_file(json_filename)
+            data_path = DatabasePaths.get_data_file(json_filename)
             
             if not data_path.exists():
                 raise FileNotFoundError(f"Data file not found: {data_path}")

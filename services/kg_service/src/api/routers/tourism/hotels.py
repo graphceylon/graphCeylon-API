@@ -5,6 +5,7 @@ RESTful endpoints for hotel queries, search, recommendations, and ingestion
 """
 
 from typing import List, Optional, Dict, Any
+from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Depends, UploadFile, File
 from pydantic import BaseModel, Field
 import json
@@ -830,6 +831,174 @@ async def ingest_hotels(
         raise HTTPException(
             status_code=500,
             detail=f"Ingestion failed: {str(e)}"
+        )
+
+
+@router.post("/initialize", response_model=Dict[str, Any])
+async def initialize_hotels():
+    """
+    Initialize hotels from the local hotels.json data file.
+    
+    Reads the hotels dataset from the data directory and ingests all hotels
+    into the knowledge graph. This is the recommended method for KG initialization.
+    
+    **Returns:**
+    - Total hotels created
+    - Relationships established
+    - POIs and amenities added
+    - Processing time
+    """
+    # Resolve path: hotels.py -> tourism -> routers -> api -> src -> kg_service -> services -> graphCeylon-API
+    data_dir = Path(__file__).parent.parent.parent.parent.parent.parent.parent / "data" / "kg_service" / "data"
+    hotels_file = data_dir / "hotels.json"
+    
+    if not hotels_file.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Hotels data file not found at: {hotels_file}"
+        )
+    
+    try:
+        with open(hotels_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # Initialize ingestion service
+        service = HotelIngestionService()
+        
+        try:
+            overall_start = time.time()
+            
+            total_results = {
+                "total_attractions": 0,
+                "total_hotels_created": 0,
+                "total_relationships": 0,
+                "total_pois": 0,
+                "total_amenities": 0,
+                "total_errors": 0,
+                "attraction_results": []
+            }
+            
+            from models.domain.hotel import (
+                HotelIngestionBatch,
+                HotelCreate,
+                GPSCoordinates,
+                NearbyPlace,
+                TransportationOption
+            )
+            
+            # Process each attraction's hotels
+            for attraction_data in data.get("attractions", []):
+                attraction_name = attraction_data.get("attraction")
+                if not attraction_name or not attraction_data.get("hotels"):
+                    continue
+                
+                hotels = []
+                for hotel_data in attraction_data.get("hotels", []):
+                    try:
+                        # Build nearby places
+                        nearby_places = []
+                        for place_data in hotel_data.get("nearby_places", []):
+                            transportations = []
+                            for trans_data in place_data.get("transportations", []):
+                                transportations.append(TransportationOption(**trans_data))
+                            
+                            gps = place_data.get("gps_coordinates")
+                            gps_coords = GPSCoordinates(**gps) if gps else None
+                            
+                            nearby_places.append(
+                                NearbyPlace(
+                                    **{**place_data, "transportations": transportations, "gps_coordinates": gps_coords}
+                                )
+                            )
+                        
+                        # Handle missing/invalid GPS coordinates
+                        gps_data = hotel_data.get("gps_coordinates")
+                        if isinstance(gps_data, str) or not gps_data:
+                            total_results["total_errors"] += 1
+                            continue
+                        
+                        # Parse numeric fields safely
+                        rate_per_night = hotel_data.get("rate_per_night")
+                        if isinstance(rate_per_night, str):
+                            rate_per_night = rate_per_night.replace("US$", "").replace("$", "").strip()
+                            try:
+                                rate_per_night = float(rate_per_night)
+                            except:
+                                rate_per_night = None
+                        
+                        rating = hotel_data.get("rating") or hotel_data.get("overall_rating")
+                        
+                        hotel = HotelCreate(
+                            name=hotel_data.get("name"),
+                            description=hotel_data.get("description"),
+                            link=hotel_data.get("link"),
+                            gps_coordinates=GPSCoordinates(**gps_data),
+                            rate_per_night=rate_per_night,
+                            total_rate=hotel_data.get("total_rate"),
+                            check_in_time=hotel_data.get("check_in_time"),
+                            check_out_time=hotel_data.get("check_out_time"),
+                            property_token=hotel_data.get("property_token"),
+                            serpapi_link=hotel_data.get("serpapi_property_details_link"),
+                            rating=rating,
+                            reviews_count=hotel_data.get("reviews"),
+                            images=hotel_data.get("images", []),
+                            amenities=hotel_data.get("amenities", []),
+                            nearby_places=nearby_places,
+                            attraction_name=attraction_name
+                        )
+                        hotels.append(hotel)
+                    except Exception as e:
+                        total_results["total_errors"] += 1
+                        continue
+                
+                if hotels:
+                    batch = HotelIngestionBatch(
+                        attraction_name=attraction_name,
+                        attraction_description=attraction_data.get("attraction_description"),
+                        attraction_geolocation=attraction_data.get("geolocation"),
+                        hotel_count=len(hotels),
+                        hotels=hotels,
+                        metadata=data.get("scrape_metadata", {})
+                    )
+                    
+                    batch_result = service.ingest_batch(batch)
+                    
+                    total_results["total_attractions"] += 1
+                    total_results["total_hotels_created"] += batch_result.hotels_created
+                    total_results["total_relationships"] += batch_result.relationships_created
+                    total_results["total_pois"] += batch_result.pois_created
+                    total_results["total_amenities"] += batch_result.amenities_created
+                    total_results["total_errors"] += len(batch_result.errors)
+                    
+                    total_results["attraction_results"].append({
+                        "attraction": attraction_name,
+                        "hotels_created": batch_result.hotels_created,
+                        "relationships": batch_result.relationships_created,
+                        "errors": batch_result.errors if batch_result.errors else []
+                    })
+            
+            total_results["total_time_seconds"] = time.time() - overall_start
+            
+            return {
+                "success": True,
+                "message": f"Successfully ingested {total_results['total_hotels_created']} hotels from {total_results['total_attractions']} attractions",
+                "results": total_results
+            }
+            
+        finally:
+            service.close()
+    
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid JSON in hotels data file"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Hotel initialization failed: {str(e)}"
         )
 
 

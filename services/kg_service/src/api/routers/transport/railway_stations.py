@@ -311,7 +311,7 @@ def initialize_railway_stations(db: DatabaseManager = Depends(get_db_manager)):
         logger.info("Initializing railway stations from JSON...")
         
         # Path to the enriched stations file (absolute path from workspace root)
-        json_file = str(Path(__file__).parent.parent.parent.parent.parent.parent / "data" / "kg_service" / "data" / "train_schedule" / "railway_stations_enriched.json")
+        json_file = str(Path(__file__).parent.parent.parent.parent.parent.parent.parent / "data" / "kg_service" / "data" / "train_schedule" / "railway_stations_enriched.json")
         
         result = db.railway.load_stations_from_json(json_file)
         
