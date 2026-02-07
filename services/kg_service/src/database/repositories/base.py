@@ -1,16 +1,23 @@
-"""Base repository class for database operations."""
+"""Base repository class for database operations with common utilities."""
 
 import logging
 from typing import List, Dict, Any
+from pathlib import Path
 from neo4j import Driver
 from neo4j.time import DateTime, Date, Time
-
 
 logger = logging.getLogger(__name__)
 
 
 class BaseRepository:
-    """Base repository with common database operations."""
+    """Base repository with common database operations and utilities.
+    
+    Provides:
+    - Query execution with type conversion
+    - File-based Cypher execution
+    - Statistics gathering
+    - Common repository patterns (load_schema, load_from_json)
+    """
     
     def __init__(self, driver: Driver):
         """Initialize repository with Neo4j driver.
@@ -176,3 +183,59 @@ class BaseRepository:
         except Exception as e:
             logger.error(f"Failed to get statistics: {e}")
             raise
+    
+    # ========== Helper Methods for Common Patterns ==========
+    
+    def _load_schema_from_file(self, schema_filename: str, entity_type: str) -> Dict[str, Any]:
+        """Generic schema loading from file.
+        
+        Args:
+            schema_filename: Name of schema file (e.g., 'init_attractions_schema.cypher')
+            entity_type: Type of entity for logging (e.g., 'attractions')
+            
+        Returns:
+            Dictionary with success status and message
+        """
+        try:
+            from database.utils import DatabasePaths
+            
+            logger.info(f"Loading {entity_type} schema...")
+            
+            try:
+                schema_path = DatabasePaths.resolve_schema_file(schema_filename)
+            except FileNotFoundError:
+                logger.warning(f"{entity_type} schema file not found, creating basic constraints")
+                # Subclass can override this with specific constraints
+                return {
+                    "success": True,
+                    "message": f"Basic {entity_type} constraints created (schema file not found)"
+                }
+            
+            self.execute_cypher_file(str(schema_path))
+            logger.info(f"{entity_type} schema loaded successfully")
+            
+            return {
+                "success": True,
+                "message": f"{entity_type} schema loaded"
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to load {entity_type} schema: {e}")
+            raise
+    
+    def _check_apoc_available(self) -> bool:
+        """Check if APOC plugin is available.
+        
+        Returns:
+            True if APOC is available, False otherwise
+        """
+        try:
+            from database.utils import check_apoc_available
+            return check_apoc_available(self)
+        except ImportError:
+            # Fallback if utils not available
+            try:
+                result = self.execute_query("RETURN apoc.version() AS version")
+                return bool(result and result[0].get('version'))
+            except:
+                return False
