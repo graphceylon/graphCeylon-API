@@ -11,8 +11,6 @@ import json
 import time
 from datetime import datetime
 
-from neo4j import GraphDatabase
-from neo4j.time import DateTime, Date, Time
 from core.config import settings
 from core.utils import sanitize_neo4j_types
 from models.domain.hotel import (
@@ -22,15 +20,14 @@ from models.domain.hotel import (
     HotelStatistics,
     HotelIngestionResult,
     PriceTier,
-    ProximityLevel
+    ProximityLevel,
+    AccommodationSearchRequest,
+    HotelItemResponse,
+    OrchestratorSearchResponse,
 )
 from services.hotel_ingestion_service import HotelIngestionService
 from services.orchestrator.hotel_service import OrchestratorHotelService
-from models.domain.hotel import (
-    AccommodationSearchRequest,
-    HotelItemResponse,
-    OrchestratorSearchResponse
-)
+from api.dependencies import get_driver
 
 
 router = APIRouter(
@@ -38,23 +35,6 @@ router = APIRouter(
     tags=["hotels"],
     responses={404: {"description": "Not found"}}
 )
-
-
-# ========== Helper Functions ==========
-
-
-# ========== Database Connection ==========
-
-def get_neo4j_driver():
-    """Get Neo4j driver instance"""
-    driver = GraphDatabase.driver(
-        settings.neo4j_uri,
-        auth=(settings.neo4j_user, settings.neo4j_password)
-    )
-    try:
-        yield driver
-    finally:
-        driver.close()
 
 
 # ========== Response Models ==========
@@ -93,7 +73,7 @@ async def list_hotels(
     district: Optional[str] = None,
     min_rating: Optional[float] = Query(None, ge=0, le=5),
     max_price: Optional[float] = Query(None, ge=0),
-    driver = Depends(get_neo4j_driver)
+    driver = Depends(get_driver)
 ):
     """
     List all hotels with optional filters
@@ -179,7 +159,7 @@ async def list_hotels(
 @router.get("/{hotel_id}", response_model=HotelDetailResponse)
 async def get_hotel_detail(
     hotel_id: str,
-    driver = Depends(get_neo4j_driver)
+    driver = Depends(get_driver)
 ):
     """
     Get detailed information about a specific hotel
@@ -257,7 +237,7 @@ async def get_hotel_detail(
 @router.post("/search", response_model=HotelListResponse)
 async def search_hotels(
     query: HotelSearchQuery,
-    driver = Depends(get_neo4j_driver)
+    driver = Depends(get_driver)
 ):
     """
     Advanced hotel search with multiple criteria
@@ -369,7 +349,7 @@ async def search_hotels(
 @router.post("/recommend", response_model=RecommendationResponse)
 async def recommend_hotels(
     query: HotelRecommendationQuery,
-    driver = Depends(get_neo4j_driver)
+    driver = Depends(get_driver)
 ):
     """
     Get personalized hotel recommendations for multi-attraction trips
@@ -489,7 +469,7 @@ async def recommend_hotels(
 
 @router.get("/statistics/overview", response_model=HotelStatistics)
 async def get_hotel_statistics(
-    driver = Depends(get_neo4j_driver)
+    driver = Depends(get_driver)
 ):
     """
     Get comprehensive hotel dataset statistics
@@ -605,7 +585,7 @@ async def get_hotels_near_attraction(
     attraction_name: str,
     max_distance_km: float = Query(10.0, ge=0, le=50),
     limit: int = Query(10, ge=1, le=50),
-    driver = Depends(get_neo4j_driver)
+    driver = Depends(get_driver)
 ):
     """
     Get hotels near a specific attraction
@@ -858,7 +838,7 @@ async def ingest_hotels(
 @router.post("/orchestrator/call/hotels/search", response_model=OrchestratorSearchResponse, response_model_exclude_none=True)
 async def orchestrator_hotel_search(
     request: AccommodationSearchRequest,
-    driver = Depends(get_neo4j_driver)
+    driver = Depends(get_driver)
 ):
     """
     Hotel search endpoint for orchestrator service
@@ -902,7 +882,7 @@ async def orchestrator_hotel_search(
 @router.delete("/{hotel_id}")
 async def delete_hotel(
     hotel_id: str,
-    driver = Depends(get_neo4j_driver)
+    driver = Depends(get_driver)
 ):
     """
     Delete a specific hotel by ID
@@ -977,7 +957,7 @@ async def delete_hotel(
 async def delete_hotels_by_attraction(
     attraction_name: str,
     confirm: bool = Query(False, description="Set to true to confirm deletion"),
-    driver = Depends(get_neo4j_driver)
+    driver = Depends(get_driver)
 ):
     """
     Delete all hotels associated with a specific attraction
@@ -1056,7 +1036,7 @@ async def delete_hotels_by_attraction(
 @router.delete("/clear")
 async def clear_all_hotels(
     confirm: bool = Query(False, description="Set to true to confirm deletion"),
-    driver = Depends(get_neo4j_driver)
+    driver = Depends(get_driver)
 ):
     """
     **DANGER:** Delete all hotel-related nodes and relationships

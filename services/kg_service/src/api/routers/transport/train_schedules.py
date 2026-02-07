@@ -26,15 +26,11 @@ from models.domain.railway import (
 )
 from services.orchestrator.transport_service import OrchestratorTransportService
 from models.graph.knowledge_graph import WriteResponse
+from api.dependencies import get_db_manager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/railway/schedules", tags=["train-schedules"])
-
-
-def get_db_manager():
-    """Dependency to get database manager - will be overridden by main app."""
-    raise HTTPException(status_code=503, detail="Database manager not initialized")
 
 
 @router.get("", response_model=TrainScheduleResponse)

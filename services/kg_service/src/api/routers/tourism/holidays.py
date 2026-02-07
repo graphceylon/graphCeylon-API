@@ -9,15 +9,11 @@ from models.domain.holiday import (
     HolidayQueryRequest, HolidayResponse, CreateHolidayRequest,
     TemporalStructureResponse
 )
+from api.dependencies import get_db_manager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/holidays", tags=["Holidays & Temporal"])
-
-
-def get_db_manager() -> DatabaseManager:
-    """Dependency to get database manager (will be overridden in main.py)."""
-    pass
 
 
 @router.post("/initialize-temporal", response_model=Dict[str, Any])

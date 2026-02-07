@@ -13,15 +13,11 @@ from models.domain.attraction import (
     AttractionSearchResponse,
 )
 from services.orchestrator.attraction_service import OrchestratorAttractionService
+from api.dependencies import get_db_manager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/attractions", tags=["attractions"])
-
-
-def get_db_manager():
-    """Dependency to get database manager - will be overridden by main app."""
-    raise HTTPException(status_code=503, detail="Database manager not initialized")
 
 
 @router.post("/orchestrator/call/attractions", response_model=AttractionSearchResponse, response_model_exclude_none=True)

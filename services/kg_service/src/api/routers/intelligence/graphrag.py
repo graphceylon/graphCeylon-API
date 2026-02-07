@@ -22,6 +22,7 @@ from models.ai.graphrag import (
     RuleConditions,
     TravelWindow
 )
+from api.dependencies import get_db_manager
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +31,6 @@ router = APIRouter(prefix="/graphrag", tags=["GraphRAG"])
 # Global GraphRAG service instance with thread-safe initialization
 _graphrag_service: Optional[GraphRAGService] = None
 _service_lock = threading.Lock()
-
-
-def get_db_manager() -> DatabaseManager:
-    """Dependency to get database manager (will be overridden by main.py)."""
-    raise HTTPException(status_code=503, detail="Database manager not initialized")
 
 
 def get_graphrag_service(db: DatabaseManager = Depends(get_db_manager)) -> GraphRAGService:

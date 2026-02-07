@@ -19,6 +19,7 @@ from models.domain.railway import (
     StationStatistics,
 )
 from models.graph.knowledge_graph import WriteResponse
+from api.dependencies import get_db_manager
 
 logger = logging.getLogger(__name__)
 
@@ -103,11 +104,6 @@ def deserialize_station(station_dict: dict) -> dict:
 
 
 # ========== Endpoints ==========
-
-
-def get_db_manager():
-    """Dependency to get database manager - will be overridden by main app."""
-    raise HTTPException(status_code=503, detail="Database manager not initialized")
 
 
 @router.get("", response_model=RailwayStationResponse)

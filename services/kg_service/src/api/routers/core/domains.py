@@ -5,15 +5,11 @@ from typing import Dict, Any, List
 import logging
 
 from database.manager import DatabaseManager
+from api.dependencies import get_db_manager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/domains", tags=["Domain Architecture"])
-
-
-def get_db_manager() -> DatabaseManager:
-    """Dependency to get database manager (will be overridden in main.py)."""
-    pass
 
 
 @router.post("/initialize", response_model=Dict[str, Any])

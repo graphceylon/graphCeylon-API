@@ -11,15 +11,11 @@ from models.domain.news import (
     NewsResponse,
     CreateNewsRequest
 )
+from api.dependencies import get_db_manager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/news", tags=["Tourism News"])
-
-
-def get_db_manager():
-    """Dependency to get database manager - will be overridden by main app."""
-    raise HTTPException(status_code=503, detail="Database manager not initialized")
 
 
 @router.get("", response_model=NewsResponse)

@@ -17,18 +17,13 @@ from enum import Enum
 import logging
 
 from database.manager import DatabaseManager
+from api.dependencies import get_db_manager
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter(prefix="/semantic", tags=["Semantic Web"])
-
-
-# Dependency injection function
-def get_db_manager() -> DatabaseManager:
-    """Dependency to get database manager - will be overridden by main app."""
-    raise HTTPException(status_code=503, detail="Database manager not initialized")
 
 
 # ============================================================================
