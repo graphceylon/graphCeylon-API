@@ -27,7 +27,7 @@ from models.domain.transport_orchestrator import (
     TransportSearchResponse,
 )
 from services.orchestrator_transport_service import OrchestratorTransportService
-from models.schemas import WriteResponse
+from models.graph.knowledge_graph import WriteResponse
 
 logger = logging.getLogger(__name__)
 

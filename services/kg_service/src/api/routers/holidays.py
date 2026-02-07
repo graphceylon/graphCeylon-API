@@ -5,7 +5,7 @@ from typing import Dict, Any, List, Optional
 import logging
 
 from database.manager import DatabaseManager
-from models.schemas import (
+from models.domain.holiday import (
     HolidayQueryRequest, HolidayResponse, CreateHolidayRequest,
     TemporalStructureResponse
 )

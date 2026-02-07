@@ -12,12 +12,13 @@ from core.config import settings
 from core.dependencies import create_driver
 from database.manager import DatabaseManager
 from services.reasoning import ReasoningOrchestrator
-from models.schemas import (
+from models.base import HealthResponse, StatisticsResponse, ErrorResponse
+from models.graph.knowledge_graph import (
     QueryRequest, ReasonRequest, PredictRequest,
-    HealthResponse, QueryResponse, ReasonResponse, 
-    PredictResponse, ValidationResponse, ExportResponse,
-    ExplainResponse, StatisticsResponse, ErrorResponse,
-    ConstraintReasonRequest, ConstraintReasonResponse, WriteRequest, WriteResponse
+    QueryResponse, ReasonResponse, PredictResponse,
+    ValidationResponse, ExportResponse, ExplainResponse,
+    ConstraintReasonRequest, ConstraintReasonResponse,
+    WriteRequest, WriteResponse
 )
 from api import dependencies as api_deps
 from api.routers import attractions

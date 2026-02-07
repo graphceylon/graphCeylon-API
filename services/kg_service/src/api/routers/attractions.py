@@ -4,8 +4,8 @@ import logging
 from fastapi import APIRouter, HTTPException, Depends
 
 from database.manager import DatabaseManager
-from models.schemas import (
-    WriteResponse,
+from models.graph.knowledge_graph import WriteResponse
+from models.domain.attraction import (
     AttractionQueryRequest,
     AttractionResponse,
     CreateAttractionRequest

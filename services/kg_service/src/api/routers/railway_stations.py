@@ -18,7 +18,7 @@ from models.domain.railway import (
     CreateRailwayStationRequest,
     StationStatistics,
 )
-from models.schemas import WriteResponse
+from models.graph.knowledge_graph import WriteResponse
 
 logger = logging.getLogger(__name__)
 

@@ -37,6 +37,49 @@ from .news import (
     NewsResponse,
 )
 
+from .railway import (
+    TrainType,
+    RailwayStation,
+    TrainSchedule,
+    RailwayStationQueryRequest,
+    RailwayStationResponse,
+    TrainScheduleQueryRequest,
+    TrainScheduleResponse,
+    RouteQueryRequest,
+    RouteResponse,
+    CreateRailwayStationRequest,
+    CreateTrainScheduleRequest,
+    StationStatistics,
+    ScheduleStatistics,
+)
+
+from .hotel import (
+    HotelType,
+    HotelBase,
+    HotelCreate,
+    HotelSearchQuery,
+    HotelRecommendationQuery,
+    HotelStatistics,
+)
+
+from .orchestrator import (
+    AccommodationSearchRequest,
+    HotelItemResponse,
+    OrchestratorSearchResponse,
+)
+
+from .attraction_orchestrator import (
+    AttractionSearchRequest,
+    AttractionItem,
+    AttractionSearchResponse,
+)
+
+from .transport_orchestrator import (
+    TransportSearchRequest,
+    TransportOption,
+    TransportSearchResponse,
+)
+
 __all__ = [
     # Attraction models
     "CoordinatesModel",
@@ -67,4 +110,35 @@ __all__ = [
     "CreateNewsRequest",
     "NewsQueryRequest",
     "NewsResponse",
+    # Railway models
+    "TrainType",
+    "RailwayStation",
+    "TrainSchedule",
+    "RailwayStationQueryRequest",
+    "RailwayStationResponse",
+    "TrainScheduleQueryRequest",
+    "TrainScheduleResponse",
+    "RouteQueryRequest",
+    "RouteResponse",
+    "CreateRailwayStationRequest",
+    "CreateTrainScheduleRequest",
+    "StationStatistics",
+    "ScheduleStatistics",
+    # Hotel models
+    "HotelType",
+    "HotelBase",
+    "HotelCreate",
+    "HotelSearchQuery",
+    "HotelRecommendationQuery",
+    "HotelStatistics",
+    # Orchestrator models
+    "AccommodationSearchRequest",
+    "HotelItemResponse",
+    "OrchestratorSearchResponse",
+    "AttractionSearchRequest",
+    "AttractionItem",
+    "AttractionSearchResponse",
+    "TransportSearchRequest",
+    "TransportOption",
+    "TransportSearchResponse",
 ]

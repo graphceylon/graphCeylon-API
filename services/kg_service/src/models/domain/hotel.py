@@ -9,6 +9,9 @@ from datetime import datetime
 from pydantic import BaseModel, Field, validator
 from enum import Enum
 
+# Import common geolocation model
+from models.common import CoordinatesModel as GPSCoordinates
+
 
 class TransportType(str, Enum):
     """Transportation modes"""
@@ -48,20 +51,6 @@ class ProximityLevel(str, Enum):
 
 
 # ========== Nested Models ==========
-
-class GPSCoordinates(BaseModel):
-    """Geographic coordinates"""
-    latitude: float = Field(..., ge=-90, le=90)
-    longitude: float = Field(..., ge=-180, le=180)
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "latitude": 8.327515199999999,
-                "longitude": 80.3793055
-            }
-        }
-
 
 class TransportationOption(BaseModel):
     """Transportation details to nearby places"""

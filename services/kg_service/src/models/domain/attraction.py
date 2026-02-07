@@ -3,88 +3,24 @@
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
-
-# Nested Models
-
-class CoordinatesModel(BaseModel):
-    """Coordinates data."""
-    latitude: Optional[float] = Field(None, description="Latitude")
-    longitude: Optional[float] = Field(None, description="Longitude")
-    accuracy: Optional[str] = Field(None, description="Coordinate accuracy")
-
-
-class MapLinksModel(BaseModel):
-    """Map links for various services."""
-    google_maps_url: Optional[str] = Field(None, description="Google Maps URL")
-    google_maps_coordinates_url: Optional[str] = Field(None, description="Google Maps coordinates URL")
-    google_maps_directions_url: Optional[str] = Field(None, description="Google Maps directions URL")
-    google_maps_satellite_url: Optional[str] = Field(None, description="Google Maps satellite view URL")
-    google_earth_url: Optional[str] = Field(None, description="Google Earth URL")
-    google_street_view_url: Optional[str] = Field(None, description="Google Street View URL")
-    coordinates_decimal: Optional[str] = Field(None, description="Coordinates in decimal format")
-    coordinates_dms: Optional[str] = Field(None, description="Coordinates in DMS format")
-    apple_maps_url: Optional[str] = Field(None, description="Apple Maps URL")
-    google_maps_place_url: Optional[str] = Field(None, description="Google Maps place URL")
+# Import common geolocation models
+from models.common import (
+    CoordinatesModel,
+    MapLinksModel,
+    AdministrativeAreasModel,
+    AddressInfoModel,
+    GeocodingMetadataModel,
+    GeolocationModel,
+    GooglePlaceDataModel,
+)
 
 
-class AdministrativeAreasModel(BaseModel):
-    """Administrative area information."""
-    country: Optional[str] = Field(None, description="Country name")
-    country_code: Optional[str] = Field(None, description="Country code")
-    province: Optional[str] = Field(None, description="Province/state name")
-    district: Optional[str] = Field(None, description="District name")
-    city: Optional[str] = Field(None, description="City name")
-    town: Optional[str] = Field(None, description="Town name")
-    village: Optional[str] = Field(None, description="Village name")
-    postal_code: Optional[str] = Field(None, description="Postal code")
-    route: Optional[str] = Field(None, description="Route/road name")
-    street_number: Optional[str] = Field(None, description="Street number")
-
-
-class AddressInfoModel(BaseModel):
-    """Address information."""
-    formatted_address: Optional[str] = Field(None, description="Formatted address string")
-    administrative_areas: Optional[AdministrativeAreasModel] = Field(None, description="Administrative divisions")
-
-
-class GeocodingMetadataModel(BaseModel):
-    """Geocoding metadata."""
-    geocoded_at: Optional[str] = Field(None, description="Geocoding timestamp")
-    geocoding_service: Optional[str] = Field(None, description="Geocoding service used")
-    geocoding_confidence: Optional[str] = Field(None, description="Geocoding confidence level")
-    place_id: Optional[str] = Field(None, description="Place ID")
-
-
-class GeolocationModel(BaseModel):
-    """Complete geolocation data for attractions."""
-    coordinates: Optional[CoordinatesModel] = Field(None, description="GPS coordinates")
-    map_links: Optional[MapLinksModel] = Field(None, description="Map service links")
-    address_info: Optional[AddressInfoModel] = Field(None, description="Address information")
-    geocoding_metadata: Optional[GeocodingMetadataModel] = Field(None, description="Geocoding metadata")
-
+# Specific Models for Attractions
 
 class LinkModel(BaseModel):
     """Link model for attraction links."""
     type: Optional[str] = Field(None, description="Link type (gallery, wikipedia, etc.)")
     url: Optional[str] = Field(None, description="URL")
-
-
-class GooglePlaceDataModel(BaseModel):
-    """Google Places data for attractions."""
-    rating: Optional[float] = Field(None, description="Google rating")
-    user_ratings_total: Optional[int] = Field(None, description="Total number of ratings")
-    reviews: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="User reviews")
-    photos: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Photos")
-    website: Optional[str] = Field(None, description="Website URL")
-    phone_number: Optional[str] = Field(None, description="Phone number")
-    opening_hours: Optional[Dict[str, Any]] = Field(None, description="Opening hours")
-    price_level: Optional[int] = Field(None, description="Price level")
-    place_types: Optional[List[str]] = Field(default_factory=list, description="Place types")
-    place_url: Optional[str] = Field(None, description="Google Maps place URL")
-    editorial_summary: Optional[str] = Field(None, description="Editorial summary")
-    place_name: Optional[str] = Field(None, description="Place name")
-    icon: Optional[str] = Field(None, description="Icon URL")
-    vicinity: Optional[str] = Field(None, description="Vicinity description")
 
 
 # Request Models
