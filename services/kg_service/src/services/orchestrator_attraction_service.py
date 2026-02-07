@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional
 from neo4j import Driver
 import logging
 
-from models.domain.attraction_orchestrator import (
+from models.domain.attraction import (
     AttractionSearchRequest,
     AttractionItem,
     AttractionSearchResponse

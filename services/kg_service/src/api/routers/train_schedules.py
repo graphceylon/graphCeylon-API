@@ -21,8 +21,6 @@ from models.domain.railway import (
     RouteSegment,
     ScheduleStatistics,
     TrainType,
-)
-from models.domain.transport_orchestrator import (
     TransportSearchRequest,
     TransportSearchResponse,
 )

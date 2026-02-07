@@ -10,7 +10,7 @@ from neo4j import GraphDatabase
 
 from services.gnn_embeddings import GNNEmbeddingService
 from services.hybrid_reasoning import HybridReasoningEngine
-from models.temporal import TemporalMetadata, ProvenanceMetadata
+from models.graph.temporal import TemporalMetadata, ProvenanceMetadata
 
 
 @pytest.fixture

@@ -8,7 +8,7 @@ from typing import List, Dict, Any
 import time
 from neo4j import Driver
 
-from models.domain.orchestrator import (
+from models.domain.hotel import (
     AccommodationSearchRequest,
     HotelItemResponse,
     OrchestratorSearchResponse

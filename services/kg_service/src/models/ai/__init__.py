@@ -1,9 +1,4 @@
-"""AI models submodule for agent and GraphRAG operations."""
-
-from .agent import (
-    AgentSearchRequest,
-    AgentPlanRequest,
-)
+"""AI models submodule for GraphRAG operations."""
 
 from .graphrag import (
     IngestImmigrationDataRequest,
@@ -24,9 +19,6 @@ from .graphrag import (
 )
 
 __all__ = [
-    # Agent models
-    "AgentSearchRequest",
-    "AgentPlanRequest",
     # GraphRAG models
     "IngestImmigrationDataRequest",
     "IngestImmigrationDataResponse",

@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path.cwd() / "src"))
 
 from services.gnn_embeddings import GNNEmbeddingService
 from services.hybrid_reasoning import HybridReasoningEngine
-from models.temporal import TemporalMetadata, ProvenanceMetadata
+from models.graph.temporal import TemporalMetadata, ProvenanceMetadata
 from visualize_thesis import ThesisVisualizer
 
 # Neo4j connection

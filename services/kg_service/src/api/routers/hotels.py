@@ -25,7 +25,7 @@ from models.domain.hotel import (
 )
 from services.hotel_ingestion_service import HotelIngestionService
 from services.orchestrator_hotel_service import OrchestratorHotelService
-from models.domain.orchestrator import (
+from models.domain.hotel import (
     AccommodationSearchRequest,
     HotelItemResponse,
     OrchestratorSearchResponse

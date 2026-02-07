@@ -16,14 +16,6 @@ class ErrorResponse(BaseModel):
     detail: Optional[str] = Field(None, description="Additional error details")
 
 
-class ProvenanceMetadata(BaseModel):
-    """Provenance metadata for tracking data sources and operations."""
-    source: Optional[str] = Field(None, description="Data source")
-    timestamp: Optional[str] = Field(None, description="Operation timestamp")
-    operation: Optional[str] = Field(None, description="Operation type")
-    method: Optional[str] = Field(None, description="Method used")
-
-
 class StatisticsResponse(BaseModel):
     """Response model for database statistics."""
     statistics: Dict[str, Any] = Field(..., description="Database statistics")

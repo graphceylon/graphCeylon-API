@@ -30,13 +30,6 @@ class TrainType(str, Enum):
     INTERCITY = "Intercity"
 
 
-class TrainClass(str, Enum):
-    """Train class categories"""
-    FIRST_CLASS = "1st_class"
-    SECOND_CLASS = "2nd_class"
-    THIRD_CLASS = "3rd_class"
-
-
 # ========== Main Models ==========
 
 class RailwayStationBase(BaseModel):
@@ -306,34 +299,43 @@ class ScheduleStatistics(BaseModel):
     date_range: Optional[Dict[str, str]] = None
 
 
-# ========== Legacy/Backward Compatibility ==========
+# ========== Transport Orchestrator Models ==========
 
-# Export commonly used types
-__all__ = [
-    # Enums
-    "TrainType",
-    "TrainClass",
-    # Main Models
-    "RailwayStation",
-    "RailwayStationBase",
-    "TrainSchedule",
-    "TrainScheduleBase",
-    # Nested Models
-    "Coordinates",
-    "Geolocation",
-    "AdministrativeAreas",
-    "GooglePlaceData",
-    # Request/Response
-    "RailwayStationQueryRequest",
-    "RailwayStationResponse",
-    "TrainScheduleQueryRequest",
-    "TrainScheduleResponse",
-    "RouteQueryRequest",
-    "RouteResponse",
-    "RouteSegment",
-    "RouteOption",
-    "CreateRailwayStationRequest",
-    "CreateTrainScheduleRequest",
-    "StationStatistics",
-    "ScheduleStatistics",
-]
+class TransportSearchRequest(BaseModel):
+    """Request model for orchestrator transport search."""
+    origin: str = Field(..., description="Starting location/city")
+    destination: str = Field(..., description="Ending location/city")
+    city: Optional[str] = Field(None, description="City context (optional)")
+    country: str = Field(default="Sri Lanka", description="Country")
+    time_of_day: Optional[str] = Field(None, description="Preferred time (morning/afternoon/evening)")
+    days: Optional[List[str]] = Field(None, description="Specific days of week")
+    budget_level: Optional[str] = Field(None, description="Budget constraint (low/medium/high)")
+    preferred_transport: List[str] = Field(default_factory=list, description="Preferred transport modes")
+    tags: List[str] = Field(default_factory=list, description="Additional tags/preferences")
+    user_id: str = Field(..., description="User UUID")
+    session_id: str = Field(..., description="Session identifier")
+    query: str = Field(..., description="User's original query")
+
+
+class TransportOption(BaseModel):
+    """Individual transport option in orchestrator response."""
+    mode: str = Field(..., description="Transport mode (train/bus/car/etc)")
+    summary: str = Field(..., description="Brief description of the route")
+    estimated_time_min: int = Field(..., description="Estimated travel time in minutes")
+    estimated_cost_lkr: float = Field(..., description="Estimated cost in LKR")
+    tips: str = Field(..., description="Travel tips and recommendations")
+    source: str = Field(..., description="Data source (e.g., 'Sri Lanka Railways')")
+
+
+class TransportSearchResponse(BaseModel):
+    """Response model for orchestrator transport search."""
+    ok: bool
+    origin: str
+    destination: str
+    country: str = "Sri Lanka"
+    options: List[TransportOption] = Field(default_factory=list)
+    summary: str = Field(..., description="Overall summary and recommendations")
+    error: Optional[str] = None
+    details: Optional[str] = None
+
+

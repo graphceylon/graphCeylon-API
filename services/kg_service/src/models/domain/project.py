@@ -6,12 +6,6 @@ from pydantic import BaseModel, Field
 
 # Request Models
 
-class ProjectDetailModel(BaseModel):
-    """Model for project detail items."""
-    key: Optional[str] = Field(None, description="Detail key")
-    value: Optional[str] = Field(None, description="Detail value")
-
-
 class TourismProjectModel(BaseModel):
     """Model for tourism project data."""
     title: str = Field(..., description="Project title")

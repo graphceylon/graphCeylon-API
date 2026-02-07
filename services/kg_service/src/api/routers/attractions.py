@@ -8,11 +8,9 @@ from models.graph.knowledge_graph import WriteResponse
 from models.domain.attraction import (
     AttractionQueryRequest,
     AttractionResponse,
-    CreateAttractionRequest
-)
-from models.domain.attraction_orchestrator import (
+    CreateAttractionRequest,
     AttractionSearchRequest,
-    AttractionSearchResponse
+    AttractionSearchResponse,
 )
 from services.orchestrator_attraction_service import OrchestratorAttractionService
 

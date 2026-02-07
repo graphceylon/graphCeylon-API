@@ -110,18 +110,4 @@ class GooglePlaceDataModel(BaseModel):
     vicinity: Optional[str] = Field(None, description="Vicinity/neighborhood description")
 
 
-# ========== Common Response Models ==========
 
-class PaginatedResponse(BaseModel):
-    """Base model for paginated list responses."""
-    count: int = Field(..., description="Number of items in this response")
-    total: Optional[int] = Field(None, description="Total number of items available")
-    limit: int = Field(..., description="Maximum items per page")
-    offset: int = Field(default=0, description="Starting offset")
-
-
-class QueryMetadata(BaseModel):
-    """Common metadata for query responses."""
-    query_time_ms: Optional[float] = Field(None, description="Query execution time in milliseconds")
-    filters_applied: Optional[Dict[str, Any]] = Field(None, description="Filters that were applied")
-    timestamp: Optional[str] = Field(None, description="Response timestamp (ISO format)")

@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from database.manager import DatabaseManager
 from services.reasoning import ReasoningOrchestrator
-from models.knowledge_graph import (
+from models.graph.knowledge_graph import (
     QueryRequest,
     QueryResponse,
     ReasonRequest,
