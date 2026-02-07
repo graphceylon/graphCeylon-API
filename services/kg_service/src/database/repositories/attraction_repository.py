@@ -2,12 +2,11 @@
 
 import logging
 from typing import List, Dict, Any, Optional
-from pathlib import Path
 import json
 from neo4j import Driver
 
 from .base import BaseRepository
-
+from ..utils import DatabasePaths
 
 logger = logging.getLogger(__name__)
 
@@ -21,24 +20,7 @@ class AttractionRepository(BaseRepository):
     
     def load_schema(self) -> Dict[str, Any]:
         """Load attraction schema (constraints and indexes)."""
-        try:
-            logger.info("Loading attractions schema...")
-            schema_path = Path(__file__).parent.parent.parent.parent / "neo4j" / "import" / "scripts" / "init_attractions_schema.cypher"
-            
-            if not schema_path.exists():
-                logger.warning(f"Attractions schema file not found: {schema_path}, creating basic constraints")
-                # Create basic constraints if schema file doesn't exist
-                self.execute_cypher("CREATE CONSTRAINT attraction_title_unique IF NOT EXISTS FOR (a:Attraction) REQUIRE a.title IS UNIQUE;")
-                return {"success": True, "message": "Basic constraints created"}
-            
-            self.execute_cypher_file(str(schema_path))
-            
-            logger.info("Attractions schema loaded successfully")
-            return {"success": True, "message": "Attractions schema loaded"}
-            
-        except Exception as e:
-            logger.error(f"Failed to load attractions schema: {e}")
-            raise
+        return self.load_schema_from_file('init_attractions_schema.cypher')
     
     def load_from_json(self, file_path: str = None) -> Dict[str, Any]:
         """Load attractions from JSON file.
@@ -50,11 +32,11 @@ class AttractionRepository(BaseRepository):
             Dictionary with success status and statistics
         """
         try:
-            logger.info("Loading attractions from JSON...")
-            
             # Use provided path or default
             if file_path is None:
-                file_path = str(Path(__file__).parent.parent.parent.parent.parent.parent / "data" / "kg_service" / "data" / "attractions.json")
+                file_path = str(DatabasePaths.get_data_file('attractions.json'))
+            
+            logger.info("Loading attractions from JSON...")
             
             if not Path(file_path).exists():
                 raise FileNotFoundError(f"Attractions data file not found: {file_path}")

@@ -6,7 +6,7 @@ from datetime import datetime
 from neo4j import Driver
 
 from .base import BaseRepository
-
+from ..utils import DatabasePaths
 
 logger = logging.getLogger(__name__)
 
@@ -177,13 +177,12 @@ class HolidayRepository(BaseRepository):
         """
         try:
             import json
-            from pathlib import Path
             
             logger.info("Loading holidays from JSON...")
             
             # Use provided path or default
             if file_path is None:
-                file_path = str(Path(__file__).parent.parent.parent.parent.parent.parent / "data" / "kg_service" / "data" / "holidays.json")
+                file_path = str(DatabasePaths.get_data_file('holidays.json'))
             
             if not Path(file_path).exists():
                 raise FileNotFoundError(f"Holidays data file not found: {file_path}")

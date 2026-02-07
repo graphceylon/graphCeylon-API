@@ -10,7 +10,7 @@ RESTful endpoints for Graph Neural Network inference:
 
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 import torch
 import torch.nn.functional as F
 from pathlib import Path
@@ -63,6 +63,8 @@ class HotelRecommendationRequest(BaseModel):
 
 
 class HotelRecommendationResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     query_hotel: Optional[Dict[str, Any]] = None
     recommendations: List[Dict[str, Any]]
     model_info: Dict[str, Any]
@@ -75,6 +77,8 @@ class RouteScoreRequest(BaseModel):
 
 
 class RouteScoreResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     source: Dict[str, Any]
     destination: Dict[str, Any]
     connectivity_score: float
@@ -84,6 +88,8 @@ class RouteScoreResponse(BaseModel):
 
 
 class StationSimilarityResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     query_station: Dict[str, Any]
     similar_stations: List[Dict[str, Any]]
     model_info: Dict[str, Any]
@@ -91,6 +97,8 @@ class StationSimilarityResponse(BaseModel):
 
 
 class ModelInfoResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     model_name: str
     model_type: str
     parameters: int

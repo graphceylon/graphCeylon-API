@@ -18,35 +18,84 @@ class DatabasePaths:
     
     Eliminates fragile Path(__file__).parent.parent chains by providing
     clean access to project directories.
+    
+    All paths are resolved once and cached for performance.
     """
     
-    @staticmethod
-    def get_project_root() -> Path:
+    _project_root: Optional[Path] = None
+    
+    @classmethod
+    def get_project_root(cls) -> Path:
         """Get the kg_service project root directory.
         
         Returns:
             Path to kg_service root directory
         """
-        # From database/utils.py -> database -> src -> kg_service
-        return Path(__file__).resolve().parent.parent.parent
+        if cls._project_root is None:
+            # From database/utils.py -> database -> src -> kg_service
+            cls._project_root = Path(__file__).resolve().parent.parent.parent
+        return cls._project_root
     
-    @staticmethod
-    def get_neo4j_import() -> Path:
+    @classmethod
+    def get_neo4j_import(cls) -> Path:
         """Get neo4j import directory path.
         
         Returns:
             Path to neo4j/import directory
         """
-        return DatabasePaths.get_project_root() / "neo4j" / "import"
+        return cls.get_project_root() / "neo4j" / "import"
     
-    @staticmethod
-    def get_neo4j_scripts() -> Path:
+    @classmethod
+    def get_neo4j_scripts(cls) -> Path:
         """Get neo4j scripts directory path.
         
         Returns:
             Path to neo4j/import/scripts directory
         """
-        return DatabasePaths.get_neo4j_import() / "scripts"
+        return cls.get_neo4j_import() / "scripts"
+    
+    @classmethod
+    def get_neo4j_cleanup(cls) -> Path:
+        """Get neo4j cleanup scripts directory path.
+        
+        Returns:
+            Path to neo4j/import/cleanup directory
+        """
+        return cls.get_neo4j_import() / "cleanup"
+    
+    @classmethod
+    def get_data_directory(cls) -> Path:
+        """Get data directory path.
+        
+        Returns:
+            Path to data/kg_service/data directory
+        """
+        # Go up to graphCeylon-API, then to data
+        return cls.get_project_root().parent.parent / "data" / "kg_service" / "data"
+    
+    @classmethod
+    def get_schema_file(cls, filename: str) -> Path:
+        """Get full path to a schema file.
+        
+        Args:
+            filename: Schema filename (e.g., 'init_attractions_schema.cypher')
+            
+        Returns:
+            Full path to schema file
+        """
+        return cls.get_neo4j_scripts() / filename
+    
+    @classmethod
+    def get_data_file(cls, filename: str) -> Path:
+        """Get full path to a data file.
+        
+        Args:
+            filename: Data filename (e.g., 'attractions.json')
+            
+        Returns:
+            Full path to data file
+        """
+        return cls.get_data_directory() / filename
     
     @staticmethod
     def get_data_directory() -> Path:
