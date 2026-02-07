@@ -5,7 +5,7 @@ from typing import Optional
 from neo4j import Driver, GraphDatabase
 from fastapi import HTTPException
 
-from .settings import settings
+from .config import settings
 
 
 logger = logging.getLogger(__name__)
