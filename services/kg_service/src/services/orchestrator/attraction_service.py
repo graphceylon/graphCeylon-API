@@ -1,47 +1,37 @@
 """
 Orchestrator Attraction Service
 
-Business logic for attraction search functionality used by orchestrator service
+Business logic for attraction search functionality used by orchestrator service.
 """
 
-from typing import List, Dict, Any, Optional
-from neo4j import Driver
 import logging
+from typing import List, Dict, Any, Optional
 
+from neo4j import Driver
+
+from core.utils import normalize_location_name, CITY_ALIASES
 from models.domain.attraction import (
     AttractionSearchRequest,
     AttractionItem,
-    AttractionSearchResponse
+    AttractionSearchResponse,
 )
 
 logger = logging.getLogger(__name__)
 
 
 class OrchestratorAttractionService:
-    """Service for handling orchestrator attraction search requests"""
-    
+    """Service for handling orchestrator attraction search requests."""
+
     def __init__(self, driver: Driver):
-        """
-        Initialize service with Neo4j driver
-        
-        Args:
-            driver: Neo4j driver instance
-        """
         self.driver = driver
-    
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def search_attractions(self, request: AttractionSearchRequest) -> AttractionSearchResponse:
-        """
-        Search attractions using vector similarity search on descriptions,
-        filtered by category if specified.
-        
-        Args:
-            request: AttractionSearchRequest with search criteria
-            
-        Returns:
-            AttractionSearchResponse with attractions or error
-        """
+        """Search attractions using vector similarity or city-based lookup."""
         try:
-            # Use vector search if poi_category is provided
             if request.poi_category:
                 logger.info(f"Using vector search for category: {request.poi_category}")
                 attractions_data = self._vector_search_by_category(
@@ -49,27 +39,21 @@ class OrchestratorAttractionService:
                     city=request.city,
                     country=request.country,
                     query=request.query or request.poi_category,
-                    limit=10
+                    limit=10,
                 )
             else:
-                # Fallback to city-based search
                 logger.info(f"Using city-based search for: {request.city}")
-                city = self._normalize_city_name(request.city)
+                city = normalize_location_name(request.city, CITY_ALIASES)
                 attractions_data = self._get_attractions_by_city(
                     city=city,
                     country=request.country,
                     poi_name=request.poi_name,
-                    poi_category=None,
-                    limit=10
+                    limit=10,
                 )
-            
-            # Map to AttractionItem objects
+
             items = [self._map_to_item(data) for data in attractions_data]
-            
-            # Generate summary
             summary = self._generate_summary(items, request.city, request.days)
-            
-            # If no attractions found, return helpful message
+
             if not items:
                 return AttractionSearchResponse(
                     ok=False,
@@ -78,17 +62,17 @@ class OrchestratorAttractionService:
                     items=[],
                     summary="",
                     error="No attractions found",
-                    details=f"No attractions available in {request.city}"
+                    details=f"No attractions available in {request.city}",
                 )
-            
+
             return AttractionSearchResponse(
                 ok=True,
                 city=request.city,
                 country=request.country,
                 items=items,
-                summary=summary
+                summary=summary,
             )
-            
+
         except Exception as e:
             return AttractionSearchResponse(
                 ok=False,
@@ -97,95 +81,40 @@ class OrchestratorAttractionService:
                 items=[],
                 summary="",
                 error="Attraction search failed",
-                details=str(e)
+                details=str(e),
             )
-    
-    def _normalize_city_name(self, city: str) -> str:
-        """
-        Normalize city names for better matching
-        
-        Examples:
-        - "colombo" -> "Colombo"
-        - "KANDY" -> "Kandy"
-        """
-        city_lower = city.lower().strip()
-        
-        # Common city aliases/normalizations
-        city_aliases = {
-            "colombo": "Colombo",
-            "kandy": "Kandy",
-            "galle": "Galle",
-            "jaffna": "Jaffna",
-            "negombo": "Negombo",
-            "trincomalee": "Trincomalee",
-            "anuradhapura": "Anuradhapura",
-            "polonnaruwa": "Polonnaruwa",
-            "nuwara eliya": "Nuwara Eliya",
-            "ella": "Ella",
-            "matara": "Matara",
-            "badulla": "Badulla",
-            "ratnapura": "Ratnapura",
-            "kurunegala": "Kurunegala",
-            "dambulla": "Dambulla",
-            "sigiriya": "Sigiriya",
-            "bentota": "Bentota",
-            "hikkaduwa": "Hikkaduwa",
-            "mirissa": "Mirissa",
-            "arugam bay": "Arugam Bay",
-        }
-        
-        # Check if city matches an alias
-        if city_lower in city_aliases:
-            return city_aliases[city_lower]
-        
-        # Otherwise return title-cased version
-        return city.title()
-    
+
+    # ------------------------------------------------------------------
+    # Vector search
+    # ------------------------------------------------------------------
+
     def _vector_search_by_category(
         self,
         category: str,
         city: str,
         country: str,
         query: str,
-        limit: int = 10
+        limit: int = 10,
     ) -> List[Dict[str, Any]]:
-        """
-        Use vector similarity search on description field, filtered by category and city.
-        
-        Args:
-            category: POI category to search for (e.g., "temple", "museum")
-            city: City name for location filtering
-            country: Country name
-            query: Natural language query or category name
-            limit: Maximum number of results
-            
-        Returns:
-            List of attraction data dictionaries with similarity scores
-        """
+        """Use vector similarity search on description field, filtered by category and city."""
         try:
             from services.embeddings import embedding_service
             from core.config import settings
-            
+
             logger.info(f"Vector search: category={category}, city={city}, query={query}")
-            
-            # Generate embedding for the query
             query_embedding = embedding_service.generate_embedding(query)
-            
+
             if not query_embedding:
                 logger.warning("Failed to generate embedding, falling back to regular search")
                 return self._get_attractions_by_city(
-                    city=self._normalize_city_name(city),
+                    city=normalize_location_name(city, CITY_ALIASES),
                     country=country,
-                    poi_name=None,
                     poi_category=category,
-                    limit=limit
+                    limit=limit,
                 )
-            
-            # Normalize city name
-            normalized_city = self._normalize_city_name(city)
-            
-            # Pure vector search on descriptions, filtered only by city
-            # The embedding similarity will naturally find attractions matching the category
+
+            normalized_city = normalize_location_name(city, CITY_ALIASES)
+
             cypher = f"""
             CALL db.index.vector.queryNodes('{settings.vector_index_name}', $limit * 3, $embedding)
             YIELD node, score
@@ -211,66 +140,53 @@ class OrchestratorAttractionService:
             ORDER BY score DESC
             LIMIT $limit
             """
-            
+
             with self.driver.session() as session:
                 result = session.run(cypher, {
                     "embedding": query_embedding,
                     "city": normalized_city,
-                    "limit": limit
+                    "limit": limit,
                 })
                 matches = [dict(record) for record in result]
-            
+
             logger.info(f"Vector search found {len(matches)} results")
             return matches
-            
+
         except Exception as e:
             logger.error(f"Vector search failed: {e}, falling back to regular search")
-            # Fallback to regular search if vector search fails
             return self._get_attractions_by_city(
-                city=self._normalize_city_name(city),
+                city=normalize_location_name(city, CITY_ALIASES),
                 country=country,
-                poi_name=None,
                 poi_category=category,
-                limit=limit
+                limit=limit,
             )
-    
+
+    # ------------------------------------------------------------------
+    # City-based search
+    # ------------------------------------------------------------------
+
     def _get_attractions_by_city(
         self,
         city: str,
         country: str,
         poi_name: Optional[str] = None,
         poi_category: Optional[str] = None,
-        limit: int = 10
+        limit: int = 10,
     ) -> List[Dict[str, Any]]:
-        """
-        Get attractions from Neo4j filtered by city
-        
-        Args:
-            city: City name
-            country: Country name
-            poi_name: Optional specific POI name filter
-            poi_category: Optional category filter
-            limit: Maximum number of results
-            
-        Returns:
-            List of attraction data dictionaries
-        """
-        # Build dynamic query
+        """Get attractions from Neo4j filtered by city."""
         where_clauses = ["toLower(a.city) = toLower($city)"]
-        params = {"city": city, "limit": limit}
-        
-        # Add POI name filter
+        params: Dict[str, Any] = {"city": city, "limit": limit}
+
         if poi_name:
             where_clauses.append("toLower(a.title) CONTAINS toLower($poi_name)")
             params["poi_name"] = poi_name
-        
-        # Add category filter (search in placeTypes)
+
         if poi_category:
             where_clauses.append("toLower(a.placeTypes) CONTAINS toLower($poi_category)")
             params["poi_category"] = poi_category
-        
+
         where_clause = " AND ".join(where_clauses)
-        
+
         cypher = f"""
         MATCH (a:Attraction)
         WHERE {where_clause}
@@ -297,43 +213,31 @@ class OrchestratorAttractionService:
         ORDER BY a.rating DESC, a.userRatingsTotal DESC
         LIMIT $limit
         """
-        
+
         with self.driver.session() as session:
             result = session.run(cypher, params)
             return [dict(record) for record in result]
-    
+
+    # ------------------------------------------------------------------
+    # Mapping and formatting
+    # ------------------------------------------------------------------
+
     def _map_to_item(self, data: Dict[str, Any]) -> AttractionItem:
-        """
-        Map Neo4j data to AttractionItem model
-        
-        Args:
-            data: Attraction data from Neo4j
-            
-        Returns:
-            AttractionItem object
-        """
-        # Extract category from placeTypes
+        """Map Neo4j data to ``AttractionItem`` model."""
         category = self._extract_category(data.get("placeTypes"))
-        
-        # Build location string
         location = self._build_location_string(
             data.get("vicinity"),
             data.get("formattedAddress"),
             data.get("city"),
-            data.get("district")
+            data.get("district"),
         )
-        
-        # Extract opening hours (from editorialSummary or set as unknown)
-        open_hours = self._extract_opening_hours(data.get("editorialSummary"))
-        
-        # Estimate entry fee from price level
+        open_hours = "Hours vary, please check website"
         entry_fee = self._estimate_entry_fee(data.get("priceLevel"))
-        
-        # Format coordinates
+
         coordinates = None
         if data.get("latitude") and data.get("longitude"):
             coordinates = f"{data['latitude']}, {data['longitude']}"
-        
+
         return AttractionItem(
             name=data.get("title", "Unknown Attraction"),
             category=category,
@@ -345,24 +249,16 @@ class OrchestratorAttractionService:
             rating=data.get("rating"),
             coordinates=coordinates,
             website=data.get("website"),
-            phone=data.get("phoneNumber")
+            phone=data.get("phoneNumber"),
         )
-    
-    def _extract_category(self, place_types: Optional[str]) -> Optional[str]:
-        """
-        Extract primary category from place types string
-        
-        Args:
-            place_types: Comma-separated place types from Google
-            
-        Returns:
-            Primary category or None
-        """
+
+    @staticmethod
+    def _extract_category(place_types: Optional[str]) -> Optional[str]:
+        """Extract primary category from place types string."""
         if not place_types:
             return None
-        
-        # Common tourist attraction categories
-        category_keywords = {
+
+        _CATEGORY_KEYWORDS = {
             "temple": "temple",
             "church": "religious site",
             "mosque": "religious site",
@@ -382,24 +278,24 @@ class OrchestratorAttractionService:
             "market": "market",
             "shopping": "shopping",
             "restaurant": "dining",
-            "hotel": "accommodation"
+            "hotel": "accommodation",
         }
-        
+
         place_types_lower = place_types.lower()
-        for keyword, category in category_keywords.items():
+        for keyword, category in _CATEGORY_KEYWORDS.items():
             if keyword in place_types_lower:
                 return category
-        
+
         return "attraction"
-    
+
+    @staticmethod
     def _build_location_string(
-        self,
         vicinity: Optional[str],
         formatted_address: Optional[str],
         city: Optional[str],
-        district: Optional[str]
+        district: Optional[str],
     ) -> Optional[str]:
-        """Build location string from available data"""
+        """Build location string from available data."""
         if vicinity:
             return vicinity
         if formatted_address:
@@ -409,86 +305,51 @@ class OrchestratorAttractionService:
         if city:
             return city
         return None
-    
-    def _extract_opening_hours(self, editorial_summary: Optional[str]) -> Optional[str]:
-        """
-        Extract opening hours from editorial summary or other text
-        
-        Args:
-            editorial_summary: Google editorial summary text
-            
-        Returns:
-            Opening hours string or None
-        """
-        # For now, return generic message
-        # TODO: Parse from editorial_summary or add opening_hours field to data
-        return "Hours vary, please check website"
-    
-    def _estimate_entry_fee(self, price_level: Optional[int]) -> Optional[str]:
-        """
-        Estimate entry fee from Google price level (0-4)
-        
-        Args:
-            price_level: Google price level
-            
-        Returns:
-            Estimated fee string or None
-        """
+
+    @staticmethod
+    def _estimate_entry_fee(price_level: Optional[int]) -> Optional[str]:
+        """Estimate entry fee from Google price level (0-4)."""
         if price_level is None:
             return "Contact for pricing"
-        
-        # Map price level to fee ranges (LKR)
-        fee_estimates = {
+
+        _FEE_ESTIMATES = {
             0: "Free",
             1: "500-1000",
             2: "1000-2000",
             3: "2000-4000",
-            4: "4000+"
+            4: "4000+",
         }
-        
-        return fee_estimates.get(price_level, "Contact for pricing")
-    
+        return _FEE_ESTIMATES.get(price_level, "Contact for pricing")
+
+    # ------------------------------------------------------------------
+    # Summary
+    # ------------------------------------------------------------------
+
+    @staticmethod
     def _generate_summary(
-        self,
         items: List[AttractionItem],
         city: str,
-        days: Optional[int] = None
+        days: Optional[int] = None,
     ) -> str:
-        """
-        Generate natural language summary of search results
-        
-        Args:
-            items: List of attraction items
-            city: City name
-            days: Optional trip duration
-            
-        Returns:
-            Summary string
-        """
+        """Generate natural language summary of search results."""
         if not items:
             return f"No attractions found in {city}."
-        
+
         count = len(items)
-        
-        # Count categories
-        categories = {}
+        categories: Dict[str, int] = {}
         for item in items:
-            category = item.category or "attraction"
-            categories[category] = categories.get(category, 0) + 1
-        
-        # Build category summary
-        category_parts = []
-        for category, cat_count in sorted(categories.items(), key=lambda x: x[1], reverse=True)[:3]:
-            category_parts.append(f"{cat_count} {category}{'s' if cat_count > 1 else ''}")
-        
-        category_text = ", ".join(category_parts)
-        
-        # Build summary
+            cat = item.category or "attraction"
+            categories[cat] = categories.get(cat, 0) + 1
+
+        top_cats = sorted(categories.items(), key=lambda x: x[1], reverse=True)[:3]
+        cat_text = ", ".join(
+            f"{c} {name}{'s' if c > 1 else ''}" for name, c in top_cats
+        )
+
         summary = f"Found {count} attraction{'s' if count != 1 else ''} in {city}"
-        if category_text:
-            summary += f" including {category_text}"
-        
-        # Add trip planning context
+        if cat_text:
+            summary += f" including {cat_text}"
+
         if days:
             if days == 1:
                 summary += ". Perfect for a day trip."
@@ -496,5 +357,5 @@ class OrchestratorAttractionService:
                 summary += f". Enough variety for a {days}-day visit."
             else:
                 summary += f". Great selection for a {days}-day exploration."
-        
+
         return summary + "."

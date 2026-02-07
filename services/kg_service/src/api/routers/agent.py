@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from database.manager import DatabaseManager
-from services.reasoning import ReasoningOrchestrator
+from services.reasoning.symbolic import ReasoningOrchestrator
 from api.dependencies import get_db_manager, get_reasoning_orchestrator
 
 logger = logging.getLogger(__name__)

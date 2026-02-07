@@ -14,6 +14,7 @@ from datetime import datetime
 from neo4j import GraphDatabase
 from neo4j.time import DateTime, Date, Time
 from core.config import settings
+from core.utils import sanitize_neo4j_types
 from models.domain.hotel import (
     HotelResponse,
     HotelSearchQuery,
@@ -24,7 +25,7 @@ from models.domain.hotel import (
     ProximityLevel
 )
 from services.hotel_ingestion_service import HotelIngestionService
-from services.orchestrator_hotel_service import OrchestratorHotelService
+from services.orchestrator.hotel_service import OrchestratorHotelService
 from models.domain.hotel import (
     AccommodationSearchRequest,
     HotelItemResponse,
@@ -40,19 +41,6 @@ router = APIRouter(
 
 
 # ========== Helper Functions ==========
-
-def sanitize_neo4j_types(obj: Any) -> Any:
-    """Convert Neo4j types to Python native types for JSON serialization"""
-    if isinstance(obj, (DateTime, Date, Time)):
-        return obj.iso_format()
-    elif isinstance(obj, dict):
-        return {k: sanitize_neo4j_types(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [sanitize_neo4j_types(item) for item in obj]
-    elif isinstance(obj, tuple):
-        return tuple(sanitize_neo4j_types(item) for item in obj)
-    else:
-        return obj
 
 
 # ========== Database Connection ==========

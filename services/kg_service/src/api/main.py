@@ -11,7 +11,7 @@ from neo4j import GraphDatabase
 from core.config import settings
 from core.dependencies import create_driver
 from database.manager import DatabaseManager
-from services.reasoning import ReasoningOrchestrator
+from services.reasoning.symbolic import ReasoningOrchestrator
 from models.base import HealthResponse, StatisticsResponse, ErrorResponse
 from models.graph.knowledge_graph import (
     QueryRequest, ReasonRequest, PredictRequest,

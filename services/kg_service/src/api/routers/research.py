@@ -12,7 +12,7 @@ import logging
 
 from api.dependencies import get_driver, get_db_manager
 from services.gnn_embeddings import GNNEmbeddingService
-from services.hybrid_reasoning import HybridReasoningEngine
+from services.reasoning.hybrid import HybridReasoningEngine
 from services.config.gnn_config import gnn_config
 
 logger = logging.getLogger(__name__)

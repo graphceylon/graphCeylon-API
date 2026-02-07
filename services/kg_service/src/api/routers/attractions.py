@@ -12,7 +12,7 @@ from models.domain.attraction import (
     AttractionSearchRequest,
     AttractionSearchResponse,
 )
-from services.orchestrator_attraction_service import OrchestratorAttractionService
+from services.orchestrator.attraction_service import OrchestratorAttractionService
 
 logger = logging.getLogger(__name__)
 

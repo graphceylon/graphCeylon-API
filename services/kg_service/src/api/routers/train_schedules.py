@@ -24,7 +24,7 @@ from models.domain.railway import (
     TransportSearchRequest,
     TransportSearchResponse,
 )
-from services.orchestrator_transport_service import OrchestratorTransportService
+from services.orchestrator.transport_service import OrchestratorTransportService
 from models.graph.knowledge_graph import WriteResponse
 
 logger = logging.getLogger(__name__)

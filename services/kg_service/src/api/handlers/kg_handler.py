@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 
 from database.manager import DatabaseManager
-from services.reasoning import ReasoningOrchestrator
+from services.reasoning.symbolic import ReasoningOrchestrator
 from models.graph.knowledge_graph import (
     QueryRequest,
     QueryResponse,

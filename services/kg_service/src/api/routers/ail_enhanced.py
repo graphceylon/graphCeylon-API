@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from pydantic import BaseModel, Field
 
 from database.manager import DatabaseManager
-from services.hybrid_reasoning import HybridReasoningEngine
+from services.reasoning.hybrid import HybridReasoningEngine
 from services.gnn_embeddings import GNNEmbeddingService
 from models.graph.temporal import TemporalMetadata, ProvenanceMetadata, TemporalProvenance
 from api.dependencies import get_db_manager, get_driver
