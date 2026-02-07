@@ -526,6 +526,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     res = query_attractions_from_json(
         payload,
         kg_path=Path("/Users/dev/Desktop/graphCeylon-API/data/recommender_service/clean/kg/attractions_clean.json"),
+        #kg_path=Path("C:/Users/HP/OneDrive/Documents/graphCeylon-API/data/recommender_service/clean/kg/attractions_clean.json"),
         limit=int(payload.get("max_candidates", cfg.max_candidates)),
         prefilter_limit=300,
     )
