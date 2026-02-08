@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Tuple, Optional
 # ----------------------------
 
 DEFAULT_KG_PATH = Path(
-    "/Users/dev/Desktop/graphCeylon-API/data/recommender_service/clean/kg/attractions_clean.json"
+    "C:/Users/HP/OneDrive/Documents/graphCeylon-API/data/recommender_service/clean/kg/attractions_clean.json"
 )
 
 def load_attractions_json(path: Path = DEFAULT_KG_PATH) -> List[Dict[str, Any]]:
