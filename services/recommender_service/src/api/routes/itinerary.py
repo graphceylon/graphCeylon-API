@@ -100,12 +100,27 @@ def itinerary_plan(req: Union[ItineraryPlanRequest, C3RequestEnvelope]) -> Dict[
         )
 
         # ✅ build itinerary
-        result = build_itinerary_from_payload(payload, cfg=cfg)
+        from services.recommender_service.src.itinerary.planner.itinerary_planner import (
+            build_two_plans_from_payload
+        )
+
+        result = build_two_plans_from_payload(payload, cfg=cfg)
+
 
         # ✅ PRINT RESPONSE (pretty)
         print("\n================ C3 /itinerary/plan RESPONSE ================")
         # make sure it's json-serializable (handles dates, pydantic, etc.)
         safe = jsonable_encoder(result)
+        print("\n================ C3 /itinerary/plan RESPONSE (TWO PLANS) ================")
+
+        plans = safe.get("plans", {})
+        for key in ["destination_plan", "route_plan"]:
+            if key in plans:
+                print(f"\n---------------- {key.upper()} ----------------")
+                print(json.dumps(plans[key], indent=2, ensure_ascii=False))
+
+        print("\n=============================================================\n")
+
         print(json.dumps(safe, indent=2, ensure_ascii=False))
         print("=============================================================\n")
 
