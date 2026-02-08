@@ -212,21 +212,21 @@ class OrchestratorService:
         # ✅ 1) capability handlers
         self.handlers: Dict[str, IntentHandler] = {
             "info_transport": IntentHandler(
-                endpoint="/graphrag/transport",      # ✅ your KG endpoint here
+                endpoint="/railway/schedules/orchestrator/call/transport",      # ✅ your KG endpoint here
                 mapper=map_transport_request,
                 response_model=None,                # or TransportInfoResponse later
                 timeout=20,
                 result_field="transport_result",
             ),
             "info_attraction": IntentHandler(
-                endpoint="/attractions/top",        # <-- your attraction agent endpoint
+                endpoint="/attractions/orchestrator/call/attractions",        # <-- your attraction agent endpoint
                 mapper=map_attraction_request,
                 response_model=None,
                 timeout=20,
                 result_field="attraction_result",
             ),
              "info_accommodation": IntentHandler(
-                endpoint="/graphrag/hotels/search",
+                endpoint="/hotels/orchestrator/call/hotels/search",
                 mapper=map_accommodation_request,
                 response_model= AccommodationSearchResponse,
                 timeout=20,
