@@ -28,23 +28,47 @@ def search_attractions_for_orchestrator(
     """
     Search attractions for orchestrator service using vector similarity search.
     
-    This endpoint uses embeddings and vector similarity search on attraction descriptions
-    when poi_category is provided, ensuring semantically relevant results filtered by category.
+    This endpoint intelligently chooses the search strategy based on the provided parameters:
+    
+    **Search Strategies:**
+    1. **City Only** (no poi_category): Direct city-based filtered search
+    2. **City + POI Category**: Vector search filtered by both city and semantic category match
+    3. **POI Category Only** (no city): Vector search across all attractions in Sri Lanka
     
     **Features:**
     - **Vector Search**: Uses embeddings to search attraction descriptions semantically
     - **Category Filtering**: Filters by poi_category (e.g., "temple", "museum", "park")
-    - **City Filtering**: Results limited to specified city
+    - **City Filtering**: Results can be limited to specified city or searched across all
     - **Relevance Ranking**: Results ranked by similarity score to query
     
-    Example Request:
+    Example Request 1 (City only):
+    ```json
+    {
+        "city": "Katunayake",
+        "country": "Sri Lanka",
+        "poi_category": "",
+        "days": 1,
+        "query": "What can I visit in Katunayake for a day trip?"
+    }
+    ```
+    
+    Example Request 2 (City + Category):
     ```json
     {
         "city": "Kandy",
         "country": "Sri Lanka",
         "poi_category": "temple",
         "days": 2,
-        "query": "What are the main tourist attractions in Kandy?"
+        "query": "Show me temples in Kandy"
+    }
+    ```
+    
+    Example Request 3 (Category only, all cities):
+    ```json
+    {
+        "country": "Sri Lanka",
+        "poi_category": "beach",
+        "query": "Find beaches in Sri Lanka"
     }
     ```
     
@@ -68,13 +92,10 @@ def search_attractions_for_orchestrator(
         "summary": "Found 5 attractions in Kandy including 3 temples, 1 garden, 1 museum."
     }
     ```
-    
-    **Note**: When poi_category is provided, the endpoint uses vector similarity search
-    on attraction descriptions for better semantic matching. Without poi_category,
-    it falls back to city-based filtering only.
     """
     try:
-        logger.info(f"Orchestrator attraction search: city={request.city}, country={request.country}")
+        city_display = request.city or "all cities"
+        logger.info(f"Orchestrator attraction search: city={city_display}, country={request.country}, poi_category={request.poi_category}")
         
         # Initialize service
         service = OrchestratorAttractionService(db.driver)
@@ -89,7 +110,7 @@ def search_attractions_for_orchestrator(
         logger.error(f"Attraction search failed: {e}")
         return AttractionSearchResponse(
             ok=False,
-            city=request.city,
+            city=request.city or "",
             country=request.country,
             items=[],
             summary="",
@@ -249,11 +270,19 @@ def create_attraction(
             "title": request.title,
             "description": request.description,
             "image_url": request.image_url,
+            "city": request.city,
             "district": request.district,
+            "province": request.province,
             "latitude": request.latitude,
             "longitude": request.longitude,
             "google_place_id": request.google_place_id,
-            "rating": request.rating
+            "rating": request.rating,
+            "formatted_address": request.formatted_address,
+            "website": request.website,
+            "phone_number": request.phone_number,
+            "price_level": request.price_level,
+            "place_types": request.place_types,
+            "links": request.links
         }
         
         result = db.attractions.create_attraction(attraction_data)
@@ -282,6 +311,7 @@ def query_attractions(
         logger.info(f"Querying attractions with filters: {request.dict()}")
         
         filters = {
+            "city": request.city,
             "district": request.district,
             "province": request.province,
             "title": request.title,

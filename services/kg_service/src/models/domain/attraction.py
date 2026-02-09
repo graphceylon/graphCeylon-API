@@ -17,7 +17,9 @@ class CreateAttractionRequest(BaseModel):
     title: str = Field(..., description="Attraction name")
     description: Optional[str] = Field(None, description="Attraction description")
     image_url: Optional[str] = Field(None, description="Image URL")
+    city: Optional[str] = Field(None, description="City name")
     district: Optional[str] = Field(None, description="District name to link attraction to")
+    province: Optional[str] = Field(None, description="Province name")
     latitude: Optional[float] = Field(None, description="Latitude")
     longitude: Optional[float] = Field(None, description="Longitude")
     google_place_id: Optional[str] = Field(None, description="Google Place ID")
@@ -32,6 +34,7 @@ class CreateAttractionRequest(BaseModel):
 
 class AttractionQueryRequest(BaseModel):
     """Request model for querying attractions."""
+    city: Optional[str] = Field(None, description="Filter by city name")
     district: Optional[str] = Field(None, description="Filter by district name")
     province: Optional[str] = Field(None, description="Filter by province name")
     title: Optional[str] = Field(None, description="Filter by attraction title")
@@ -52,7 +55,7 @@ class AttractionResponse(BaseModel):
 
 class AttractionSearchRequest(BaseModel):
     """Request model for attraction search from orchestrator."""
-    city: str = Field(..., description="City name (e.g., 'Kandy', 'Colombo', 'Galle')")
+    city: Optional[str] = Field(None, description="City name (e.g., 'Kandy', 'Colombo', 'Galle'). Optional if poi_category is provided.")
     country: str = Field(..., description="Country name (e.g., 'Sri Lanka')")
     poi_name: Optional[str] = Field(None, description="Specific POI name to search for")
     poi_category: Optional[str] = Field(None, description="Category of POI (e.g., 'temple', 'museum', 'park')")
