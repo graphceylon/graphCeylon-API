@@ -16,7 +16,9 @@ from .gate import needs_clarification
 from .city_planner import get_candidates_city
 from .corridor_planner import get_candidates_corridor
 
-
+from copy import deepcopy
+from typing import Literal
+PlanMode = Literal["city", "corridor_outbound", "corridor_return"]
 
 
 
@@ -34,6 +36,60 @@ def _find_repo_root() -> Path:
             return parent
     # fallback (safe-ish)
     return p.parents[5]
+
+def _build_one_plan(payload: Dict[str, Any], cfg: PlannerConfig, mode: PlanMode) -> Dict[str, Any]:
+    """
+    Builds ONE plan using your current pipeline,
+    but with controlled travel mode and anchor behavior.
+    """
+    payload = deepcopy(payload)
+
+    # --- Force mode ---
+    origin = str(payload.get("origin_city") or "").strip() or None
+    dest = str(payload.get("city") or payload.get("destination") or "").strip() or "Colombo"
+
+    if mode == "city":
+        payload["travel_mode"] = {"type": "city", "include_stops": False}
+        # Ensure we don't accidentally corridor
+        payload["on_the_way"] = False
+
+    elif mode == "corridor_outbound":
+        payload["travel_mode"] = {"type": "corridor", "include_stops": True, "origin_city": origin}
+        payload["on_the_way"] = True
+
+    elif mode == "corridor_return":
+        # reverse direction
+        payload["travel_mode"] = {"type": "corridor", "include_stops": True, "origin_city": dest}
+        payload["on_the_way"] = True
+        # swap destination for return leg
+        payload["city"] = origin or payload.get("city")
+        payload["destination"] = origin or payload.get("destination")
+
+    # now call your existing pipeline (the code you already wrote)
+    return build_itinerary_from_payload(payload, cfg=cfg)
+
+def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) -> Dict[str, Any]:
+    """
+    Returns TWO plans in a single response:
+      - destination_plan (city-only)
+      - route_plan (corridor outbound)
+    """
+    destination_plan = _build_one_plan(payload, cfg, mode="city")
+    route_plan = _build_one_plan(payload, cfg, mode="corridor_outbound")
+
+    return {
+        "status": "ok",
+        "meta": {
+            "destination": payload.get("city") or payload.get("destination"),
+            "origin_city": payload.get("origin_city"),
+            "days": payload.get("days"),
+            "start_date": payload.get("start_date"),
+        },
+        "plans": {
+            "destination_plan": destination_plan,
+            "route_plan": route_plan,
+        }
+    }
 
 
 def _load_attractions() -> List[Dict[str, Any]]:
@@ -554,7 +610,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         res = get_candidates_corridor(
             payload=payload,
             origin_city=tm.origin_city,
-            destination_city=tm.destination_city,
+            dest_city=tm.destination_city,
             limit=int(payload.get("max_candidates", cfg.max_candidates)),
         )
         kg_mode = "corridor"
@@ -672,6 +728,10 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             or dbg.get("origin_coords")
             or dbg.get("anchor")
         )
+        # ✅ NEW: attach anchor coords so enrichment geo safety-net works
+    if route_anchor_coords:
+        payload["anchor_coords"] = route_anchor_coords
+
 
     simple_itinerary = build_itinerary(
         ranked_candidates=norm_atts,
