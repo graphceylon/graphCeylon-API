@@ -274,6 +274,9 @@ class AttractionRepository(BaseRepository):
             title: $title,
             description: $description,
             imageUrl: $image_url,
+            city: $city,
+            district: $district,
+            province: $province,
             latitude: $latitude,
             longitude: $longitude,
             googlePlaceId: $google_place_id,
@@ -302,6 +305,9 @@ class AttractionRepository(BaseRepository):
             "title": attraction_data.get("title"),
             "description": attraction_data.get("description"),
             "image_url": attraction_data.get("image_url"),
+            "city": attraction_data.get("city"),
+            "district": attraction_data.get("district"),
+            "province": attraction_data.get("province"),
             "latitude": attraction_data.get("latitude"),
             "longitude": attraction_data.get("longitude"),
             "google_place_id": attraction_data.get("google_place_id"),
@@ -378,6 +384,11 @@ class AttractionRepository(BaseRepository):
         match_clause = "MATCH (a:Attraction)"
         where_clauses = []
         params = {}
+        
+        # Add city filter
+        if filters.get("city"):
+            where_clauses.append("toLower(a.city) = toLower($city)")
+            params["city"] = filters["city"]
         
         # Add district filter
         if filters.get("district"):
