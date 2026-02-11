@@ -42,33 +42,21 @@ def get_graphrag_service(db: DatabaseManager = Depends(get_db_manager)) -> Graph
         with _service_lock:
             # Check again inside the lock
             if _graphrag_service is None:
-                # Validate that required API keys are configured
-                if settings.ingestion_llm_provider == "openai" and not settings.openai_api_key:
-                    raise HTTPException(
-                        status_code=503, 
-                        detail="OpenAI API key not configured for ingestion. Set KG_OPENAI_API_KEY in .env file."
-                    )
-                
-                if settings.ingestion_llm_provider == "groq" and not settings.groq_api_key:
-                    raise HTTPException(
-                        status_code=503, 
-                        detail="Groq API key not configured for ingestion. Set KG_GROQ_API_KEY in .env file."
-                    )
-                
-                if settings.query_llm_provider == "openai" and not settings.openai_api_key:
-                    raise HTTPException(
-                        status_code=503, 
-                        detail="OpenAI API key not configured for queries. Set KG_OPENAI_API_KEY in .env file."
-                    )
-                
-                if settings.query_llm_provider == "groq" and not settings.groq_api_key:
-                    raise HTTPException(
-                        status_code=503, 
-                        detail="Groq API key not configured for queries. Set KG_GROQ_API_KEY in .env file."
-                    )
-                
                 _graphrag_service = GraphRAGService(driver=db.driver)
                 logger.info("GraphRAG service initialized")
+                
+                # Log warnings for missing API keys (service will handle gracefully)
+                if settings.ingestion_llm_provider == "openai" and not settings.openai_api_key:
+                    logger.warning("OpenAI API key not configured for ingestion. Set KG_OPENAI_API_KEY in .env file.")
+                
+                if settings.ingestion_llm_provider == "groq" and not settings.groq_api_key:
+                    logger.warning("Groq API key not configured for ingestion. Set KG_GROQ_API_KEY in .env file.")
+                
+                if settings.query_llm_provider == "openai" and not settings.openai_api_key:
+                    logger.warning("OpenAI API key not configured for queries. Set KG_OPENAI_API_KEY in .env file.")
+                
+                if settings.query_llm_provider == "groq" and not settings.groq_api_key:
+                    logger.warning("Groq API key not configured for queries. Set KG_GROQ_API_KEY in .env file.")
     
     return _graphrag_service
 
@@ -90,7 +78,7 @@ async def ingest_immigration_data(
     4. Stores chunks with embeddings in Neo4j
     5. Links all data to the Economic & Policy domain
     
-    **Note**: Requires OPENAI_API_KEY environment variable.
+    **Note**: Requires OPENAI_API_KEY or GROQ_API_KEY environment variable.
     """
     try:
         logger.info(f"Starting immigration data ingestion from: {request.data_dir}")
@@ -108,6 +96,17 @@ async def ingest_immigration_data(
         
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        # Handle missing API key errors from LLM services
+        error_msg = str(e)
+        if "LLM not initialized" in error_msg or "API key" in error_msg:
+            provider = settings.ingestion_llm_provider
+            env_var = "KG_OPENAI_API_KEY" if provider == "openai" else "KG_GROQ_API_KEY"
+            raise HTTPException(
+                status_code=503,
+                detail=f"LLM service not available. Set {env_var} environment variable for {provider} provider."
+            )
+        raise HTTPException(status_code=400, detail=error_msg)
     except Exception as e:
         logger.error(f"Immigration data ingestion failed: {e}")
         raise HTTPException(
@@ -132,7 +131,7 @@ async def query_with_rag(
     
     All searches are scoped to the Economic & Policy domain.
     
-    **Note**: Requires OPENAI_API_KEY environment variable.
+    **Note**: Requires OPENAI_API_KEY or GROQ_API_KEY environment variable.
     """
     try:
         logger.info(f"RAG query: {request.question}")
@@ -150,7 +149,16 @@ async def query_with_rag(
         )
         
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        # Handle missing API key errors from LLM services
+        error_msg = str(e)
+        if "LLM not initialized" in error_msg or "API key" in error_msg:
+            provider = settings.query_llm_provider
+            env_var = "KG_OPENAI_API_KEY" if provider == "openai" else "KG_GROQ_API_KEY"
+            raise HTTPException(
+                status_code=503,
+                detail=f"LLM service not available. Set {env_var} environment variable for {provider} provider."
+            )
+        raise HTTPException(status_code=400, detail=error_msg)
     except Exception as e:
         logger.error(f"RAG query failed: {e}")
         raise HTTPException(

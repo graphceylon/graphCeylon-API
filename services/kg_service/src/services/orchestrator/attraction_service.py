@@ -30,18 +30,16 @@ class OrchestratorAttractionService:
     # ------------------------------------------------------------------
 
     def search_attractions(self, request: AttractionSearchRequest) -> AttractionSearchResponse:
-        """Search attractions using vector similarity or city-based lookup."""
+        """Search attractions using vector similarity or city-based lookup.
+        
+        Logic:
+        1. If only city provided (no poi_category): Direct city-based search
+        2. If both city and poi_category: Vector search filtered by city
+        3. If only poi_category (no city): Vector search across all attractions
+        """
         try:
-            if request.poi_category:
-                logger.info(f"Using vector search for category: {request.poi_category}")
-                attractions_data = self._vector_search_by_category(
-                    category=request.poi_category,
-                    city=request.city,
-                    country=request.country,
-                    query=request.query or request.poi_category,
-                    limit=10,
-                )
-            else:
+            # Case 1: Only city provided (no poi_category or empty string)
+            if not request.poi_category or request.poi_category.strip() == "":
                 logger.info(f"Using city-based search for: {request.city}")
                 city = normalize_location_name(request.city, CITY_ALIASES)
                 attractions_data = self._get_attractions_by_city(
@@ -50,33 +48,56 @@ class OrchestratorAttractionService:
                     poi_name=request.poi_name,
                     limit=10,
                 )
+            # Case 2 & 3: poi_category provided
+            else:
+                # Case 2: Both city and poi_category provided
+                if request.city and request.city.strip() != "":
+                    logger.info(f"Using vector search for category '{request.poi_category}' in city '{request.city}'")
+                    attractions_data = self._vector_search_by_category(
+                        category=request.poi_category,
+                        city=request.city,
+                        country=request.country,
+                        query=request.query or request.poi_category,
+                        limit=10,
+                    )
+                # Case 3: Only poi_category, no city
+                else:
+                    logger.info(f"Using vector search for category '{request.poi_category}' across all cities")
+                    attractions_data = self._vector_search_all_cities(
+                        category=request.poi_category,
+                        country=request.country,
+                        query=request.query or request.poi_category,
+                        limit=20,  # Return more results when searching all cities
+                    )
 
             items = [self._map_to_item(data) for data in attractions_data]
-            summary = self._generate_summary(items, request.city, request.days)
+            summary = self._generate_summary(items, request.city or "Sri Lanka", request.days)
 
             if not items:
+                location_msg = f"in {request.city}" if request.city else "matching your criteria"
                 return AttractionSearchResponse(
                     ok=False,
-                    city=request.city,
+                    city=request.city or "",
                     country=request.country,
                     items=[],
                     summary="",
                     error="No attractions found",
-                    details=f"No attractions available in {request.city}",
+                    details=f"No attractions available {location_msg}",
                 )
 
             return AttractionSearchResponse(
                 ok=True,
-                city=request.city,
+                city=request.city or "",
                 country=request.country,
                 items=items,
                 summary=summary,
             )
 
         except Exception as e:
+            logger.error(f"Attraction search failed: {e}", exc_info=True)
             return AttractionSearchResponse(
                 ok=False,
-                city=request.city,
+                city=request.city or "",
                 country=request.country,
                 items=[],
                 summary="",
@@ -149,7 +170,7 @@ class OrchestratorAttractionService:
                 })
                 matches = [dict(record) for record in result]
 
-            logger.info(f"Vector search found {len(matches)} results")
+            logger.info(f"Vector search found {len(matches)} results for city '{city}'")
             return matches
 
         except Exception as e:
@@ -160,6 +181,64 @@ class OrchestratorAttractionService:
                 poi_category=category,
                 limit=limit,
             )
+
+    def _vector_search_all_cities(
+        self,
+        category: str,
+        country: str,
+        query: str,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Use vector similarity search across all cities (no city filter)."""
+        try:
+            from services.embeddings import embedding_service
+            from core.config import settings
+
+            logger.info(f"Vector search (all cities): category={category}, query={query}")
+            query_embedding = embedding_service.generate_embedding(query)
+
+            if not query_embedding:
+                logger.warning("Failed to generate embedding")
+                return []
+
+            cypher = f"""
+            CALL db.index.vector.queryNodes('{settings.vector_index_name}', $limit * 2, $embedding)
+            YIELD node, score
+            RETURN node.title AS title,
+                   node.description AS description,
+                   node.imageUrl AS imageUrl,
+                   node.latitude AS latitude,
+                   node.longitude AS longitude,
+                   node.formattedAddress AS formattedAddress,
+                   node.city AS city,
+                   node.district AS district,
+                   node.province AS province,
+                   node.rating AS rating,
+                   node.userRatingsTotal AS userRatingsTotal,
+                   node.website AS website,
+                   node.phoneNumber AS phoneNumber,
+                   node.placeTypes AS placeTypes,
+                   node.googleMapsUrl AS googleMapsUrl,
+                   node.editorialSummary AS editorialSummary,
+                   node.vicinity AS vicinity,
+                   score
+            ORDER BY score DESC
+            LIMIT $limit
+            """
+
+            with self.driver.session() as session:
+                result = session.run(cypher, {
+                    "embedding": query_embedding,
+                    "limit": limit,
+                })
+                matches = [dict(record) for record in result]
+
+            logger.info(f"Vector search found {len(matches)} results across all cities")
+            return matches
+
+        except Exception as e:
+            logger.error(f"Vector search (all cities) failed: {e}")
+            return []
 
     # ------------------------------------------------------------------
     # City-based search
@@ -333,20 +412,34 @@ class OrchestratorAttractionService:
     ) -> str:
         """Generate natural language summary of search results."""
         if not items:
-            return f"No attractions found in {city}."
+            location = f"in {city}" if city and city != "Sri Lanka" else "matching your criteria"
+            return f"No attractions found {location}."
 
         count = len(items)
         categories: Dict[str, int] = {}
+        cities_found: set = set()
+        
         for item in items:
             cat = item.category or "attraction"
             categories[cat] = categories.get(cat, 0) + 1
+            if item.location:
+                # Try to extract city from location string
+                cities_found.add(item.location.split(",")[0].strip())
 
         top_cats = sorted(categories.items(), key=lambda x: x[1], reverse=True)[:3]
         cat_text = ", ".join(
             f"{c} {name}{'s' if c > 1 else ''}" for name, c in top_cats
         )
 
-        summary = f"Found {count} attraction{'s' if count != 1 else ''} in {city}"
+        # Determine location text for summary
+        if city and city != "Sri Lanka":
+            location_text = f"in {city}"
+        elif len(cities_found) > 1:
+            location_text = f"across {len(cities_found)} cities"
+        else:
+            location_text = "in Sri Lanka"
+
+        summary = f"Found {count} attraction{'s' if count != 1 else ''} {location_text}"
         if cat_text:
             summary += f" including {cat_text}"
 

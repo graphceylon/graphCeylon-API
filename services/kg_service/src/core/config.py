@@ -29,6 +29,13 @@ class DatabaseConfig(BaseSettings):
         description="Neo4j password"
     )
     
+    model_config = SettingsConfigDict(
+        env_file=str(Path(__file__).resolve().parent.parent.parent / ".env"),
+        env_prefix="KG_",
+        extra="ignore",
+        case_sensitive=False,
+    )
+    
     @field_validator('neo4j_uri')
     @classmethod
     def validate_uri(cls, v: str) -> str:
@@ -67,6 +74,13 @@ class APIConfig(BaseSettings):
         default=False,
         description="Enable debug mode"
     )
+    
+    model_config = SettingsConfigDict(
+        env_file=str(Path(__file__).resolve().parent.parent.parent / ".env"),
+        env_prefix="KG_",
+        extra="ignore",
+        case_sensitive=False,
+    )
 
 
 class FilePaths(BaseSettings):
@@ -83,6 +97,13 @@ class FilePaths(BaseSettings):
     seed_file: str = Field(
         default="neo4j/import/scripts/seed_provinces_districts.cypher",
         description="Initial seed data Cypher script"
+    )
+    
+    model_config = SettingsConfigDict(
+        env_file=str(Path(__file__).resolve().parent.parent.parent / ".env"),
+        env_prefix="KG_",
+        extra="ignore",
+        case_sensitive=False,
     )
 
 
@@ -138,6 +159,13 @@ class AIConfig(BaseSettings):
         description="LLM temperature for generation"
     )
     
+    model_config = SettingsConfigDict(
+        env_file=str(Path(__file__).resolve().parent.parent.parent / ".env"),
+        env_prefix="KG_",
+        extra="ignore",
+        case_sensitive=False,
+    )
+    
     @field_validator('ingestion_llm_provider', 'query_llm_provider')
     @classmethod
     def validate_provider(cls, v: str) -> str:
@@ -168,6 +196,13 @@ class GraphRAGConfig(BaseSettings):
         ge=1,
         le=50,
         description="Number of top results to retrieve"
+    )
+    
+    model_config = SettingsConfigDict(
+        env_file=str(Path(__file__).resolve().parent.parent.parent / ".env"),
+        env_prefix="KG_",
+        extra="ignore",
+        case_sensitive=False,
     )
     
     @field_validator('chunk_overlap')
