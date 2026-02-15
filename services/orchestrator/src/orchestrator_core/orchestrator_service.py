@@ -34,6 +34,7 @@ from .contracts.crowd import CrowdForecastResponse
 # Phase 3 semantic recall (local module)
 from ..profile_semantic.embedder import embed_texts, vector_literal
 from ..profile_semantic.db import db_conn
+from .response_formatter import ResponseFormatter
 
 
 from .mappers.price_mapper import map_price_request
@@ -194,10 +195,12 @@ class OrchestratorService:
     def __init__(
         self,
         intent_parser: IntentParserAgent,
+        
         task_graph_builder: TaskGraphBuilder,
         protocol_mode: str = "direct",
     ) -> None:
         self.intent_parser = intent_parser
+        self.response_formatter = ResponseFormatter()
         self.task_graph_builder = task_graph_builder
         self.protocol_mode = protocol_mode
         self.profile_event_store = ProfileEventStore()
@@ -1118,6 +1121,12 @@ class OrchestratorService:
             except Exception as e:
                 print(f"[phase3] trigger failed: {e}")
 
+        formatted = self.response_formatter.format(
+            user_text=req.input_text,
+            parsed_intent=parsed_intent.model_dump(mode="json"),
+            results=results,
+            tasks=[t.model_dump(mode="json") for t in tasks],
+        )
 
 
         return OrchestrateResponse(
@@ -1135,4 +1144,6 @@ class OrchestratorService:
             accommodation_result=results["accommodation_result"],
             transport_result=results["transport_result"],
             attraction_result=results["attraction_result"],
+            final_message=formatted.get("text"),
+            followups=formatted.get("followups"),
         )
