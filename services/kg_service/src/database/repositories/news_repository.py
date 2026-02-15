@@ -3,8 +3,8 @@
 import logging
 import datetime
 from typing import Dict, List, Any
-from pathlib import Path
 from .base import BaseRepository
+from ..utils import DatabasePaths
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ class NewsRepository(BaseRepository):
         """Load tourism news schema (constraints and indexes)."""
         try:
             logger.info("Loading news schema...")
-            schema_path = Path(__file__).parent.parent.parent.parent / "neo4j" / "import" / "scripts" / "init_news_schema.cypher"
+            schema_path = DatabasePaths.get_schema_file('init_news_schema.cypher')
             
             if not schema_path.exists():
                 raise FileNotFoundError(f"News schema file not found: {schema_path}")
@@ -41,7 +41,7 @@ class NewsRepository(BaseRepository):
             
             logger.info(f"APOC version: {apoc_check[0].get('version', 'unknown')}")
             
-            load_path = Path(__file__).parent.parent.parent.parent / "neo4j" / "import" / "scripts" / "load_news.cypher"
+            load_path = DatabasePaths.get_schema_file('load_news.cypher')
             
             if not load_path.exists():
                 raise FileNotFoundError(f"News load script not found: {load_path}")

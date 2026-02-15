@@ -3,8 +3,8 @@
 import logging
 import datetime
 from typing import Dict, List, Any
-from pathlib import Path
 from .base import BaseRepository
+from ..utils import DatabasePaths
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ class ProjectRepository(BaseRepository):
         """Load tourism projects schema (constraints and indexes)."""
         try:
             logger.info("Loading projects schema...")
-            schema_path = Path(__file__).parent.parent.parent.parent / "neo4j" / "import" / "scripts" / "init_projects_schema.cypher"
+            schema_path = DatabasePaths.get_schema_file('init_projects_schema.cypher')
             
             if not schema_path.exists():
                 raise FileNotFoundError(f"Projects schema file not found: {schema_path}")
@@ -41,7 +41,7 @@ class ProjectRepository(BaseRepository):
             
             logger.info(f"APOC version: {apoc_check[0].get('version', 'unknown')}")
             
-            load_path = Path(__file__).parent.parent.parent.parent / "neo4j" / "import" / "scripts" / "load_projects.cypher"
+            load_path = DatabasePaths.get_schema_file('load_projects.cypher')
             
             if not load_path.exists():
                 raise FileNotFoundError(f"Projects load script not found: {load_path}")

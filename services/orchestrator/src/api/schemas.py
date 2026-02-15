@@ -115,6 +115,9 @@ class OrchestrateResponse(BaseModel):
     accommodation_result: Optional[Any] = None
     transport_result: Optional[Any] = None
     attraction_result: Optional[Any] = None
+    final_message: Optional[str] = None
+    followups: Optional[List[str]] = None
+
 
 
 

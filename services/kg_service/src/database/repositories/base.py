@@ -1,16 +1,24 @@
-"""Base repository class for database operations."""
+"""Base repository class for database operations with common utilities."""
 
 import logging
 from typing import List, Dict, Any
+from pathlib import Path
 from neo4j import Driver
 from neo4j.time import DateTime, Date, Time
-
+from ..utils import DatabasePaths
 
 logger = logging.getLogger(__name__)
 
 
 class BaseRepository:
-    """Base repository with common database operations."""
+    """Base repository with common database operations and utilities.
+    
+    Provides:
+    - Query execution with type conversion
+    - File-based Cypher execution
+    - Statistics gathering
+    - Common repository patterns (load_schema, load_from_json)
+    """
     
     def __init__(self, driver: Driver):
         """Initialize repository with Neo4j driver.
@@ -176,3 +184,175 @@ class BaseRepository:
         except Exception as e:
             logger.error(f"Failed to get statistics: {e}")
             raise
+    
+    # ========== Common Repository Utilities ==========
+    
+    def load_schema_from_file(self, schema_filename: str) -> Dict[str, Any]:
+        """Load schema (constraints and indexes) from a Cypher file.
+        
+        Args:
+            schema_filename: Name of the schema file (e.g., 'init_attractions_schema.cypher')
+            
+        Returns:
+            Dictionary with success status and message
+        """
+        try:
+            logger.info(f"Loading schema from {schema_filename}...")
+            schema_path = DatabasePaths.get_schema_file(schema_filename)
+            
+            if not schema_path.exists():
+                logger.warning(f"Schema file not found: {schema_path}")
+                return {
+                    "success": False,
+                    "message": f"Schema file not found: {schema_filename}"
+                }
+            
+            self.execute_cypher_file(str(schema_path))
+            logger.info(f"Schema loaded successfully from {schema_filename}")
+            
+            return {
+                "success": True,
+                "message": f"Schema loaded from {schema_filename}"
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to load schema from {schema_filename}: {e}")
+            raise
+    
+    def load_data_from_json(self, 
+                            json_filename: str, 
+                            node_label: str,
+                            process_record_fn: callable) -> Dict[str, Any]:
+        """Load data from JSON file and process each record.
+        
+        Args:
+            json_filename: Name of the JSON file (e.g., 'attractions.json')
+            node_label: Label of the nodes being loaded (for logging)
+            process_record_fn: Function to process each record, should return True on success
+            
+        Returns:
+            Dictionary with load statistics
+        """
+        try:
+            logger.info(f"Loading {node_label} data from {json_filename}...")
+            data_path = DatabasePaths.get_data_file(json_filename)
+            
+            if not data_path.exists():
+                raise FileNotFoundError(f"Data file not found: {data_path}")
+            
+            # Load JSON data
+            with open(data_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # Handle both direct array and object with key
+            records = self._extract_records(data, node_label.lower() + 's')
+            
+            logger.info(f"Found {len(records)} {node_label} records to import")
+            
+            # Process each record
+            imported_count = 0
+            skipped_count = 0
+            
+            for record in records:
+                try:
+                    if process_record_fn(record):
+                        imported_count += 1
+                    else:
+                        skipped_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to import {node_label}: {e}")
+                    skipped_count += 1
+                    continue
+            
+            logger.info(f"Successfully imported {imported_count} {node_label}, skipped {skipped_count}")
+            
+            return {
+                "success": True,
+                "message": f"{node_label} data loaded from {json_filename}",
+                "imported_count": imported_count,
+                "skipped_count": skipped_count,
+                "total_records": len(records)
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to load {node_label} data from {json_filename}: {e}")
+            raise
+    
+    def _extract_records(self, data: Any, key: str) -> List[Dict[str, Any]]:
+        """Extract records from JSON data.
+        
+        Args:
+            data: Loaded JSON data
+            key: Key to look for if data is a dict
+            
+        Returns:
+            List of record dictionaries
+        """
+        if isinstance(data, list):
+            return data
+        elif isinstance(data, dict):
+            # Try exact key first, then try with variations
+            if key in data:
+                return data[key]
+            # Try singular form
+            singular = key.rstrip('s')
+            if singular in data:
+                return data[singular]
+        
+        raise ValueError(f"Could not extract records from data. Expected list or dict with '{key}' key")
+    
+    # ========== Helper Methods for Common Patterns ==========
+    
+    def _load_schema_from_file(self, schema_filename: str, entity_type: str) -> Dict[str, Any]:
+        """Generic schema loading from file.
+        
+        Args:
+            schema_filename: Name of schema file (e.g., 'init_attractions_schema.cypher')
+            entity_type: Type of entity for logging (e.g., 'attractions')
+            
+        Returns:
+            Dictionary with success status and message
+        """
+        try:
+            from database.utils import DatabasePaths
+            
+            logger.info(f"Loading {entity_type} schema...")
+            
+            try:
+                schema_path = DatabasePaths.resolve_schema_file(schema_filename)
+            except FileNotFoundError:
+                logger.warning(f"{entity_type} schema file not found, creating basic constraints")
+                # Subclass can override this with specific constraints
+                return {
+                    "success": True,
+                    "message": f"Basic {entity_type} constraints created (schema file not found)"
+                }
+            
+            self.execute_cypher_file(str(schema_path))
+            logger.info(f"{entity_type} schema loaded successfully")
+            
+            return {
+                "success": True,
+                "message": f"{entity_type} schema loaded"
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to load {entity_type} schema: {e}")
+            raise
+    
+    def _check_apoc_available(self) -> bool:
+        """Check if APOC plugin is available.
+        
+        Returns:
+            True if APOC is available, False otherwise
+        """
+        try:
+            from database.utils import check_apoc_available
+            return check_apoc_available(self)
+        except ImportError:
+            # Fallback if utils not available
+            try:
+                result = self.execute_query("RETURN apoc.version() AS version")
+                return bool(result and result[0].get('version'))
+            except:
+                return False

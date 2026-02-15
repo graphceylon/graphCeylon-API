@@ -1,13 +1,13 @@
 """Repository for attraction-related database operations."""
 
 import logging
-from typing import List, Dict, Any, Optional
 from pathlib import Path
+from typing import List, Dict, Any, Optional
 import json
 from neo4j import Driver
 
 from .base import BaseRepository
-
+from ..utils import DatabasePaths
 
 logger = logging.getLogger(__name__)
 
@@ -21,24 +21,7 @@ class AttractionRepository(BaseRepository):
     
     def load_schema(self) -> Dict[str, Any]:
         """Load attraction schema (constraints and indexes)."""
-        try:
-            logger.info("Loading attractions schema...")
-            schema_path = Path(__file__).parent.parent.parent.parent / "neo4j" / "import" / "scripts" / "init_attractions_schema.cypher"
-            
-            if not schema_path.exists():
-                logger.warning(f"Attractions schema file not found: {schema_path}, creating basic constraints")
-                # Create basic constraints if schema file doesn't exist
-                self.execute_cypher("CREATE CONSTRAINT attraction_title_unique IF NOT EXISTS FOR (a:Attraction) REQUIRE a.title IS UNIQUE;")
-                return {"success": True, "message": "Basic constraints created"}
-            
-            self.execute_cypher_file(str(schema_path))
-            
-            logger.info("Attractions schema loaded successfully")
-            return {"success": True, "message": "Attractions schema loaded"}
-            
-        except Exception as e:
-            logger.error(f"Failed to load attractions schema: {e}")
-            raise
+        return self.load_schema_from_file('init_attractions_schema.cypher')
     
     def load_from_json(self, file_path: str = None) -> Dict[str, Any]:
         """Load attractions from JSON file.
@@ -50,11 +33,11 @@ class AttractionRepository(BaseRepository):
             Dictionary with success status and statistics
         """
         try:
-            logger.info("Loading attractions from JSON...")
-            
             # Use provided path or default
             if file_path is None:
-                file_path = str(Path(__file__).parent.parent.parent.parent.parent.parent / "data" / "kg_service" / "data" / "attractions.json")
+                file_path = str(DatabasePaths.get_data_file('attractions.json'))
+            
+            logger.info("Loading attractions from JSON...")
             
             if not Path(file_path).exists():
                 raise FileNotFoundError(f"Attractions data file not found: {file_path}")
@@ -291,6 +274,9 @@ class AttractionRepository(BaseRepository):
             title: $title,
             description: $description,
             imageUrl: $image_url,
+            city: $city,
+            district: $district,
+            province: $province,
             latitude: $latitude,
             longitude: $longitude,
             googlePlaceId: $google_place_id,
@@ -319,6 +305,9 @@ class AttractionRepository(BaseRepository):
             "title": attraction_data.get("title"),
             "description": attraction_data.get("description"),
             "image_url": attraction_data.get("image_url"),
+            "city": attraction_data.get("city"),
+            "district": attraction_data.get("district"),
+            "province": attraction_data.get("province"),
             "latitude": attraction_data.get("latitude"),
             "longitude": attraction_data.get("longitude"),
             "google_place_id": attraction_data.get("google_place_id"),
@@ -395,6 +384,11 @@ class AttractionRepository(BaseRepository):
         match_clause = "MATCH (a:Attraction)"
         where_clauses = []
         params = {}
+        
+        # Add city filter
+        if filters.get("city"):
+            where_clauses.append("toLower(a.city) = toLower($city)")
+            params["city"] = filters["city"]
         
         # Add district filter
         if filters.get("district"):

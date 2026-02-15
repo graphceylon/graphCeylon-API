@@ -6,16 +6,6 @@ from pydantic import BaseModel, Field
 
 # Request Models
 
-class NewsArticleModel(BaseModel):
-    """Model for news article data."""
-    title: str = Field(..., description="Article title")
-    date: Optional[str] = Field(None, description="Publication date")
-    image_url: Optional[str] = Field(None, description="Article image URL")
-    content: Optional[str] = Field(None, description="Article content/summary")
-    read_more_url: Optional[str] = Field(None, description="Full article URL")
-    scraped_at: Optional[str] = Field(None, description="Scrape timestamp")
-
-
 class CreateNewsRequest(BaseModel):
     """Request model for creating a news article."""
     title: str = Field(..., description="Article title")

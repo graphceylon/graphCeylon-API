@@ -2,9 +2,9 @@
 
 import logging
 from typing import Dict, List, Any
-from pathlib import Path
 from .base import BaseRepository
 from core.config import settings
+from ..utils import DatabasePaths
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +42,16 @@ class OntologyRepository(BaseRepository):
             
             # Step 3: Import ontology
             logger.info("Importing ontology...")
-            ontology_path = Path(settings.ontology_file)
+            ontology_path = DatabasePaths.get_project_root() / settings.ontology_file
             if not ontology_path.exists():
                 raise FileNotFoundError(f"Ontology file not found: {ontology_path}")
             
             try:
-                ontology_filename = ontology_path.name
+                # Get path relative to neo4j/import/ to preserve subdirectory structure
+                neo4j_import_dir = DatabasePaths.get_neo4j_import()
+                ontology_relative = ontology_path.relative_to(neo4j_import_dir)
                 self.execute_cypher(
-                    f"CALL n10s.onto.import.fetch('file:///var/lib/neo4j/import/{ontology_filename}','Turtle');"
+                    f"CALL n10s.onto.import.fetch('file:///var/lib/neo4j/import/{ontology_relative.as_posix()}','Turtle');"
                 )
                 results["ontology_imported"] = True
             except Exception as e:
@@ -75,14 +77,16 @@ class OntologyRepository(BaseRepository):
             
             # Step 5: Import SHACL shapes
             logger.info("Importing SHACL shapes...")
-            shapes_path = Path(settings.shapes_file)
+            shapes_path = DatabasePaths.get_project_root() / settings.shapes_file
             if not shapes_path.exists():
                 raise FileNotFoundError(f"Shapes file not found: {shapes_path}")
             
             try:
-                shapes_filename = shapes_path.name
+                # Get path relative to neo4j/import/ to preserve subdirectory structure
+                neo4j_import_dir = DatabasePaths.get_neo4j_import()
+                shapes_relative = shapes_path.relative_to(neo4j_import_dir)
                 self.execute_cypher(
-                    f"CALL n10s.validation.shacl.import.fetch('file:///var/lib/neo4j/import/{shapes_filename}','Turtle');"
+                    f"CALL n10s.validation.shacl.import.fetch('file:///var/lib/neo4j/import/{shapes_relative.as_posix()}','Turtle');"
                 )
                 results["shapes_imported"] = True
             except Exception as e:
@@ -99,7 +103,7 @@ class OntologyRepository(BaseRepository):
             
             # Step 7: Seed data
             logger.info("Seeding provinces and districts...")
-            seed_path = Path(settings.seed_file)
+            seed_path = DatabasePaths.get_project_root() / settings.seed_file
             if not seed_path.exists():
                 raise FileNotFoundError(f"Seed file not found: {seed_path}")
             
@@ -147,7 +151,7 @@ class OntologyRepository(BaseRepository):
         """Initialize the 12-domain architecture for Sri Lankan Tourism KG."""
         try:
             logger.info("Initializing domain-driven architecture...")
-            domain_path = Path(__file__).parent.parent.parent.parent / "neo4j" / "import" / "scripts" / "init_domain_structure.cypher"
+            domain_path = DatabasePaths.get_schema_file('init_domain_structure.cypher')
             
             if not domain_path.exists():
                 raise FileNotFoundError(f"Domain structure file not found: {domain_path}")
@@ -266,7 +270,7 @@ class OntologyRepository(BaseRepository):
             """)
             before_count = before[0]['total_relationships'] if before else 0
             
-            cleanup_path = Path(__file__).parent.parent.parent.parent / "neo4j" / "import" / "cleanup" / "cleanup_duplicates.cypher"
+            cleanup_path = DatabasePaths.get_neo4j_cleanup() / 'cleanup_duplicates.cypher'
             
             if not cleanup_path.exists():
                 raise FileNotFoundError(f"Cleanup script not found: {cleanup_path}")
