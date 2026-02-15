@@ -43,6 +43,8 @@ def _build_one_plan(payload: Dict[str, Any], cfg: PlannerConfig, mode: PlanMode)
     but with controlled travel mode and anchor behavior.
     """
     payload = deepcopy(payload)
+    payload["_plan_label"] = mode
+
 
     # --- Force mode ---
     origin = str(payload.get("origin_city") or "").strip() or None
@@ -581,6 +583,8 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     # NEW: travel_mode decision
     # =========================
     tm = resolve_travel_mode(payload)
+    print(f"\n[PLAN] {payload.get('_plan_label')}  tm={tm.type} include_stops={tm.include_stops} origin={tm.origin_city} dest={tm.destination_city}")
+
 
 #     # ✅ call your JSON-KG query
 #     res = query_attractions_from_json(
@@ -621,6 +625,11 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             limit=int(payload.get("max_candidates", cfg.max_candidates)),
         )
         kg_mode = "city"
+    dbg = getattr(res, "debug", None) or {}
+
+    print(f"[KG] mode={kg_mode} returned={len(getattr(res,'candidates',[]) or [])}")
+    print(f"[KG] origin_coords={dbg.get('origin_coords')} dest_coords={dbg.get('dest_coords')} anchor={dbg.get('anchor_coords')} radius={dbg.get('radius_km')} corridor={dbg.get('corridor_km')}")
+    print(f"[KG] city_filter={dbg.get('city_filter')} corridor_filtered={dbg.get('corridor_filtered')}")
 
 
     # ✅ debug dict (safe)
@@ -656,6 +665,10 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
 
     # ✅ candidates
     kg_atts = getattr(res, "candidates", None) or []
+    print("[TOP-15 KG IDS]")
+    for a in kg_atts[:15]:
+        print(a.get("attraction_id"), "|", a.get("district"), "|", a.get("title"))
+
     if not kg_atts:
         warnings.append(f"No attractions found for destination='{city}'.")
 
@@ -741,7 +754,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     )
 
     itinerary_days: List[Dict[str, Any]] = []
-    slots = ["morning", "afternoon", "evening", "night"]
+    slots = ["morning", "afternoon"]
 
     for i, day_pack in enumerate(simple_itinerary):
         day_date = start_dt + timedelta(days=i)
