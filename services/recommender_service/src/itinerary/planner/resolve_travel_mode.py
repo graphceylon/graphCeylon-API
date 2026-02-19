@@ -15,6 +15,17 @@ def resolve_travel_mode(payload: Dict[str, Any]) -> TravelMode:
 
     tm_type = str(tm.get("type") or geo_mode or "city").lower()
 
+    # ✅ HARD OVERRIDE: if caller forced city mode, respect it
+    if tm_type == "city":
+        return TravelMode(
+            type="city",
+            origin_city=None,              # not relevant for destination-only plan
+            destination_city=dest,
+            include_stops=False,
+            origin_confidence="explicit",
+            assumptions=[],
+        )
+
     origin_city = str(
         tm.get("origin_city")
         or payload.get("origin_city")
@@ -34,13 +45,10 @@ def resolve_travel_mode(payload: Dict[str, Any]) -> TravelMode:
         # ✅ Route trip detected (origin != dest) => corridor
         if origin_city.lower() != dest.lower():
             tm_type = "corridor"
-            # ✅ default stops ON for corridor trips unless explicitly forced off
             include_stops = True if tm.get("include_stops") is None else bool(tm.get("include_stops"))
 
-    # If user explicitly asked for corridor even without origin
     wants_corridor = (tm_type == "corridor") or include_stops
 
-    # Safe default: destination-only plan
     if not origin_city and not wants_corridor:
         origin_city = dest
         origin_conf = "assumed"

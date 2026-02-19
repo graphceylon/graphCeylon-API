@@ -37,6 +37,16 @@ def _find_repo_root() -> Path:
     # fallback (safe-ish)
     return p.parents[5]
 
+def _is_destination_candidate(c: Dict[str, Any], dest_city: str) -> bool:
+    dc = (dest_city or "").strip().lower()
+    if not dc:
+        return True
+    # your KG uses district heavily; sometimes city is present too
+    cand_city = str(c.get("city") or "").strip().lower()
+    cand_dist = str(c.get("district") or "").strip().lower()
+    return (cand_city == dc) or (cand_dist == dc) or (dc in cand_city) or (dc in cand_dist)
+
+
 def _build_one_plan(payload: Dict[str, Any], cfg: PlannerConfig, mode: PlanMode) -> Dict[str, Any]:
     """
     Builds ONE plan using your current pipeline,
@@ -49,6 +59,9 @@ def _build_one_plan(payload: Dict[str, Any], cfg: PlannerConfig, mode: PlanMode)
     # --- Force mode ---
     origin = str(payload.get("origin_city") or "").strip() or None
     dest = str(payload.get("city") or payload.get("destination") or "").strip() or "Colombo"
+    payload["destination"] = dest
+    payload["city"] = payload.get("destination") or payload.get("city")
+    
 
     if mode == "city":
         payload["travel_mode"] = {"type": "city", "include_stops": False}
@@ -692,6 +705,18 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         ),
         day_offset=0,
     )
+    dest_city = str(payload.get("destination") or payload.get("city") or "").strip()
+
+    dest_reranked = [c for c in reranked if _is_destination_candidate(c, dest_city)]
+    route_reranked = [c for c in reranked if not _is_destination_candidate(c, dest_city)]
+
+    # keep route stops only for corridor plan
+    if not (tm.type == "corridor" and tm.include_stops):
+        route_reranked = []
+
+
+
+
 
     print("\n--- Top Reranked Attractions (base + dynamic) ---")
     for a in reranked[:10]:
@@ -706,18 +731,26 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         )
 
     # ================= NSGA-II PARETO SELECTION =================
+    # ================= NSGA-II PARETO SELECTION (DESTINATION ONLY) =================
     obj_vectors = []
-    for i, cand in enumerate(reranked):
+    for i, cand in enumerate(dest_reranked):
         objectives, explain = build_objectives(cand, payload)
         cand["_nsga_objectives"] = objectives
         cand["_nsga_explain"] = explain
         obj_vectors.append((objectives, i))
 
     front_indices = pareto_front(obj_vectors)
-    pareto_candidates = [reranked[i] for i in front_indices]
+    pareto_dest = [dest_reranked[i] for i in front_indices]
+    if tm.type == "corridor" and tm.include_stops:
+        # ✅ route plan keeps both
+        norm_atts = pareto_dest + route_reranked
+    else:
+        # ✅ destination plan keeps ONLY destination
+        norm_atts = pareto_dest
 
-    print("\n--- NSGA-II Pareto Front (multi-objective optimal set) ---")
-    for c in pareto_candidates[:10]:
+
+    print("\n--- NSGA-II Pareto Front (DESTINATION ONLY) ---")
+    for c in pareto_dest[:10]:
         e = c["_nsga_explain"]
         print(
             f"{c.get('title','?'):<25} | "
@@ -725,8 +758,11 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             f"crowd={e['crowd_risk_0_1']:.2f} rain={e['rain_risk_0_1']:.2f}"
         )
 
-    # ✅ plan using Pareto list
-    norm_atts = pareto_candidates
+    # ✅ final candidate pool:
+    # - destination candidates are Pareto-optimized
+    # - route candidates remain reranked (NO NSGA)
+    norm_atts = pareto_dest + route_reranked
+
 
     per_day = int(payload.get("per_day_attractions") or cfg.per_day_attractions)
 
@@ -820,4 +856,3 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             "kg_mode": kg_mode,
         }
     }
-
