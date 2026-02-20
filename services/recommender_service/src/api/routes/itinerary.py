@@ -68,6 +68,31 @@ def normalize_payload(req: Union[ItineraryPlanRequest, C3RequestEnvelope]) -> Di
     # Else: flat request
     return req.model_dump()
 
+def _print_compact_plan(plan: Dict[str, Any], label: str) -> None:
+    if not plan:
+        print(f"\n[{label}] <empty>")
+        return
+
+    dbg = plan.get("debug", {}) or {}
+    print(f"\n========== {label} (COMPACT) ==========")
+    print(f"[debug] kg_mode={dbg.get('kg_mode')} anchor={dbg.get('route_anchor_coords')}")
+
+    print("date       | city   | district | slot      | attraction_id | title")
+    print("-" * 90)
+
+    for day in plan.get("itinerary", []) or []:
+        day_date = day.get("date", "")
+        city = day.get("city", "")
+        district = day.get("district", "")
+
+        for item in day.get("items", []) or []:
+            print(
+                f"{day_date} | {str(city):<6} | {str(district):<8} | "
+                f"{str(item.get('slot','')):<9} | {str(item.get('attraction_id','')):<13} | "
+                f"{str(item.get('title',''))}"
+            )
+    print("=" * 90)
+
 
 @router.post("/plan")
 def itinerary_plan(req: Union[ItineraryPlanRequest, C3RequestEnvelope]) -> Dict[str, Any]:
@@ -105,24 +130,32 @@ def itinerary_plan(req: Union[ItineraryPlanRequest, C3RequestEnvelope]) -> Dict[
         )
 
         result = build_two_plans_from_payload(payload, cfg=cfg)
+        safe = jsonable_encoder(result)
+        plans = safe.get("plans", {}) or {}
+
+        _print_compact_plan(plans.get("destination_plan", {}), "DESTINATION_PLAN")
+        _print_compact_plan(plans.get("route_plan", {}), "ROUTE_PLAN")
+        print(f"[REQ] city={payload.get('city')} origin={payload.get('origin_city')} days={payload.get('days')} start={payload.get('start_date')}")
+
+
 
 
         # ✅ PRINT RESPONSE (pretty)
-        print("\n================ C3 /itinerary/plan RESPONSE ================")
-        # make sure it's json-serializable (handles dates, pydantic, etc.)
-        safe = jsonable_encoder(result)
-        print("\n================ C3 /itinerary/plan RESPONSE (TWO PLANS) ================")
+        # print("\n================ C3 /itinerary/plan RESPONSE ================")
+        # # make sure it's json-serializable (handles dates, pydantic, etc.)
+        # safe = jsonable_encoder(result)
+        # print("\n================ C3 /itinerary/plan RESPONSE (TWO PLANS) ================")
 
-        plans = safe.get("plans", {})
-        for key in ["destination_plan", "route_plan"]:
-            if key in plans:
-                print(f"\n---------------- {key.upper()} ----------------")
-                print(json.dumps(plans[key], indent=2, ensure_ascii=False))
+        # plans = safe.get("plans", {})
+        # for key in ["destination_plan", "route_plan"]:
+        #     if key in plans:
+        #         print(f"\n---------------- {key.upper()} ----------------")
+        #         print(json.dumps(plans[key], indent=2, ensure_ascii=False))
 
-        print("\n=============================================================\n")
+        # print("\n=============================================================\n")
 
-        print(json.dumps(safe, indent=2, ensure_ascii=False))
-        print("=============================================================\n")
+        # print(json.dumps(safe, indent=2, ensure_ascii=False))
+        # print("=============================================================\n")
 
         return result
 
