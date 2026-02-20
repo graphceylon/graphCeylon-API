@@ -18,7 +18,7 @@ INTENT_LABELS: List[str] = [
     "info_attraction","info_accommodation","info_transport","info_visa_policy",
     "check_availability","book_hotel","modify_booking","cancel_booking",
     "update_preferences","explanation_request",
-    "generic_fact_query",
+    "generic_fact_query","recommend_restaurants",
     "smalltalk",           # NEW
     "out_of_scope"         # NEW
 ]

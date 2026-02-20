@@ -117,6 +117,7 @@ class OrchestrateResponse(BaseModel):
     attraction_result: Optional[Any] = None
     final_message: Optional[str] = None
     followups: Optional[List[str]] = None
+    session_state_patch: Optional[Dict[str, Any]] = None
 
 
 

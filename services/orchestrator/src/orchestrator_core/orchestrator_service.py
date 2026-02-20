@@ -107,45 +107,32 @@ def normalize_executor_output(out: Any) -> tuple[dict, list]:
             return a, b if isinstance(b, list) else []
 
     return {}, []
-def _resolve_weather_city(self, entities: Dict[str, Any]) -> Optional[str]:
-    city = (entities.get("city") or "").strip()
-    if city:
-        return city
 
-    region = (entities.get("region") or "").strip().lower()
-
-    REGION_DEFAULT_CITY = {
-        "south": "Galle",
-        "southern": "Galle",
-        "hill country": "Kandy",
-        "central": "Kandy",
-        "east": "Trincomalee",
-        "eastern": "Trincomalee",
-        "north": "Jaffna",
-        "northern": "Jaffna",
-        "west": "Colombo",
-        "western": "Colombo",
-    }
-
-    return REGION_DEFAULT_CITY.get(region)
 
 
 def build_exec_tasks(builder: TaskGraphBuilder, parsed_intent) -> List[ExecTask]:
-    """
-    Convert TaskNodes (internal DAG) -> ExecTask (executor input).
-    """
-    nodes = builder.get_nodes()  # Dict[str, TaskNode]
+    nodes = builder.get_nodes()
+
+    # map type -> id (parse_intent -> T1, extract_entities -> T2, etc.)
+    type_to_id = {n.type: n.id for n in nodes.values()}
+
     tasks: List[ExecTask] = []
-    for t in nodes.values():
+    for n in nodes.values():
+        deps = []
+        for d in (n.depends_on or []):
+            # if depends_on contains types, convert them
+            deps.append(type_to_id.get(d, d))
+
         tasks.append(
             ExecTask(
-                id=t.id,
-                type=t.type,
-                assigned_agent=t.assigned_agent,
-                depends_on=list(t.depends_on or []),
+                id=n.id,
+                type=n.type,
+                assigned_agent=n.assigned_agent,
+                depends_on=deps,
             )
         )
     return tasks
+
 
 
 async def run_task_graph(
@@ -168,8 +155,9 @@ VISA_STUB_JSON = Path(__file__).resolve().parent / "visa_policy" / "visa.json"
 
 RECOMMENDER_BASE_URL = os.getenv(
     "RECOMMENDER_SERVICE_URL",
-    "http://recommender_service:8003",
+    "http://127.0.0.1:8003",
 ).rstrip("/")
+
 
 # ✅ NEW: Visa/KG base URL (your friend’s KG interface layer service)
 VISA_KG_BASE_URL = os.getenv(
@@ -334,7 +322,27 @@ class OrchestratorService:
         # ---------------------------
     # Phase 3 — Semantic Memory trigger (PGVector)
     # ---------------------------
-    
+    def _resolve_weather_city(self, entities: Dict[str, Any]) -> Optional[str]:
+        city = (entities.get("city") or "").strip()
+        if city:
+            return city
+
+        region = (entities.get("region") or "").strip().lower()
+
+        REGION_DEFAULT_CITY = {
+            "south": "Galle",
+            "southern": "Galle",
+            "hill country": "Kandy",
+            "central": "Kandy",
+            "east": "Trincomalee",
+            "eastern": "Trincomalee",
+            "north": "Jaffna",
+            "northern": "Jaffna",
+            "west": "Colombo",
+            "western": "Colombo",
+        }
+
+        return REGION_DEFAULT_CITY.get(region)
 
     def _semantic_recall_for_request(
             self,
@@ -1006,7 +1014,6 @@ class OrchestratorService:
         # 1) Build ExecTasks from your graph builder
         exec_tasks: List[ExecTask] = build_exec_tasks(self.task_graph_builder, parsed_intent)
 
-        # 2) Build handlers for each task id
         handlers: Dict[str, HandlerFn] = {}
 
         for t in exec_tasks:
@@ -1015,10 +1022,9 @@ class OrchestratorService:
             if ttype in {"parse_intent", "extract_entities", "format_response"}:
                 async def _noop(task, ctx, results):
                     return {"ok": True}
-                handlers[ttype] = _noop
-                continue
+                fn = _noop
 
-            if ttype in self.handlers:
+            elif ttype in self.handlers:
                 def make_handler(intent_name: str):
                     async def _run(task, ctx, results):
                         return await anyio.to_thread.run_sync(
@@ -1029,15 +1035,16 @@ class OrchestratorService:
                             db_prefs,
                         )
                     return _run
+                fn = make_handler(ttype)
 
-                handlers[ttype] = make_handler(ttype)
-                continue
+            else:
+                async def _unknown(task, ctx, results, tt=ttype):
+                    return {"ok": False, "error": f"Unknown task type: {tt}"}
+                fn = _unknown
 
-            async def _unknown(task, ctx, results, tt=ttype):
-                return {"ok": False, "error": f"Unknown task type: {tt}"}
-
-            handlers[ttype] = _unknown
-
+            # register both keys (NO extra overwrite)
+            handlers[ttype] = fn
+            handlers[t.id] = fn
 
         
 
