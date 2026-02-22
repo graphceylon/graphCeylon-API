@@ -230,6 +230,7 @@ TEMP_MAP = {"cool": "cool", "moderate": "moderate", "warm": "warm"}
 ACTIVITY_PREF = {"outdoor": "outdoor", "indoor": "indoor", "mixed": "mixed"}
 PACE_PREF = {"relaxed": "relaxed", "balanced": "balanced", "packed": "packed"}
 ADV_LEVEL = {"low": "low", "medium": "medium", "high": "high"}
+RELATIVE_DAY_WORDS = {"today", "tomorrow", "yesterday", "day after tomorrow"}
 
 STAR_PREF = {"any": "any", "3_star_plus": "3_star_plus", "4_star_plus": "4_star_plus", "5_star_only": "5_star_only"}
 CANCEL_PREF = {"any": "any", "flexible": "flexible", "strict": "strict"}
@@ -686,7 +687,32 @@ def _detect_currency(text: str) -> Optional[str]:
         return "LKR"
     return None
 
+def _sanitize_time_of_day(data: Dict[str, Any]) -> None:
+    """
+    Ensure entities.time_of_day is only one of:
+    morning/afternoon/evening/night or None.
+    If LLM put 'tomorrow' etc into time_of_day, clear it.
+    """
+    entities = data.setdefault("entities", {})
+    tod = entities.get("time_of_day")
 
+    if tod is None:
+        return
+
+    if not isinstance(tod, str):
+        entities["time_of_day"] = None
+        return
+
+    tod_norm = tod.strip().lower()
+
+    # If LLM wrongly put relative-day words into time_of_day, remove it.
+    if tod_norm in RELATIVE_DAY_WORDS:
+        entities["time_of_day"] = None
+        return
+
+    # Allow only valid buckets
+    allowed = {"morning", "afternoon", "evening", "night"}
+    entities["time_of_day"] = tod_norm if tod_norm in allowed else None
 
 def _override_relative_dates(
     data: Dict[str, Any],
@@ -970,6 +996,7 @@ def extract_entities_and_prefs(
     _override_relative_dates(data, text, now)
     _override_nationality(data, text)            # ✅ NEW
     _override_citizenship_entities(data, text)
+    _sanitize_time_of_day(data) 
 
 
     entities = data.setdefault("entities", {})

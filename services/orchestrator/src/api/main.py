@@ -24,8 +24,8 @@ app.include_router(phase2_router)
 app.include_router(semantic_router)
 
 intent_parser_agent = IntentParserAgent(
-    model_dir=r"C:/Users/HP/OneDrive/Documents/graphCeylon-API/models/orchestrator/intent_multilabel_final_v4",
-    #model_dir=r"/Users/dev/Desktop/graphCeylon-API/models/orchestrator/intent_multilabel_final_v4",
+    # model_dir=r"C:/Users/HP/OneDrive/Documents/graphCeylon-API/models/orchestrator/intent_multilabel_final_v4",
+    model_dir=r"/Users/dev/Desktop/graphCeylon-API/models/orchestrator/intent_multilabel_final_v4",
     threshold=0.2,
     top_k_if_empty=2,
 )
