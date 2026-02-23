@@ -56,6 +56,10 @@ NODE_LABELS = {
     "ATTRACTION": "Attraction",
     "SUB_ATTRACTION": "SubAttraction",
     "POI_GROUP": "POIGroup",
+    "EVENT": "Event",
+    "EVENT_TYPE": "EventType",
+    "VENUE": "Venue",
+    "ORGANIZER": "Organizer",
     "HOLIDAY": "Holiday",
     "PROJECT": "TourismProject",
     "NEWS": "NewsArticle",
@@ -85,6 +89,9 @@ RELATIONSHIP_TYPES = {
     "SUB_ATTRACTION_OF": "SUB_ATTRACTION_OF",
     "BELONGS_TO_GROUP": "BELONGS_TO_GROUP",
     "NEAR_HOTEL": "NEAR_HOTEL",
+    "HAS_TYPE": "HAS_TYPE",
+    "HELD_AT": "HELD_AT",
+    "ORGANIZED_BY": "ORGANIZED_BY",
 }
 
 # Status Values
@@ -109,6 +116,22 @@ POI_GROUPS = {
     "NATURE": "Nature & Eco",
 }
 
+# Event Constants
+DEFAULT_EVENT_LIMIT = 20
+
+EVENT_TYPES = {
+    "CONFERENCE": "Conference/ Seminar",
+    "DRAMA": "Drama/ Theatre",
+    "EXHIBITION": "Fair/ Exhibition",
+    "MUSIC": "Music/ Concert",
+    "EXCURSION": "Public Lecture/ Excursion",
+    "MEETING": "Public Lecture/ Meeting",
+    "CULTURAL": "Social/ Cultural",
+    "SPORTS": "Sports",
+    "TRAINING": "Training/ Course",
+    "OTHER": "Other",
+}
+
 # Error Messages
 ERROR_MESSAGES = {
     "PROVINCE_NOT_FOUND": "Province not found",
@@ -118,6 +141,7 @@ ERROR_MESSAGES = {
     "PROJECT_NOT_FOUND": "Project not found",
     "NEWS_NOT_FOUND": "News article not found",
     "SUB_ATTRACTION_NOT_FOUND": "Sub-attraction not found",
+    "EVENT_NOT_FOUND": "Event not found",
     "INVALID_DATE_FORMAT": "Invalid date format. Expected YYYY-MM-DD",
     "INVALID_QUERY": "Invalid query parameters",
     "DATABASE_ERROR": "Database operation failed",
