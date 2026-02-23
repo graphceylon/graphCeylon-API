@@ -91,6 +91,7 @@ def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) ->
     """
     destination_plan = _build_one_plan(payload, cfg, mode="city")
     route_plan = _build_one_plan(payload, cfg, mode="corridor_outbound")
+    route_return_plan = _build_one_plan(payload, cfg, mode="corridor_return")
 
     return {
         "status": "ok",
@@ -103,6 +104,7 @@ def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) ->
         "plans": {
             "destination_plan": destination_plan,
             "route_plan": route_plan,
+            "route_return_plan": route_return_plan,
         }
     }
 
@@ -511,33 +513,49 @@ def group_by_district(candidates):
         buckets[d].append(p)
 
     for d in buckets:
-        buckets[d].sort(key=lambda x: x.get("_final_score", x.get("_score", 0.0)), reverse=True)
+        # ✅ NEW: Sort by Pareto flag first (True > False), then final score
+        buckets[d].sort(key=lambda x: (x.get("_is_pareto", False), x.get("_final_score", x.get("_score", 0.0))), reverse=True)
 
     return buckets
 
 
 def district_centroid(pois):
-    lats = [p["lat"] for p in pois if p.get("lat") is not None]
-    lngs = [p["lng"] for p in pois if p.get("lng") is not None]
+    lats = []
+    lngs = []
+    
+    for p in pois:
+        # Check both "lat"/"lng" and "latitude"/"longitude"
+        lat = p.get("lat") if p.get("lat") is not None else p.get("latitude")
+        lng = p.get("lng") if p.get("lng") is not None else p.get("longitude")
+        
+        if lat is not None and lng is not None:
+            try:
+                lats.append(float(lat))
+                lngs.append(float(lng))
+            except (ValueError, TypeError):
+                continue
+                
     if not lats or not lngs:
         return None
+        
     return (sum(lats) / len(lats), sum(lngs) / len(lngs))
 
 
-def order_districts(buckets, anchor):
-    # ✅ if no anchor, just keep bucket order
-    if not anchor:
+def order_districts(buckets, start_coords, is_return=False):
+    if not start_coords:
         return list(buckets.keys())
 
-    ax, ay = anchor
+    sx, sy = start_coords
     centroids = []
     for d, pois in buckets.items():
         c = district_centroid(pois)
-        if c is None:
-            continue
+        if c is None: continue
         centroids.append((d, c))
 
-    centroids.sort(key=lambda x: (x[1][0] - ax) ** 2 + (x[1][1] - ay) ** 2)
+    # Calculate squared distance from start_coords
+    # If is_return is True, sx/sy will be Kandy coords, and we move towards Colombo
+    centroids.sort(key=lambda x: (x[1][0] - sx) ** 2 + (x[1][1] - sy) ** 2)
+    
     return [d for d, _ in centroids]
 
 
@@ -552,7 +570,8 @@ def build_itinerary(ranked_candidates, days, per_day=2, anchor=None):
         if not ordered_districts:
             break
 
-        district = ordered_districts.pop(0)
+        # Look at the current district (don't pop it immediately!)
+        district = ordered_districts[0]
         pois = buckets[district]
 
         day_plan = []
@@ -571,6 +590,17 @@ def build_itinerary(ranked_candidates, days, per_day=2, anchor=None):
             "district": district,
             "attractions": day_plan
         })
+
+        # --- NEW LOGIC: Decide whether to move to the next district ---
+        remaining_unused = [p for p in pois if p.get("attraction_id") not in used]
+        remaining_days = days - (day + 1)
+        other_districts_count = len(ordered_districts) - 1
+
+        # Move to the next district ONLY IF:
+        # 1. We are completely out of unused attractions here.
+        # 2. OR we need all the remaining days to visit the rest of the districts on our route.
+        if not remaining_unused or other_districts_count >= remaining_days:
+            ordered_districts.pop(0)
 
     return itinerary
 
@@ -741,12 +771,25 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
 
     front_indices = pareto_front(obj_vectors)
     pareto_dest = [dest_reranked[i] for i in front_indices]
+
+    # ✅ NEW: Tag Pareto items so they sort to the very top of their district bucket
+    pareto_ids = set()
+    for c in pareto_dest:
+        c["_is_pareto"] = True
+        pareto_ids.add(c.get("attraction_id"))
+        
+    # ✅ NEW: Get the rest of the destination items (the ones NSGA filtered out)
+    other_dest = [c for c in dest_reranked if c.get("attraction_id") not in pareto_ids]
+    
+    # ✅ NEW: Combine them into a full pool for the destination
+    full_dest_pool = pareto_dest + other_dest
+
     if tm.type == "corridor" and tm.include_stops:
-        # ✅ route plan keeps both
-        norm_atts = pareto_dest + route_reranked
+        # ✅ route plan keeps full destination pool + route stops
+        norm_atts = full_dest_pool + route_reranked
     else:
-        # ✅ destination plan keeps ONLY destination
-        norm_atts = pareto_dest
+        # ✅ destination plan keeps ONLY the full destination pool
+        norm_atts = full_dest_pool
 
 
     print("\n--- NSGA-II Pareto Front (DESTINATION ONLY) ---")
@@ -761,7 +804,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     # ✅ final candidate pool:
     # - destination candidates are Pareto-optimized
     # - route candidates remain reranked (NO NSGA)
-    norm_atts = pareto_dest + route_reranked
+    # norm_atts = pareto_dest + route_reranked
 
 
     per_day = int(payload.get("per_day_attractions") or cfg.per_day_attractions)
@@ -770,23 +813,32 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     # NEW: route anchor coords
     # ==========================
     # corridor query should set something like origin coords / anchor coords in dbg.
-    route_anchor_coords = None
+    route_start_coords = None
     if isinstance(dbg, dict):
-        route_anchor_coords = (
-            dbg.get("anchor_coords")
-            or dbg.get("origin_coords")
+        route_start_coords = (
+            dbg.get("origin_coords")  # ✅ Use origin to sort Colombo -> Kegalle -> Kandy
+            or dbg.get("anchor_coords")
             or dbg.get("anchor")
         )
-        # ✅ NEW: attach anchor coords so enrichment geo safety-net works
-    if route_anchor_coords:
-        payload["anchor_coords"] = route_anchor_coords
+        
+    is_return_leg = payload.get("_plan_label") == "corridor_return"
+    route_start_coords = dbg.get("origin_coords") or dbg.get("anchor_coords")
 
+    # Set the correct anchor for sorting
+    if is_return_leg:
+        # Sort starting from Destination (Kandy)
+        # tm.origin_city here will actually be Kandy due to _build_one_plan logic
+        route_start_coords = dbg.get("origin_coords") 
+    else:
+        # Sort starting from Origin (Colombo)
+        route_start_coords = dbg.get("origin_coords")
 
     simple_itinerary = build_itinerary(
         ranked_candidates=norm_atts,
         days=days,
         per_day=per_day,
-        anchor=route_anchor_coords,
+        anchor=route_start_coords,
+        # Pass a flag if you want to explicitly force return sorting logic
     )
 
     itinerary_days: List[Dict[str, Any]] = []
@@ -852,7 +904,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         "warnings": warnings,
         "itinerary": itinerary_days,
         "debug": {
-            "route_anchor_coords": route_anchor_coords,
+            "route_anchor_coords": route_start_coords,
             "kg_mode": kg_mode,
         }
     }
