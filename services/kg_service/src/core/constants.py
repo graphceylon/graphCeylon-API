@@ -66,6 +66,9 @@ NODE_LABELS = {
     "DOMAIN": "Domain",
     "YEAR": "Year",
     "MONTH": "Month",
+    "BUS_TERMINAL": "BusTerminal",
+    "BUS_SCHEDULE": "BusSchedule",
+    "BUS_DEPOT": "BusDepot",
 }
 
 # Relationship Types
@@ -92,6 +95,10 @@ RELATIONSHIP_TYPES = {
     "HAS_TYPE": "HAS_TYPE",
     "HELD_AT": "HELD_AT",
     "ORGANIZED_BY": "ORGANIZED_BY",
+    "DEPARTS_FROM": "DEPARTS_FROM",
+    "ARRIVES_AT": "ARRIVES_AT",
+    "OPERATED_BY_DEPOT": "OPERATED_BY_DEPOT",
+    "CONNECTED_BY_BUS": "CONNECTED_BY_BUS",
 }
 
 # Status Values
@@ -119,6 +126,9 @@ POI_GROUPS = {
 # Event Constants
 DEFAULT_EVENT_LIMIT = 20
 
+# Bus Schedule Constants
+DEFAULT_BUS_SCHEDULE_LIMIT = 50
+
 EVENT_TYPES = {
     "CONFERENCE": "Conference/ Seminar",
     "DRAMA": "Drama/ Theatre",
@@ -142,6 +152,8 @@ ERROR_MESSAGES = {
     "NEWS_NOT_FOUND": "News article not found",
     "SUB_ATTRACTION_NOT_FOUND": "Sub-attraction not found",
     "EVENT_NOT_FOUND": "Event not found",
+    "BUS_TERMINAL_NOT_FOUND": "Bus terminal not found",
+    "BUS_SCHEDULE_NOT_FOUND": "Bus schedule not found",
     "INVALID_DATE_FORMAT": "Invalid date format. Expected YYYY-MM-DD",
     "INVALID_QUERY": "Invalid query parameters",
     "DATABASE_ERROR": "Database operation failed",

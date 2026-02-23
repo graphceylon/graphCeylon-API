@@ -83,6 +83,24 @@ from .event import (
     EventStatistics,
 )
 
+from .bus_schedule import (
+    BusTerminalRecord,
+    BusTerminalFile,
+    BusStop,
+    BusScheduleRecord,
+    BusTerminalQueryRequest,
+    BusScheduleQueryRequest,
+    BusSearchRequest,
+    BusTerminalResponse,
+    BusScheduleResponse,
+    BusTerminalInitResponse,
+    BusScheduleInitResponse,
+    BusSearchItem,
+    BusSearchResponse,
+    BusTerminalStatistics,
+    BusScheduleStatistics,
+)
+
 __all__ = [
     # Attraction models
     "LinkModel",
@@ -151,4 +169,20 @@ __all__ = [
     "EventItem",
     "EventInitResponse",
     "EventStatistics",
+    # Bus schedule models
+    "BusTerminalRecord",
+    "BusTerminalFile",
+    "BusStop",
+    "BusScheduleRecord",
+    "BusTerminalQueryRequest",
+    "BusScheduleQueryRequest",
+    "BusSearchRequest",
+    "BusTerminalResponse",
+    "BusScheduleResponse",
+    "BusTerminalInitResponse",
+    "BusScheduleInitResponse",
+    "BusSearchItem",
+    "BusSearchResponse",
+    "BusTerminalStatistics",
+    "BusScheduleStatistics",
 ]
