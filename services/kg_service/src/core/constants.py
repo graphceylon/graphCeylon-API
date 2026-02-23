@@ -54,6 +54,8 @@ NODE_LABELS = {
     "PROVINCE": "Province",
     "DISTRICT": "District",
     "ATTRACTION": "Attraction",
+    "SUB_ATTRACTION": "SubAttraction",
+    "POI_GROUP": "POIGroup",
     "HOLIDAY": "Holiday",
     "PROJECT": "TourismProject",
     "NEWS": "NewsArticle",
@@ -80,6 +82,9 @@ RELATIONSHIP_TYPES = {
     "LOCATED_IN_DISTRICT": "LOCATED_IN_DISTRICT",
     "PUBLISHED_IN_YEAR": "PUBLISHED_IN_YEAR",
     "PUBLISHED_IN_MONTH": "PUBLISHED_IN_MONTH",
+    "SUB_ATTRACTION_OF": "SUB_ATTRACTION_OF",
+    "BELONGS_TO_GROUP": "BELONGS_TO_GROUP",
+    "NEAR_HOTEL": "NEAR_HOTEL",
 }
 
 # Status Values
@@ -92,6 +97,18 @@ STATUS_VALUES = {
     "COMPLETED": "completed",
 }
 
+# Sub-Attraction / POI Constants
+DEFAULT_SUB_ATTRACTION_LIMIT = 20
+
+POI_GROUPS = {
+    "SHOPPING": "Shopping & City",
+    "FOOD": "Food & Markets",
+    "RELIGIOUS": "Religious / Spiritual",
+    "CULTURE": "Culture & Heritage",
+    "ADVENTURE": "Adventure & Hiking",
+    "NATURE": "Nature & Eco",
+}
+
 # Error Messages
 ERROR_MESSAGES = {
     "PROVINCE_NOT_FOUND": "Province not found",
@@ -100,6 +117,7 @@ ERROR_MESSAGES = {
     "HOLIDAY_NOT_FOUND": "Holiday not found",
     "PROJECT_NOT_FOUND": "Project not found",
     "NEWS_NOT_FOUND": "News article not found",
+    "SUB_ATTRACTION_NOT_FOUND": "Sub-attraction not found",
     "INVALID_DATE_FORMAT": "Invalid date format. Expected YYYY-MM-DD",
     "INVALID_QUERY": "Invalid query parameters",
     "DATABASE_ERROR": "Database operation failed",
