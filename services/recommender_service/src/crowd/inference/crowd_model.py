@@ -23,6 +23,24 @@ from services.recommender_service.src.crowd.data.priors_loader import load_regio
 def _days_in_month(d: date) -> int:
     return calendar.monthrange(d.year, d.month)[1]
 
+def _percentile(sorted_vals: List[float], p: float) -> float:
+    if not sorted_vals:
+        raise ValueError("empty")
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    k = (len(sorted_vals) - 1) * (p / 100.0)
+    f = int(k)
+    c = min(f + 1, len(sorted_vals) - 1)
+    if f == c:
+        return sorted_vals[f]
+    return sorted_vals[f] * (c - k) + sorted_vals[c] * (k - f)
+
+def _classify_by_percentiles(avg_daily: float, p33: float, p66: float) -> str:
+    if avg_daily < p33:
+        return "low"
+    if avg_daily < p66:
+        return "medium"
+    return "high"
 
 def _load_json_if_exists(path: Path) -> Dict[str, Any]:
     if path.exists():
@@ -143,28 +161,47 @@ def forecast_poi_crowd(
     # ---------- Stage 3: Domestic pressure (derived prior) ----------
     # total pressure = foreign_to_poi * domestic_multiplier_prior
     total_monthly = foreign_to_poi * max(1.0, dom_mult)
-
-    # ---------- Stage 4: Crowd index ----------
+    # ---------- Stage 4: Crowd level via NATIONAL percentile baseline ----------
+    
     days = _days_in_month(month_start)
     avg_daily = total_monthly / days
 
-    # If capacity not available yet, return index relative to self baseline (avoid fake number)
-    if capacity <= 0:
-        crowd_index = None
-        crowd_level = "Unknown"
-        capacity_note = "Capacity baseline not calibrated yet (use percentile baseline script)."
-    else:
-        crowd_index = float(avg_daily / capacity)
-        crowd_level = classify_crowd_level(crowd_index)
-        capacity_note = "Capacity baseline derived from percentile threshold (not official site capacity)."
+    # Build national distribution across ALL district-level POIs
+    national_daily_vals: List[float] = []
+    for p in pois:
+        dist = (p.district or "").strip().lower()
+        if dist not in district_mean:
+            continue
+        foreign_est = float(district_mean.get(dist, 0.0))
+        total_monthly_est = foreign_est * max(1.0, dom_mult)
+        national_daily_vals.append(total_monthly_est / days)
 
+    national_daily_vals.sort()
+
+    # drivers must always exist
     drivers = [
         "Foreign arrivals input (SLTDA monthly / SARIMA forecast)",
         "District allocation calibrated by telecom distribution (Bayesian evidence fusion)",
         "POI allocation driven by survey priors + smoothing (Bayesian prior)",
         "Domestic pressure multiplier derived from arrivals seasonality (prior) unless overridden",
-        capacity_note,
     ]
+
+    if len(national_daily_vals) >= 5:
+        p33 = _percentile(national_daily_vals, 33)
+        p66 = _percentile(national_daily_vals, 66)
+
+        crowd_level = _classify_by_percentiles(avg_daily, p33, p66)
+
+        crowd_index = None
+        capacity_note = "Crowd level derived using national percentile-based Relative Crowd Index."
+        thresholds = {"p33": round(p33, 2), "p66": round(p66, 2)}
+        drivers.append(capacity_note)
+    else:
+        crowd_level = "unknown"
+        crowd_index = None
+        capacity_note = "Crowd level unknown due to insufficient national baseline."
+        thresholds = None
+        drivers.append(capacity_note)
 
     return {
         "status": "ok",
@@ -181,6 +218,7 @@ def forecast_poi_crowd(
         "avg_daily_visitors_mean": round(avg_daily),
         "capacity_per_day": round(capacity) if capacity > 0 else None,
         "crowd_index_mean": round(float(crowd_index), 3) if crowd_index is not None else None,
+        "thresholds": thresholds,
         "crowd_level": crowd_level,
         "drivers": drivers,
         "uncertainty": {
