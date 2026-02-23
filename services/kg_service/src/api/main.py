@@ -16,7 +16,7 @@ from api import dependencies as api_deps
 
 # --- Router imports (grouped by domain) ---
 from api.routers.core import kg_operations, domains, semantic
-from api.routers.tourism import attractions, holidays, hotels, news, projects
+from api.routers.tourism import attractions, holidays, hotels, news, projects, sub_attractions
 from api.routers.transport import railway_stations, train_schedules
 from api.routers.intelligence import agent, ail_enhanced, graphrag, research, gnn
 
@@ -82,6 +82,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
+        "http://127.0.0.1:3000",
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:5175",
@@ -101,6 +102,7 @@ app.include_router(semantic.router)
 
 # Tourism entities
 app.include_router(attractions.router)
+app.include_router(sub_attractions.router)
 app.include_router(holidays.router)
 app.include_router(hotels.router)
 app.include_router(news.router)
