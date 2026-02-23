@@ -71,6 +71,18 @@ from .sub_attraction import (
     SubAttractionStatistics,
 )
 
+from .event import (
+    EventRecord,
+    EventFile,
+    EventQueryRequest,
+    EventResponse,
+    EventSearchRequest,
+    EventSearchResponse,
+    EventItem,
+    EventInitResponse,
+    EventStatistics,
+)
+
 __all__ = [
     # Attraction models
     "LinkModel",
@@ -129,4 +141,14 @@ __all__ = [
     "SubAttractionItem",
     "SubAttractionInitResponse",
     "SubAttractionStatistics",
+    # Event models
+    "EventRecord",
+    "EventFile",
+    "EventQueryRequest",
+    "EventResponse",
+    "EventSearchRequest",
+    "EventSearchResponse",
+    "EventItem",
+    "EventInitResponse",
+    "EventStatistics",
 ]
