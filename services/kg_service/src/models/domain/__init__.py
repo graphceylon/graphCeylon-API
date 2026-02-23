@@ -59,6 +59,18 @@ from .hotel import (
     OrchestratorSearchResponse,
 )
 
+from .sub_attraction import (
+    SubAttractionPOI,
+    SubAttractionFile,
+    SubAttractionQueryRequest,
+    SubAttractionResponse,
+    SubAttractionSearchRequest,
+    SubAttractionSearchResponse,
+    SubAttractionItem,
+    SubAttractionInitResponse,
+    SubAttractionStatistics,
+)
+
 __all__ = [
     # Attraction models
     "LinkModel",
@@ -107,4 +119,14 @@ __all__ = [
     "AccommodationSearchRequest",
     "HotelItemResponse",
     "OrchestratorSearchResponse",
+    # Sub-attraction / POI models
+    "SubAttractionPOI",
+    "SubAttractionFile",
+    "SubAttractionQueryRequest",
+    "SubAttractionResponse",
+    "SubAttractionSearchRequest",
+    "SubAttractionSearchResponse",
+    "SubAttractionItem",
+    "SubAttractionInitResponse",
+    "SubAttractionStatistics",
 ]
