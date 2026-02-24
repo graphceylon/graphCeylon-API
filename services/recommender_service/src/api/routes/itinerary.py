@@ -135,6 +135,7 @@ def itinerary_plan(req: Union[ItineraryPlanRequest, C3RequestEnvelope]) -> Dict[
 
         _print_compact_plan(plans.get("destination_plan", {}), "DESTINATION_PLAN")
         _print_compact_plan(plans.get("route_plan", {}), "ROUTE_PLAN")
+        _print_compact_plan(plans.get("route_return_plan", {}), "route_return_plan")
         print(f"[REQ] city={payload.get('city')} origin={payload.get('origin_city')} days={payload.get('days')} start={payload.get('start_date')}")
 
 

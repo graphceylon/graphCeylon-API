@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from services.recommender_service.src.crowd.inference.crowd_model import forecast_poi_crowd
 from services.recommender_service.src.crowd.data.arrivals_resolver import resolve_total_foreign_arrivals_month
 from services.recommender_service.src.sustainability.baselines import load_poi_baselines
-from services.recommender_service.src.sustainability.risk import normal_from_ci95, prob_exceed_threshold
+from services.recommender_service.src.sustainability.notrisk import normal_from_ci95, prob_exceed_threshold
 
 
 def _pressure_from_percentiles(x: float, p50: float, p75: float, p90: float) -> float:
