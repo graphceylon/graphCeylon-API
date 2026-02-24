@@ -97,7 +97,29 @@ def normalize_executor_output(out: Any) -> tuple[dict, list]:
 
     return {}, []
 
+def build_modify_ops(parsed_intent) -> list[dict]:
+    ents = (
+        parsed_intent.entities.model_dump(exclude_none=True)
+        if hasattr(parsed_intent.entities, "model_dump")
+        else dict(parsed_intent.entities or {})
+    )
 
+    ops = []
+
+    # days
+    if ents.get("days"):
+        ops.append({"op": "set_days", "days": int(ents["days"])})
+
+    # start_date
+    if ents.get("start_date"):
+        ops.append({"op": "set_start_date", "start_date": str(ents["start_date"])})
+
+    # basic tag preferences if present
+    tags = ents.get("tags") or []
+    if tags:
+        ops.append({"op": "prefer_tags", "tags": tags})
+
+    return ops
 def build_exec_tasks(builder: TaskGraphBuilder, parsed_intent) -> List[ExecTask]:
     """
     Convert TaskNodes (internal DAG) -> ExecTask (executor input).

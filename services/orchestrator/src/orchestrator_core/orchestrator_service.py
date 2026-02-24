@@ -1225,13 +1225,14 @@ class OrchestratorService:
                     if dest or days:
                         title = f"{dest or 'Trip'} ({days or ''} days)".strip()
 
+                    new_plan = mod_json.get("plan") or mod_json  # depends on response structure
                     self.trip_repo.update_trip_plan(
                         trip_id=active_trip_id,
                         title=title,
                         destination=dest,
                         start_date=start_date,
                         days=int(days) if days else None,
-                        plan_json=mod_json,
+                        plan_json=new_plan,
                     )
 
 

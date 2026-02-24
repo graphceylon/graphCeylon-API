@@ -1,40 +1,38 @@
+from typing import Any, Dict
 from ...api.schemas import OrchestrateRequest, ParsedIntent
-from ..contracts.itinerary_modify import ItineraryModifyRequest
-from ..utils.pref_access import pref_get
+from ..contracts.itinerary_modify import ItineraryModifyRequest  # your pydantic contract
+from .modify_ops_builder import build_modify_ops
 
+def map_itinerary_modify_request(
+    parsed_intent: ParsedIntent,
+    req: OrchestrateRequest,
+    trip_id: str,
+    existing_plan: Dict[str, Any],
+    merged_prefs: Dict[str, Any],
+) -> ItineraryModifyRequest:
+    entities = parsed_intent.entities.model_dump() if hasattr(parsed_intent.entities, "model_dump") else dict(parsed_intent.entities or {})
+    overrides = parsed_intent.preference_overrides or {}
 
-def map_itinerary_modify_request(parsed_intent: ParsedIntent, req: OrchestrateRequest) -> ItineraryModifyRequest:
-    e = parsed_intent.entities
-    p = parsed_intent.preference_overrides
-
-    raw_text = getattr(req, "text", None) or getattr(req, "input_text", "") or ""
-
-    # ✅ These will be injected by orchestrator for same-session modify
-    itinerary_id = pref_get(e, "itinerary_id")
-    current_itinerary = pref_get(e, "current_itinerary")
-
-    # Prefer override budget_level, fallback to entity-extracted budget_level
-    budget_level = pref_get(p, "budget_level") or pref_get(e, "budget_level")
+    ops = build_modify_ops(
+        parsed_entities=entities,
+        preference_overrides=overrides,
+        raw_text=req.input_text,
+        existing_plan=existing_plan,
+    )
 
     return ItineraryModifyRequest(
-        user_id=req.user_id,
-        session_id=req.session_id,
-        raw_text=raw_text,
-
-        itinerary_id=itinerary_id,                 # ✅ now filled
-        current_itinerary=current_itinerary,       # ✅ now filled
-
-        modification_text=raw_text,
-
-        start_date=pref_get(e, "start_date"),
-        end_date=pref_get(e, "end_date"),
-        days=pref_get(e, "days"),
-
-        budget_level=budget_level,
-        avoid_crowds=bool(pref_get(p, "avoid_crowds") or False),
-        travel_style=pref_get(p, "travel_style") or [],
-
-        city=pref_get(e, "city"),
-        poi_name=pref_get(e, "poi_name"),
-        country=pref_get(e, "country"),
+        trip_id=trip_id,
+        existing_plan=existing_plan,
+        change_request={
+            "ops": ops,
+            "notes": req.input_text,
+            "strict": False,
+        },
+        context={
+            "user_id": req.user_id,
+            "session_id": req.session_id,
+            "lang": req.lang,
+            "channel": req.channel,
+            "prefs": merged_prefs,
+        },
     )
