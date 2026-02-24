@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import psycopg
-
+from .context_resolver import resolve_context
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -962,12 +962,16 @@ class OrchestratorService:
     def orchestrate(self, req: OrchestrateRequest) -> OrchestrateResponse:
         user_id = (req.user_id or "").strip()
         session_id = (req.session_id or "").strip() or "no_session"
+        session_state: Optional[SessionState] = None
+        trip_id: Optional[str] = None
 
          # ✅ load session (per chat window / per session_id)
         session_state = None
         if user_id and session_id != "no_session":
             raw_state = self.session_store.get(user_id=user_id, session_id=session_id)
             session_state = SessionState.from_dict(raw_state)
+        if session_state:
+            trip_id = session_state.slots.get("active_trip_id")
 
         # ✅ EVENT 1: raw query received (store raw text)
         if user_id:
@@ -992,6 +996,19 @@ class OrchestratorService:
         db_prefs = self._extract_db_preferences(profile_json)
 
         parsed_intent: ParsedIntent = self._run_intent_parser(req)
+        resolved = resolve_context(
+            parsed_intent=parsed_intent,
+            req=req,
+            session_state=session_state,
+            trip_repo=self.trip_repo,
+        )
+
+        # ✅ update session slots (active context)
+        if session_state:
+            if resolved.city:
+                session_state.slots["active_place"] = resolved.city
+            if resolved.trip_id:
+                session_state.slots["active_trip_id"] = resolved.trip_id
         # ✅ merge entities into session slots (save context)
         if session_state:
             ents = (
@@ -1153,7 +1170,7 @@ class OrchestratorService:
                         )
                         trip_id = active_trip_id
                     else:
-                        # ✅ CREATE only once per session
+                        # ✅ CREATE new trip
                         trip_id = self.trip_repo.create_trip(
                             user_id=user_id,
                             title=title,
@@ -1163,8 +1180,10 @@ class OrchestratorService:
                             days=int(days) if days else None,
                             plan_json=it_json,
                         )
-                        if session_state:
-                            session_state.slots["active_trip_id"] = trip_id
+
+                    # ✅ THIS is where you put it (AFTER trip_id is decided)
+                    if session_state and trip_id:
+                        session_state.slots["active_trip_id"] = trip_id
 
                 continue
             elif ttype == "modify_itinerary":
@@ -1285,4 +1304,5 @@ class OrchestratorService:
             attraction_result=results["attraction_result"],
             final_message=formatted.get("text"),
             followups=formatted.get("followups"),
+            trip_id=trip_id,
         )

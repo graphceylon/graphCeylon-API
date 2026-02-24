@@ -101,7 +101,44 @@ class TripRepo:
                     ),
                 )
             conn.commit()
+    def get_latest_trip_for_destination(
+            self, *, user_id: str, destination: str
+        ) -> Optional[TripPlanRow]:
+            """
+            Get the most recently updated trip for a given user + destination (case-insensitive).
+            Used when the user says: "modify my Kandy trip..." but active_trip_id is missing.
+            """
+            if not user_id or not destination:
+                return None
 
+            sql = """
+            SELECT trip_id::text, user_id, title, destination,
+                start_date::text, travel_month::text, days, version, plan_json
+            FROM trip_plans
+            WHERE user_id = %s
+            AND LOWER(destination) = LOWER(%s)
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """
+
+            with psycopg.connect(self.dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (user_id, destination))
+                    row = cur.fetchone()
+                    if not row:
+                        return None
+
+                    return TripPlanRow(
+                        trip_id=row[0],
+                        user_id=row[1],
+                        title=row[2],
+                        destination=row[3],
+                        start_date=row[4],
+                        travel_month=row[5],
+                        days=row[6],
+                        version=row[7],
+                        plan_json=row[8] if isinstance(row[8], dict) else {},
+                    )
     def get_trip(self, *, trip_id: str, user_id: str) -> Optional[TripPlanRow]:
         sql = """
         SELECT trip_id::text, user_id, title, destination,
@@ -126,7 +163,41 @@ class TripRepo:
                     version=row[7],
                     plan_json=row[8] if isinstance(row[8], dict) else {},
                 )
+    def get_latest_trip_for_user(self, *, user_id: str) -> Optional[TripPlanRow]:
+        """
+        Fallback: return user's most recently updated trip.
+        Used when user says: "change it to 3 days" with no city mention.
+        """
+        if not user_id:
+            return None
 
+        sql = """
+        SELECT trip_id::text, user_id, title, destination,
+               start_date::text, travel_month::text, days, version, plan_json
+        FROM trip_plans
+        WHERE user_id = %s
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """
+
+        with psycopg.connect(self.dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (user_id,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+
+                return TripPlanRow(
+                    trip_id=row[0],
+                    user_id=row[1],
+                    title=row[2],
+                    destination=row[3],
+                    start_date=row[4],
+                    travel_month=row[5],
+                    days=row[6],
+                    version=row[7],
+                    plan_json=row[8] if isinstance(row[8], dict) else {},
+                )
     def list_trips(self, *, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         sql = """
         SELECT trip_id::text, title, destination, start_date::text, travel_month::text,
