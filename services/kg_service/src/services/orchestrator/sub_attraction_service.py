@@ -155,12 +155,13 @@ class OrchestratorSubAttractionService:
         where_clauses: List[str] = []
         params: Dict[str, Any] = {"limit": limit}
 
-        # City filter – match via parentLocation or parent attraction city/title
+        # City filter – match via sub-attraction city, parentLocation, district, or province
         if city:
             where_clauses.append(
-                "(toLower(s.parentLocation) = toLower($city) "
-                "OR toLower(a.city) = toLower($city) "
-                "OR toLower(a.title) = toLower($city))"
+                "(toLower(s.city) = toLower($city) "
+                "OR toLower(s.parentLocation) = toLower($city) "
+                "OR toLower(s.district) = toLower($city) "
+                "OR toLower(s.province) = toLower($city))"
             )
             params["city"] = city
 
@@ -169,10 +170,11 @@ class OrchestratorSubAttractionService:
             where_clauses.append("toLower(s.name) CONTAINS toLower($poiName)")
             params["poiName"] = poi_name
 
-        # POI category filter – search across type fields AND Google place types
+        # POI category filter – search across type fields, Google place types, AND groups
         if poi_category and poi_category.strip():
             where_clauses.append(
-                "(toLower(s.amenityType) CONTAINS toLower($poiCategory) "
+                "(toLower(s.groups) CONTAINS toLower($poiCategory) "
+                "OR toLower(s.amenityType) CONTAINS toLower($poiCategory) "
                 "OR toLower(s.shopType) CONTAINS toLower($poiCategory) "
                 "OR toLower(s.tourismType) CONTAINS toLower($poiCategory) "
                 "OR toLower(s.naturalType) CONTAINS toLower($poiCategory) "
@@ -208,6 +210,7 @@ class OrchestratorSubAttractionService:
         cypher = f"""
         MATCH (s:SubAttraction)
         OPTIONAL MATCH (s)-[:SUB_ATTRACTION_OF]->(a:Attraction)
+        WITH s, a
         WHERE {where_clause}
         OPTIONAL MATCH (s)-[:LOCATED_IN]->(d:District)
         OPTIONAL MATCH (d)-[:IN_PROVINCE]->(p:Province)
@@ -270,11 +273,20 @@ class OrchestratorSubAttractionService:
 
         description = data.get("editorialSummary") or None
 
+        city = data.get("city") or data.get("parentLocation") or None
+        district = data.get("district") or None
+        province = data.get("province") or None
+        groups = data.get("poiGroups") or None
+
         return SubAttractionItem(
             name=data.get("name", "Unknown POI"),
             category=category,
             description=description,
             location=location,
+            city=city,
+            district=district,
+            province=province,
+            groups=groups,
             open_hours=open_hours,
             entry_fee_lkr=entry_fee,
             source="kg_service",
