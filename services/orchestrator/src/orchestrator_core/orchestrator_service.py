@@ -27,6 +27,9 @@ from .intent_parser.agent import IntentParserAgent
 # ---- mappers + contracts ----
 from .mappers.weather_mapper import map_weather_request
 from .contracts.weather import WeatherForecastResponse
+from .memory.session_store import SessionStore
+from .memory.session_state import SessionState
+import os
 
 from .mappers.crowd_mapper import map_crowd_request
 from .contracts.crowd import CrowdForecastResponse
@@ -35,6 +38,7 @@ from .contracts.crowd import CrowdForecastResponse
 from ..profile_semantic.embedder import embed_texts, vector_literal
 from ..profile_semantic.db import db_conn
 from .response_formatter import ResponseFormatter
+from .trips.trip_repo import TripRepo
 
 
 from .mappers.price_mapper import map_price_request
@@ -192,6 +196,12 @@ class OrchestratorService:
         self.task_graph_builder = task_graph_builder
         self.protocol_mode = protocol_mode
         self.profile_event_store = ProfileEventStore()
+        self.trip_repo = TripRepo()
+        self.session_store = SessionStore(
+            redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+            prefix=os.getenv("SESSION_PREFIX", "gc:sess:"),
+            ttl_sec=int(os.getenv("SESSION_TTL_SEC", str(60*60*6))),
+        )
 
         # ✅ Profile client (User Service)
         self.profile_client = ProfileClient()
@@ -723,13 +733,7 @@ class OrchestratorService:
             )
             return None
 
-    def _execute_intent(
-        self,
-        intent_name: str,
-        parsed_intent: ParsedIntent,
-        req: OrchestrateRequest,
-        db_prefs: Dict[str, Any],
-    ) -> Any:
+    def _execute_intent(self, intent_name, parsed_intent, req, db_prefs, session_state=None) -> Any:
 
 
         handler = self.handlers.get(intent_name)
@@ -789,7 +793,27 @@ class OrchestratorService:
         patched_intent = patched_intent.model_copy(
             update={"preference_overrides": merged_prefs}
         )
+        # ✅ Attach base plan for modify so recommender can patch
+        if intent_name == "modify_itinerary" and session_state and req.user_id:
+            active_trip_id = session_state.slots.get("active_trip_id")
+            if active_trip_id:
+                trip = self.trip_repo.get_trip(trip_id=active_trip_id, user_id=req.user_id)
+                if trip and trip.plan_json:
+                    # Put these into patched_intent.entities so mapper can pick them up
+                    ents = (
+                        patched_intent.entities.model_dump(exclude_none=True)
+                        if hasattr(patched_intent.entities, "model_dump")
+                        else dict(patched_intent.entities or {})
+                    )
+                    ents["itinerary_id"] = active_trip_id
+                    ents["current_itinerary"] = trip.plan_json
 
+                    # also backfill location if missing
+                    ents.setdefault("city", session_state.slots.get("city"))
+                    ents.setdefault("country", session_state.slots.get("country"))
+                    ents.setdefault("start_date", trip.start_date)
+
+                    patched_intent = patched_intent.model_copy(update={"entities": ents})
         # 4) Build contract payload via mapper
         contract_obj = handler.mapper(patched_intent, req)
 
@@ -937,7 +961,13 @@ class OrchestratorService:
     # ---------------------------
     def orchestrate(self, req: OrchestrateRequest) -> OrchestrateResponse:
         user_id = (req.user_id or "").strip()
-        session_id = (req.session_id or "no_session").strip()
+        session_id = (req.session_id or "").strip() or "no_session"
+
+         # ✅ load session (per chat window / per session_id)
+        session_state = None
+        if user_id and session_id != "no_session":
+            raw_state = self.session_store.get(user_id=user_id, session_id=session_id)
+            session_state = SessionState.from_dict(raw_state)
 
         # ✅ EVENT 1: raw query received (store raw text)
         if user_id:
@@ -962,6 +992,26 @@ class OrchestratorService:
         db_prefs = self._extract_db_preferences(profile_json)
 
         parsed_intent: ParsedIntent = self._run_intent_parser(req)
+        # ✅ merge entities into session slots (save context)
+        if session_state:
+            ents = (
+                parsed_intent.entities.model_dump(exclude_none=True)
+                if hasattr(parsed_intent.entities, "model_dump")
+                else (parsed_intent.entities or {})
+            )
+
+            # merge new slots
+            for k, v in ents.items():
+                if v in (None, "", [], {}, "unknown"):
+                    continue
+                session_state.slots[k] = v
+
+            # track last intent
+            session_state.last_intent = parsed_intent.intent
+
+            # minimal stage update (optional)
+            if parsed_intent.intent in {"plan_itinerary", "modify_itinerary"}:
+                session_state.conversation_stage = "itinerary"
         if user_id:
             self.profile_event_store.append(
                 ProfileEvent(
@@ -1033,6 +1083,7 @@ class OrchestratorService:
                             parsed_intent,
                             req,
                             db_prefs,
+                            session_state,
                         )
                     return _run
                 fn = make_handler(ttype)
@@ -1068,6 +1119,57 @@ class OrchestratorService:
 
             ttype = task.type
 
+            if ttype == "plan_itinerary":
+                results["itinerary_result"] = out
+
+                it_res = out
+                it_json = it_res.model_dump(mode="json") if hasattr(it_res, "model_dump") else dict(it_res)
+
+                ok = (it_json.get("status") == "ok") or (it_json.get("ok") is True)
+                if ok:
+                    meta = it_json.get("meta") or {}
+                    days = meta.get("days") or it_json.get("days")
+                    start_date = meta.get("start_date") or it_json.get("start_date")
+
+                    dest = meta.get("destination")
+                    if not dest:
+                        plans = it_json.get("plans") or {}
+                        dp = plans.get("destination_plan") or {}
+                        dest = dp.get("city") or dp.get("destination") or meta.get("destination")
+
+                    title = f"{dest or 'Trip'} ({days or ''} days)".strip()
+
+                    active_trip_id = session_state.slots.get("active_trip_id") if session_state else None
+
+                    if active_trip_id:
+                        # ✅ UPDATE same row
+                        self.trip_repo.update_trip_plan(
+                            trip_id=active_trip_id,
+                            title=title,
+                            destination=dest,
+                            start_date=start_date,
+                            days=int(days) if days else None,
+                            plan_json=it_json,
+                        )
+                        trip_id = active_trip_id
+                    else:
+                        # ✅ CREATE only once per session
+                        trip_id = self.trip_repo.create_trip(
+                            user_id=user_id,
+                            title=title,
+                            destination=dest,
+                            start_date=start_date,
+                            travel_month=None,
+                            days=int(days) if days else None,
+                            plan_json=it_json,
+                        )
+                        if session_state:
+                            session_state.slots["active_trip_id"] = trip_id
+
+                continue
+            elif ttype == "modify_itinerary":
+                results["modify_result"] = out
+
             if ttype == "info_visa_policy":
                 results["visa_result"] = out
             elif ttype == "info_accommodation":
@@ -1083,10 +1185,35 @@ class OrchestratorService:
                 results["crowd_result"] = out
             elif ttype == "forecast_price":
                 results["price_result"] = out
-            elif ttype == "plan_itinerary":
-                results["itinerary_result"] = out
-            elif ttype == "modify_itinerary":
-                results["modify_result"] = out
+            
+
+            
+        # ✅ After DAG mapping: apply modify update to active trip
+        # ✅ apply modify update once
+        mod_res = results.get("modify_result")
+        if user_id and mod_res and session_state:
+            active_trip_id = session_state.slots.get("active_trip_id")
+            if active_trip_id:
+                mod_json = mod_res.model_dump(mode="json") if hasattr(mod_res, "model_dump") else dict(mod_res)
+                ok = (mod_json.get("status") == "ok") or (mod_json.get("ok") is True)
+                if ok:
+                    meta = mod_json.get("meta") or {}
+                    days = meta.get("days") or mod_json.get("days")
+                    start_date = meta.get("start_date") or mod_json.get("start_date")
+
+                    dest = meta.get("destination")
+                    title = None
+                    if dest or days:
+                        title = f"{dest or 'Trip'} ({days or ''} days)".strip()
+
+                    self.trip_repo.update_trip_plan(
+                        trip_id=active_trip_id,
+                        title=title,
+                        destination=dest,
+                        start_date=start_date,
+                        days=int(days) if days else None,
+                        plan_json=mod_json,
+                    )
 
 
 
@@ -1134,7 +1261,12 @@ class OrchestratorService:
             results=results,
             tasks=[t.model_dump(mode="json") for t in tasks],
         )
-
+        if session_state and user_id and session_id != "no_session":
+            self.session_store.save(
+                user_id=user_id,
+                session_id=session_id,
+                state=session_state.to_dict(),
+            )
 
         return OrchestrateResponse(
             status="ok",

@@ -1,5 +1,5 @@
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 class ItineraryModifyRequest(BaseModel):
     intent: str = "modify_itinerary"
@@ -8,11 +8,13 @@ class ItineraryModifyRequest(BaseModel):
     session_id: Optional[str] = None
     raw_text: str
 
-    # The itinerary being modified (choose ONE approach)
-    itinerary_id: Optional[str] = None                 # if stored in DB
-    current_itinerary: Optional[Dict[str, Any]] = None # if passed inline
+    # ✅ Link to stored trip row (your trip_plans.trip_id)
+    itinerary_id: Optional[str] = Field(default=None, description="Trip ID in orchestrator DB")
 
-    # What user wants to change
+    # ✅ Provide the existing plan so the recommender can patch reliably
+    current_itinerary: Optional[Dict[str, Any]] = None
+
+    # ✅ What the user wants to change
     modification_text: str
 
     # Optional extracted constraints
@@ -20,18 +22,21 @@ class ItineraryModifyRequest(BaseModel):
     end_date: Optional[str] = None
     days: Optional[int] = None
 
-    budget_level: Optional[str] = None                 # low/medium/high
+    budget_level: Optional[str] = None
     avoid_crowds: Optional[bool] = None
     travel_style: List[str] = []
 
-    # Optional extra signals
+    # Location context (helps modify)
     city: Optional[str] = None
     poi_name: Optional[str] = None
     country: Optional[str] = None
 
 
 class ItineraryModifyResponse(BaseModel):
+    status: Optional[str] = "ok"                # ✅ add status so your orchestrator ok-check works
     itinerary_id: Optional[str] = None
-    updated_itinerary: Dict[str, Any]
-    summary: str
+
+    # ✅ always return something (or allow None safely)
+    updated_itinerary: Dict[str, Any] = {}
+    summary: str = ""
     warnings: List[str] = []
