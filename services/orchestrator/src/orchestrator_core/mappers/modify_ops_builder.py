@@ -1,7 +1,57 @@
 import re
 from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, timedelta
 
 SLOTS = {"morning", "afternoon", "evening", "night"}
+
+def _extract_iso_date(text: str) -> Optional[str]:
+    t = _norm(text)
+    m = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", t)
+    return m.group(1) if m else None
+
+def _plan_start_date(existing_plan: Dict[str, Any]) -> Optional[str]:
+    # you store start_date in meta.start_date in your plan JSON
+    meta = (existing_plan or {}).get("meta") or {}
+    sd = meta.get("start_date")
+    return str(sd) if sd else None
+
+def _extract_trip_shift(text: str) -> Optional[int]:
+    """
+    "shift this trip 3 days forward"
+    "move the trip 2 days back"
+    "push it by 1 week"
+    Returns delta_days (+ forward, - backward)
+    """
+    t = _norm(text)
+
+    # days
+    m = re.search(r"\b(shift|move|push|postpone|delay|bring\s+forward)\b.*?\b(\d{1,2})\s*day(?:s)?\b.*?\b(forward|ahead|later|back|backward|earlier)\b", t)
+    if m:
+        n = int(m.group(2))
+        direction = m.group(3)
+        return +n if direction in {"forward", "ahead", "later"} else -n
+
+    # "by N days" without explicit direction words
+    m = re.search(r"\b(shift|move|push|postpone|delay)\b.*?\bby\s+(\d{1,2})\s*day(?:s)?\b", t)
+    if m:
+        return int(m.group(2))  # default forward
+
+    # weeks
+    m = re.search(r"\b(shift|move|push|postpone|delay)\b.*?\b(\d{1,2})\s*week(?:s)?\b.*?\b(forward|ahead|later|back|backward|earlier)\b", t)
+    if m:
+        n = int(m.group(2)) * 7
+        direction = m.group(3)
+        return +n if direction in {"forward", "ahead", "later"} else -n
+
+    m = re.search(r"\b(shift|move|push|postpone|delay)\b.*?\bby\s+(\d{1,2})\s*week(?:s)?\b", t)
+    if m:
+        return int(m.group(2)) * 7
+
+    return None
+
+def _add_days(iso_date: str, delta_days: int) -> str:
+    d = datetime.strptime(iso_date, "%Y-%m-%d").date()
+    return (d + timedelta(days=delta_days)).isoformat()
 
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip().lower())
@@ -81,7 +131,39 @@ def _extract_regenerate_day(text: str) -> Optional[int]:
     if not m:
         return None
     return int(m.group(2))
+def _extract_replace_pair(text: str) -> Optional[Tuple[str, str]]:
+    """
+    "replace colombo with nuwara eliya"
+    "replace 'temple of tooth' with 'pinnawala'"
+    "swap colombo for nuwara eliya"  (optional)
+    """
+    t = _norm(text)
 
+    # replace X with Y
+    m = re.search(r"\breplace\s+(.+?)\s+with\s+(.+?)(?:,| and | then |\.|$)", t)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+
+    # swap X for Y (optional)
+    m = re.search(r"\bswap\s+(.+?)\s+for\s+(.+?)(?:,| and | then |\.|$)", t)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+def _find_item_id(existing_plan: Dict[str, Any], query: str) -> Optional[str]:
+    q = _norm(query)
+
+    # your plan has itinerary list → items → raw.attraction_id and title
+    itinerary = (existing_plan or {}).get("itinerary") or []
+    for day in itinerary:
+        for item in (day.get("items") or []):
+            raw = item.get("raw") or {}
+            aid = raw.get("attraction_id") or item.get("attraction_id")
+            title = item.get("title") or raw.get("title")
+            if aid and _norm(aid) == q:
+                return str(aid)
+            if title and _norm(title) == q:
+                return str(aid) if aid else _norm(title)
+    return None
+    return None
 def _extract_move_item(text: str) -> Optional[Dict[str, Any]]:
     """
     "move pinnawala to day 1 morning"
@@ -93,7 +175,7 @@ def _extract_move_item(text: str) -> Optional[Dict[str, Any]]:
 
     # move/put X to (day N)? (slot)?
     m = re.search(
-        r"\b(move|put|shift)\s+(.+?)\s+(?:to|on)\s+(?:day\s*([0-9]{1,2})\s*)?(morning|afternoon|evening|night)?\b",
+        r"\b(move|put)\s+(.+?)\s+(?:to|on)\s+(?:day\s*([0-9]{1,2})\s*)?(morning|afternoon|evening|night)?\b",
         t
     )
     if not m:
@@ -126,17 +208,41 @@ def build_modify_ops(
     """
     ops: List[Dict[str, Any]] = []
     text = raw_text or ""
+    tnorm = _norm(text)
+    # --- NEW: replace X with Y ---
+    rp = _extract_replace_pair(text)
+    if rp:
+        from_q, to_q = rp
 
-    # --- A) Structured ops (from entities) ---
-    days = parsed_entities.get("days")
-    if isinstance(days, int) and days > 0:
-        ops.append({"op": "set_days", "days": days})
+        from_id = _find_item_id(existing_plan, from_q)  # tries to map "Colombo" → "colombo"
+        if from_id:
+            ops.append({"op": "replace_item", "from_id": from_id, "to_query": to_q})
+        else:
+            # fallback: still do replace by text if you don't have IDs
+            ops.append({"op": "replace_item_by_text", "from_query": from_q, "to_query": to_q})
 
-    # Only set start_date if the USER explicitly said a start date.
-    # If entities.start_date is None, do nothing.
-    start_date = parsed_entities.get("start_date")
-    if start_date:
-        ops.append({"op": "set_start_date", "start_date": str(start_date)})
+        # optional: usually you want a regen after replacement so schedule is rebuilt
+        ops.append({"op": "regenerate_plan"})
+    # 0) Detect trip date shifting FIRST (so it doesn't get mistaken as set_days)
+    delta = _extract_trip_shift(text)
+    if delta is not None:
+        base = _plan_start_date(existing_plan) or _extract_iso_date(text)
+        if base:
+            ops.append({"op": "set_start_date", "start_date": _add_days(base, delta)})
+        else:
+            # no start_date to anchor on -> safer to regenerate than guess
+            ops.append({"op": "regenerate_plan"})
+        # IMPORTANT: don't add set_days from entities for shift requests
+    else:
+        # --- A) Structured ops (from entities) ---
+        days = parsed_entities.get("days")
+        if isinstance(days, int) and days > 0:
+            ops.append({"op": "set_days", "days": days})
+
+        # Only set start_date if the user actually typed a date
+        explicit_date = _extract_iso_date(text)
+        if explicit_date:
+            ops.append({"op": "set_start_date", "start_date": explicit_date})
 
     # prefer_tags: from entities.tags OR travel_style override
     tags = parsed_entities.get("tags") or []

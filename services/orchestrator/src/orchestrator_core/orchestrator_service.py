@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional, Type
 from uuid import uuid4
 
 import os
+import re
 from pydantic import BaseModel
 
 from ..api.schemas import (
@@ -84,6 +85,63 @@ import anyio
 
 from .task_executor import TaskExecutor, ExecTask
 from .task_graph_builder import TaskGraphBuilder
+
+import re
+
+EDIT_VERBS = [
+    "make it", "extend", "shorten", "change", "shift", "move", "swap",
+    "redo", "regenerate", "replan", "remove", "delete", "drop", "exclude",
+    "modify", "update", "edit"
+]
+
+EXPLICIT_HOTEL = ["book hotel", "hotel booking", "reserve hotel", "find hotels", "rooms", "check-in", "check out"]
+EXPLICIT_VISA  = ["visa", "eta", "entry requirements"]
+EXPLICIT_WEATHER = ["weather", "rain", "temperature", "forecast"]
+EXPLICIT_TRANSPORT = ["how to go", "bus", "train", "taxi", "transport", "route"]
+
+def norm(t: str) -> str:
+    return re.sub(r"\s+", " ", (t or "").strip().lower())
+
+def has_edit_signal(text: str, entities) -> bool:
+    t = norm(text)
+    if getattr(entities, "days", None):
+        return True
+    if getattr(entities, "start_date", None):
+        return True
+    if re.search(r"\bday\s*\d+\b", t):   # swap day 1 etc.
+        return True
+    return any(v in t for v in EDIT_VERBS)
+
+def has_explicit_other_intent(text: str) -> bool:
+    t = norm(text)
+    # if any explicit other-intent phrases exist, don't override
+    if any(k in t for k in EXPLICIT_HOTEL): return True
+    if any(k in t for k in EXPLICIT_VISA): return True
+    if any(k in t for k in EXPLICIT_WEATHER): return True
+    if any(k in t for k in EXPLICIT_TRANSPORT): return True
+    return False
+
+def resolve_intent(parsed_intent, req_text: str, active_trip: bool):
+    t = req_text or ""
+    conf = float(getattr(parsed_intent, "confidence", 0.0))
+    entities = parsed_intent.entities
+
+    # If no active trip, keep classifier behavior (mostly)
+    if not active_trip:
+        return parsed_intent
+
+    # Active trip exists: default to modify when edit signals appear
+    if has_edit_signal(t, entities) and not has_explicit_other_intent(t):
+        parsed_intent.intent = "modify_itinerary"
+        parsed_intent.domain_category = "itinerary"
+        return parsed_intent
+
+    # If confidence is super low but looks like a start_date edit, still force modify
+    if conf < 0.60 and getattr(entities, "start_date", None) and not has_explicit_other_intent(t):
+        parsed_intent.intent = "modify_itinerary"
+        parsed_intent.domain_category = "itinerary"
+
+    return parsed_intent
 
 def normalize_executor_output(out: Any) -> tuple[dict, list]:
     """
@@ -965,6 +1023,7 @@ class OrchestratorService:
         session_state: Optional[SessionState] = None
         trip_id: Optional[str] = None
 
+
          # ✅ load session (per chat window / per session_id)
         session_state = None
         if user_id and session_id != "no_session":
@@ -1002,6 +1061,94 @@ class OrchestratorService:
             session_state=session_state,
             trip_repo=self.trip_repo,
         )
+
+        active_trip_id = None
+        if session_state:
+            active_trip_id = session_state.slots.get("active_trip_id")
+
+        if not active_trip_id:
+            active_trip_id = resolved.trip_id or trip_id  # fallback
+#         raw = (req.input_text or "").lower().strip()
+#         duration_edit = bool(re.search(
+#     r"\b(?:make(?:\s+it)?(?:\s+the\s+trip)?|change(?:\s+it)?|set)\s+\d{1,2}\s+day(?:s)?\b",
+#     raw
+# ))
+
+#         active_trip_id = None
+#         if session_state:
+#             active_trip_id = session_state.slots.get("active_trip_id")
+        # if not active_trip_id:
+        #     active_trip_id = resolved.trip_id or trip_id  # fallback
+
+        # if active_trip_id and duration_edit:
+        #     scores = dict(parsed_intent.scores or {})
+        #     scores["modify_itinerary"] = max(scores.get("modify_itinerary", 0.0), 0.95)
+
+        #     ents = (
+        #         parsed_intent.entities.model_dump(exclude_none=True)
+        #         if hasattr(parsed_intent.entities, "model_dump")
+        #         else dict(parsed_intent.entities or {})
+        #     )
+        #     ents["itinerary_id"] = active_trip_id
+
+        #     parsed_intent = parsed_intent.model_copy(update={
+        #         "intent": "modify_itinerary",
+        #         "confidence": 0.95,
+        #         "secondary_intents": [],   # prevent book_hotel DAG branch
+        #         "scores": scores,
+        #         "entities": ents,
+        #     })
+
+        # active_trip_id is decided above
+        raw = (req.input_text or "").lower().strip()
+
+        duration_edit = bool(re.search(
+            r"\b(?:make(?:\s+it)?(?:\s+the\s+trip)?|change(?:\s+it)?|set)\s+\d{1,2}\s+day(?:s)?\b",
+            raw
+        ))
+
+        date_edit = bool(re.search(
+            r"\b(?:start|begin)\s+(?:the\s+trip\s+)?on\s+\d{4}-\d{2}-\d{2}\b",
+            raw
+        )) or bool(getattr(parsed_intent.entities, "start_date", None))
+
+        # if user is clearly talking about hotels/bookings, don't force modify
+        hotel_like = bool(re.search(
+            r"\b(hotel|book|booking|reserve|reservation|check[-\s]?in|check[-\s]?out)\b",
+            raw
+        ))
+
+        generic_modify = bool(re.search(
+            r"\b(modify|change|update|edit|remove|delete|drop|swap|move|redo|regenerate|replan)\b",
+            raw
+        ))
+
+        if active_trip_id and (duration_edit or date_edit or generic_modify) and not hotel_like:
+            scores = dict(parsed_intent.scores or {})
+
+            # hard boost modify
+            scores["modify_itinerary"] = 0.95
+
+            # suppress booking branches so cancel_booking/book_hotel doesn't get scheduled
+            for k in ["book_hotel", "cancel_booking", "modify_booking", "check_availability"]:
+                if k in scores:
+                    scores[k] = min(scores[k], 0.01)
+
+            ents = (
+                parsed_intent.entities.model_dump(exclude_none=True)
+                if hasattr(parsed_intent.entities, "model_dump")
+                else dict(parsed_intent.entities or {})
+            )
+            ents["itinerary_id"] = active_trip_id
+
+            parsed_intent = parsed_intent.model_copy(update={
+                "intent": "modify_itinerary",
+                "domain_category": "itinerary",
+                "confidence": 0.95,
+                "secondary_intents": [],   # ✅ critical
+                "scores": scores,          # ✅ critical
+                "entities": ents,
+            })
 
         # ✅ update session slots (active context)
         if session_state:
@@ -1054,7 +1201,8 @@ class OrchestratorService:
                     },
                 )
             )
-
+        active_trip = bool(active_trip_id)
+        parsed_intent = resolve_intent(parsed_intent, req.input_text, active_trip)
         tasks: List[TaskSummary] = self.task_graph_builder.build(parsed_intent)
 
         results: Dict[str, Any] = {
