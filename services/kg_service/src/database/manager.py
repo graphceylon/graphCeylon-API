@@ -16,6 +16,9 @@ from .repositories import (
     NewsRepository,
     OntologyRepository,
     RailwayRepository,
+    SubAttractionRepository,
+    EventRepository,
+    BusScheduleRepository,
     BaseRepository
 )
 from core.config import settings
@@ -62,6 +65,9 @@ class DatabaseManager:
         self.news = NewsRepository(driver)
         self.ontology = OntologyRepository(driver)
         self.railway = RailwayRepository(driver)
+        self.sub_attractions = SubAttractionRepository(driver)
+        self.events = EventRepository(driver)
+        self.bus_schedules = BusScheduleRepository(driver)
     
     # ========== Common Database Operations ==========
     
