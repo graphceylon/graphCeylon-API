@@ -1062,6 +1062,27 @@ class OrchestratorService:
             trip_repo=self.trip_repo,
         )
 
+        # --- APPLY resolved context into entities ---
+        ents = (
+            parsed_intent.entities.model_dump(exclude_none=False)
+            if hasattr(parsed_intent.entities, "model_dump")
+            else dict(parsed_intent.entities or {})
+        )
+
+        # Fill missing fields from session / resolver
+        if not ents.get("city"):
+            ents["city"] = (resolved.city if hasattr(resolved, "city") else None) or \
+                        (session_state.slots.get("city") if session_state else None) or \
+                        (session_state.slots.get("active_place") if session_state else None)
+
+        if not ents.get("country"):
+            ents["country"] = (resolved.country if hasattr(resolved, "country") else None) or \
+                            (session_state.slots.get("country") if session_state else None)
+
+        # also handle "tomorrow" already extracted - fine
+
+        parsed_intent = parsed_intent.model_copy(update={"entities": ents})
+
         active_trip_id = None
         if session_state:
             active_trip_id = session_state.slots.get("active_trip_id")
@@ -1101,6 +1122,12 @@ class OrchestratorService:
 
         # active_trip_id is decided above
         raw = (req.input_text or "").lower().strip()
+
+        refers = any(w in raw for w in ["there", "it", "that place", "that city", "in that area"])
+
+        if refers and not ents.get("city") and session_state:
+            ents["city"] = session_state.slots.get("active_place") or session_state.slots.get("city")
+            ents["country"] = ents.get("country") or session_state.slots.get("country")
 
         duration_edit = bool(re.search(
             r"\b(?:make(?:\s+it)?(?:\s+the\s+trip)?|change(?:\s+it)?|set)\s+\d{1,2}\s+day(?:s)?\b",
