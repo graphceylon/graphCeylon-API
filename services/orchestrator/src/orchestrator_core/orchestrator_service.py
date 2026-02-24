@@ -278,7 +278,7 @@ class OrchestratorService:
                 result_field="transport_result",
             ),
             "info_attraction": IntentHandler(
-                endpoint="/attractions/orchestrator/call/attractions",        # <-- your attraction agent endpoint
+                endpoint="/sub-attractions/orchestrator/call/sub-attractions",
                 mapper=map_attraction_request,
                 response_model=None,
                 timeout=20,
