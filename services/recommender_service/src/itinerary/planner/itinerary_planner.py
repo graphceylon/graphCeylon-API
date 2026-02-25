@@ -213,6 +213,108 @@ def _parse_coords_from_kg(x: Dict[str, Any]) -> Tuple[Optional[float], Optional[
     except Exception:
         return None, None
 
+def recommend_city_pois_simple(payload: Dict[str, Any], cfg: PlannerConfig = PlannerConfig()) -> Dict[str, Any]:
+    """
+    City-only:
+    1. Fetch attractions from KG
+    2. Rerank using enrich_and_rerank_candidates
+    3. Return ranked list
+    """
+
+    city = str(payload.get("city") or "").strip()
+    if not city:
+        raise ValueError("city is required")
+
+    country = str(payload.get("country") or "Sri Lanka").strip()
+
+    # --------------------------
+    # 1️⃣ Fetch from KG
+    # --------------------------
+    candidates, dbg = fetch_city_attractions_from_kg(
+        city=city,
+        country=country,
+        limit=int(payload.get("max_candidates") or cfg.max_candidates),
+        timeout=20.0,
+    )
+
+    # Optional: ensure strict city match
+    candidates = [c for c in candidates if _safe_city_match(c, city)]
+
+    if not candidates:
+        return {
+            "status": "ok",
+            "city": city,
+            "country": country,
+            "items": [],
+            "warnings": [f"No attractions found for city='{city}'."],
+        }
+
+    # Add eco hint so reranker works correctly
+    for c in candidates:
+        c["_eco_hint"] = _eco_score_hint(c)
+        c["_score"] = float(c.get("_score", 0.0))
+
+    # --------------------------
+    # 2️⃣ Preference rerank
+    # --------------------------
+    # 1️⃣ Extract priorities from payload
+    priorities = extract_priorities(payload)
+
+    # 2️⃣ Compute rank score using preferences ONLY (no date logic)
+    for c in candidates:
+        c["_eco_hint"] = _eco_score_hint(c)
+        c["_final_score"] = compute_rank_score(
+            rec=c,
+            priorities=priorities,
+            eco_preference=float(payload.get("eco_preference") or 0.5),
+        )
+
+    # 3️⃣ Sort by final score
+    reranked = sorted(
+        candidates,
+        key=lambda x: x.get("_final_score", 0.0),
+        reverse=True
+    )
+
+    # Apply limit
+    limit = int(payload.get("limit") or 20)
+    reranked = reranked[:limit]
+
+    # --------------------------
+    # 3️⃣ Clean response
+    # --------------------------
+    items = []
+    for c in reranked:
+        items.append({
+            "attraction_id": c.get("attraction_id"),
+            "title": c.get("title"),
+            "category": c.get("category"),
+            "description": c.get("description"),
+            "city": c.get("city"),
+            "district": c.get("district"),
+            "province": c.get("province"),
+            "rating": c.get("rating"),
+            "lat": c.get("lat"),
+            "lng": c.get("lng"),
+            "rank_score_base": float(c.get("_score", 0.0)),
+            "rank_score_final": float(c.get("_final_score", c.get("_score", 0.0))),
+            "recommended_because": c.get("_reasons", []),
+            "matched_preferences": {
+                "tags": payload.get("tags", []),
+                "avoid_crowds": payload.get("avoid_crowds"),
+                "eco_preference": payload.get("eco_preference"),
+            },
+            "score_breakdown": c.get("_score_breakdown", {}),
+            "dynamic": c.get("_dynamic", {}),
+        })
+
+    return {
+        "status": "ok",
+        "mode": "city_recommendation",
+        "city": city,
+        "country": country,
+        "items": items,
+    }
 
 def _kg_item_to_candidate(x: Dict[str, Any]) -> Dict[str, Any]:
     title = x.get("title") or x.get("name") or ""

@@ -127,6 +127,7 @@ class OrchestrateResponse(BaseModel):
 
     visa_result: Optional[VisaPolicyResponse] = None
     accommodation_result: Optional[Any] = None
+    pois_result:Optional[Any] = None
     transport_result: Optional[Any] = None
     attraction_result: Optional[Any] = None
     final_message: Optional[str] = None
@@ -137,4 +138,3 @@ class OrchestrateResponse(BaseModel):
 
 
 
-    

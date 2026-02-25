@@ -261,6 +261,7 @@ class ResponseFormatter:
         # map intent -> expected result key
         intent_to_result_key = {
             "info_attraction": "attraction_result",
+            "recommend_pois": "pois_result", 
             "info_accommodation": "accommodation_result",
             "info_transport": "transport_result",
             "forecast_weather": "weather_result",
@@ -288,6 +289,7 @@ class ResponseFormatter:
         # Finally: pick ANY available result key (priority order)
         for fallback_intent, k in [
             ("plan_itinerary", "itinerary_result"),
+            ("recommend_pois", "pois_result"), 
             ("info_attraction", "attraction_result"),
             ("info_transport", "transport_result"),
             ("forecast_weather", "weather_result"),
@@ -465,6 +467,7 @@ class ResponseFormatter:
         # 2) everything else -> normal (no compact)
         # only include non-null results so payload stays clean
         for k in [
+            "pois_result",
             "attraction_result",
             "accommodation_result",
             "transport_result",

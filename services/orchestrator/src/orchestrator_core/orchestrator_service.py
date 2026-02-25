@@ -39,7 +39,7 @@ from ..api.schemas import AgentCallError
 from .clients.recommender_client import RecommenderClient
 from .contracts.itinerary_modify import ItineraryModifyResponse
 
-
+from .contracts.recommend_pois import RecommendPOIsResponse
 
 # Phase 3 semantic recall (local module)
 from ..profile_semantic.embedder import embed_texts, vector_literal
@@ -149,32 +149,50 @@ def resolve_intent(parsed_intent, req_text: str, active_trip: bool):
 
     return parsed_intent
 
-def normalize_executor_output(out: Any) -> tuple[dict, list]:
+
+def normalize_executor_output(out: Any) -> Tuple[Dict[str, Any], List[Any], Any]:
     """
     Normalize TaskExecutor.run() output into:
-      (dag_results_dict, exec_results_list)
+      (dag_results_dict, exec_results_list, ctx)
+    Supports:
+      - dict
+      - (dict, list)
+      - (dict, list, ctx)
+      - ((dict, list), ctx)
+      - (ctx, (dict, list)) etc.
     """
-
-    # Case: already dict
+    # Already dict
     if isinstance(out, dict):
-        return out, []
+        return out, [], {}
 
-    # Case: ((dict, list), anything)
-    if isinstance(out, tuple) and len(out) == 2:
-        a, b = out
+    # Tuple forms
+    if isinstance(out, tuple):
+        # (dict, list, ctx)
+        if len(out) == 3 and isinstance(out[0], dict):
+            dag = out[0]
+            execs = out[1] if isinstance(out[1], list) else []
+            ctx = out[2]
+            return dag, execs, ctx
 
-        if isinstance(a, tuple) and len(a) == 2 and isinstance(a[0], dict):
-            dag, execs = a
-            return dag, execs if isinstance(execs, list) else []
+        # (dict, list)
+        if len(out) == 2 and isinstance(out[0], dict):
+            dag = out[0]
+            execs = out[1] if isinstance(out[1], list) else []
+            return dag, execs, {}
 
-        if isinstance(b, tuple) and len(b) == 2 and isinstance(b[0], dict):
-            dag, execs = b
-            return dag, execs if isinstance(execs, list) else []
+        # ((dict, list), ctx)
+        if len(out) == 2 and isinstance(out[0], tuple) and len(out[0]) == 2 and isinstance(out[0][0], dict):
+            dag, execs = out[0]
+            execs = execs if isinstance(execs, list) else []
+            return dag, execs, out[1]
 
-        if isinstance(a, dict):
-            return a, b if isinstance(b, list) else []
+        # (ctx, (dict, list))
+        if len(out) == 2 and isinstance(out[1], tuple) and len(out[1]) == 2 and isinstance(out[1][0], dict):
+            dag, execs = out[1]
+            execs = execs if isinstance(execs, list) else []
+            return dag, execs, out[0]
 
-    return {}, []
+    return {}, [], {}
 
 
 
@@ -344,9 +362,9 @@ class OrchestratorService:
             "recommend_pois": IntentHandler(
                 endpoint="/recommend/pois",
                 mapper=map_recommend_pois_request,
-                response_model=None,
+                response_model=RecommendPOIsResponse,
                 timeout=20,
-                result_field=None,
+                result_field="pois_result",
             ),
             # ✅ VisaPolicy handler (calls KG interface layer)
             "info_visa_policy": IntentHandler(
@@ -877,8 +895,9 @@ class OrchestratorService:
                     ents.setdefault("country", session_state.slots.get("country"))
                     ents.setdefault("start_date", trip.start_date)
 
-                    patched_intent = patched_intent.model_copy(update={"entities": ents})
+                    patched_intent = patched_intent.model_copy(update={"entities": Entities(**ents)})  # ✅ wrap back
         # 4) Build contract payload via mapper
+        print("[debug] entities_type =", type(patched_intent.entities))
         contract_obj = handler.mapper(patched_intent, req)
 
         # 5) DEBUG prints (DB vs query vs final)
@@ -973,10 +992,24 @@ class OrchestratorService:
                 )
             )
 
-        if not raw:
-            return None
+        if raw is None:
+            return {
+                "ok": False,
+                "agent": "unknown",
+                "endpoint": handler.endpoint,
+                "status_code": 0,
+                "error": "Downstream call failed (raw=None)",
+            }
+
         if isinstance(raw, dict) and raw.get("ok") is False:
-            return None
+            return {
+                "ok": False,
+                "agent": "unknown",
+                "endpoint": handler.endpoint,
+                "status_code": int(raw.get("status_code") or 0),
+                "error": str(raw.get("error") or "Downstream returned ok:false"),
+                "detail": raw,
+            }
 
 
         # 7) Parse response ONCE (support response_model=None)
@@ -1187,7 +1220,7 @@ class OrchestratorService:
                 "confidence": 0.95,
                 "secondary_intents": [],   # ✅ critical
                 "scores": scores,          # ✅ critical
-                "entities": ents,
+                "entities": Entities(**ents),
             })
 
         # ✅ update session slots (active context)
@@ -1255,6 +1288,7 @@ class OrchestratorService:
             "accommodation_result": None,
             "transport_result": None,
             "attraction_result": None,
+            "pois_result": None, 
         }
         errors: List[AgentCallError] = []
 
@@ -1277,7 +1311,6 @@ class OrchestratorService:
 
             if ttype == "parse_intent":
                 async def _parse(task, ctx, results, pi=parsed_intent):
-                    # give executor something meaningful
                     return pi.model_dump(mode="json") if hasattr(pi, "model_dump") else dict(pi)
                 fn = _parse
 
@@ -1289,15 +1322,15 @@ class OrchestratorService:
 
             elif ttype == "format_response":
                 async def _format(task, ctx, results):
-                    return {"ok": True}   # fine as noop
+                    return {"ok": True}
                 fn = _format
 
             elif ttype in self.handlers:
                 def make_handler(intent_name: str):
-                    async def _run(task, ctx, results):
+                    async def _run(task, ctx, results, _intent=intent_name):
                         return await anyio.to_thread.run_sync(
                             self._execute_intent,
-                            intent_name,
+                            _intent,
                             parsed_intent,
                             req,
                             db_prefs,
@@ -1311,6 +1344,7 @@ class OrchestratorService:
                     return {"ok": False, "error": f"Unknown task type: {tt}"}
                 fn = _unknown
 
+            # ✅ register BOTH
             handlers[ttype] = fn
             handlers[t.id] = fn
 
@@ -1322,11 +1356,11 @@ class OrchestratorService:
 
 
 
-        # 3) Run the graph (IMPORTANT: anyio.run takes only a coroutine function)
         async def _runner():
             return await run_task_graph(exec_tasks=exec_tasks, handlers=handlers)
 
-        dag_results, exec_results, ctx = anyio.run(_runner)
+        out = anyio.run(_runner)
+        dag_results, exec_results, ctx = normalize_executor_output(out)
 
         # 🔥 Map DAG outputs into response fields
         for task in exec_tasks:
@@ -1417,7 +1451,8 @@ class OrchestratorService:
                 results["crowd_result"] = out
             elif ttype == "forecast_price":
                 results["price_result"] = out
-            
+            elif ttype == "recommend_pois":
+                results["pois_result"] = out
 
             
         # ✅ After DAG mapping: apply modify update to active trip
@@ -1514,6 +1549,7 @@ class OrchestratorService:
             modify_result=results["modify_result"],
             visa_result=results["visa_result"],
             accommodation_result=results["accommodation_result"],
+            pois_result = results["pois_result"],
             transport_result=results["transport_result"],
             attraction_result=results["attraction_result"],
             final_message=formatted.get("text"),
