@@ -126,26 +126,56 @@ def has_explicit_other_intent(text: str) -> bool:
     if any(k in t for k in EXPLICIT_WEATHER): return True
     if any(k in t for k in EXPLICIT_TRANSPORT): return True
     return False
+def has_edit_signal(text: str, entities) -> bool:
+    t = norm(text)
 
+    # explicit edit verbs
+    if any(v in t for v in EDIT_VERBS):
+        return True
+
+    # explicit day swap like "day 2" / "swap day 1 and day 3"
+    if re.search(r"\bday\s*\d+\b", t):
+        return True
+
+    # explicit date edit like "start on 2026-03-01"
+    if getattr(entities, "start_date", None):
+        return True
+    if re.search(r"\b(?:start|begin)\b.*\b\d{4}-\d{2}-\d{2}\b", t):
+        return True
+
+    # days only counts as edit if accompanied by edit verb ("make it 2 days")
+    if getattr(entities, "days", None):
+        if re.search(r"\b(make it|change it|set|extend|shorten|reduce|increase)\b", t):
+            return True
+
+    return False
+PLAN_PHRASES = [
+    "plan a trip", "plan trip", "plan an itinerary", "plan itinerary",
+    "create a trip", "create an itinerary", "make an itinerary",
+    "build an itinerary", "generate an itinerary",
+]
+
+def has_plan_signal(text: str) -> bool:
+    t = norm(text)
+    return ("plan" in t and ("trip" in t or "itinerary" in t)) or any(p in t for p in PLAN_PHRASES)
 def resolve_intent(parsed_intent, req_text: str, active_trip: bool):
     t = req_text or ""
-    conf = float(getattr(parsed_intent, "confidence", 0.0))
     entities = parsed_intent.entities
 
-    # If no active trip, keep classifier behavior (mostly)
     if not active_trip:
         return parsed_intent
 
-    # Active trip exists: default to modify when edit signals appear
+    # 1) If user is clearly planning, DO NOT force modify
+    if has_plan_signal(t) and not has_explicit_other_intent(t):
+        parsed_intent.intent = "plan_itinerary"
+        parsed_intent.domain_category = "itinerary"
+        return parsed_intent
+
+    # 2) Otherwise, if edit signals appear, force modify
     if has_edit_signal(t, entities) and not has_explicit_other_intent(t):
         parsed_intent.intent = "modify_itinerary"
         parsed_intent.domain_category = "itinerary"
         return parsed_intent
-
-    # If confidence is super low but looks like a start_date edit, still force modify
-    if conf < 0.60 and getattr(entities, "start_date", None) and not has_explicit_other_intent(t):
-        parsed_intent.intent = "modify_itinerary"
-        parsed_intent.domain_category = "itinerary"
 
     return parsed_intent
 
@@ -1163,6 +1193,9 @@ class OrchestratorService:
 
         # active_trip_id is decided above
         raw = (req.input_text or "").lower().strip()
+        def is_plan_request(raw: str) -> bool:
+            return bool(re.search(r"\b(plan|create|build|generate)\b.*\b(itinerary|trip)\b", raw))
+        plan_like = is_plan_request(raw)
 
         refers = any(w in raw for w in ["there", "it", "that place", "that city", "in that area"])
 
@@ -1171,7 +1204,11 @@ class OrchestratorService:
             ents["country"] = ents.get("country") or session_state.slots.get("country")
 
         duration_edit = bool(re.search(
-            r"\b(?:make(?:\s+it)?(?:\s+the\s+trip)?|change(?:\s+it)?|set)\s+\d{1,2}\s+day(?:s)?\b",
+            r"\b(?:make(?:\s+it)?|change(?:\s+it)?|set|extend|shorten|reduce|increase)\s+\d{1,2}\s+day(?:s)?\b",
+            raw
+        ))
+        plan_like = bool(re.search(
+            r"\b(plan|create|build|generate)\b.*\b(itinerary|trip)\b",
             raw
         ))
 
@@ -1195,8 +1232,28 @@ class OrchestratorService:
             r"\b(weather|forecast|rain|temperature|climate)\b",
             raw
         ))
+        if plan_like:
+            scores = dict(parsed_intent.scores or {})
+            scores["plan_itinerary"] = max(scores.get("plan_itinerary", 0.0), 0.95)
 
-        if active_trip_id and (duration_edit or date_edit or generic_modify) and not hotel_like and not weather_like:
+            # IMPORTANT: do NOT carry the active itinerary into a plan request
+            ents = (
+                parsed_intent.entities.model_dump(exclude_none=False)
+                if hasattr(parsed_intent.entities, "model_dump")
+                else dict(parsed_intent.entities or {})
+            )
+            ents.pop("itinerary_id", None)
+            ents.pop("current_itinerary", None)
+
+            parsed_intent = parsed_intent.model_copy(update={
+                "intent": "plan_itinerary",
+                "domain_category": "itinerary",
+                "confidence": float(scores.get("plan_itinerary", 0.95)),
+                "secondary_intents": [],
+                "scores": scores,
+                "entities": Entities(**ents),
+            })
+        if active_trip_id and (not plan_like) and (duration_edit or date_edit or generic_modify) and not hotel_like and not weather_like:
             scores = dict(parsed_intent.scores or {})
 
             # hard boost modify
@@ -1230,17 +1287,18 @@ class OrchestratorService:
             if resolved.trip_id:
                 session_state.slots["active_trip_id"] = resolved.trip_id
         # ✅ merge entities into session slots (save context)
+        # merge entities into session slots (save context)
         if session_state:
-            ents = (
-                parsed_intent.entities.model_dump(exclude_none=True)
-                if hasattr(parsed_intent.entities, "model_dump")
-                else (parsed_intent.entities or {})
-            )
+            ents = parsed_intent.entities.model_dump(exclude_none=True)
 
-            # merge new slots
             for k, v in ents.items():
                 if v in (None, "", [], {}, "unknown"):
                     continue
+
+                # ✅ avoid poisoning session before a plan is generated
+                if parsed_intent.intent == "plan_itinerary" and k in {"city", "destination", "active_place"}:
+                    continue
+
                 session_state.slots[k] = v
 
             # track last intent
@@ -1403,10 +1461,26 @@ class OrchestratorService:
 
                     title = f"{dest or 'Trip'} ({days or ''} days)".strip()
 
+                    
+
                     active_trip_id = session_state.slots.get("active_trip_id") if session_state else None
 
-                    if active_trip_id:
-                        # ✅ UPDATE same row
+                    # destination from response
+                    dest = meta.get("destination") or dest  # as you already compute
+
+                    # destination currently active in session
+                    active_trip_id = session_state.slots.get("active_trip_id") if session_state else None
+
+                    active_trip_dest = None
+                    if active_trip_id and user_id:
+                        trip = self.trip_repo.get_trip(trip_id=active_trip_id, user_id=user_id)
+                        if trip:
+                            active_trip_dest = (trip.destination or "").strip()
+
+                    is_new_trip = bool(dest) and bool(active_trip_dest) and dest.lower() != active_trip_dest.lower()
+
+                    if active_trip_id and not is_new_trip:
+                        # UPDATE same trip only if same destination (replan same trip)
                         self.trip_repo.update_trip_plan(
                             trip_id=active_trip_id,
                             title=title,
@@ -1417,7 +1491,7 @@ class OrchestratorService:
                         )
                         trip_id = active_trip_id
                     else:
-                        # ✅ CREATE new trip
+                        # ✅ CREATE new trip when destination changed OR no active trip
                         trip_id = self.trip_repo.create_trip(
                             user_id=user_id,
                             title=title,
@@ -1428,9 +1502,11 @@ class OrchestratorService:
                             plan_json=it_json,
                         )
 
-                    # ✅ THIS is where you put it (AFTER trip_id is decided)
+                    # ✅ set new active trip
                     if session_state and trip_id:
                         session_state.slots["active_trip_id"] = trip_id
+                        session_state.slots["active_place"] = dest
+                        session_state.slots["city"] = dest
 
                 continue
             elif ttype == "modify_itinerary":

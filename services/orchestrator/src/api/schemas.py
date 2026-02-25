@@ -33,6 +33,8 @@ class Entities(BaseModel):
     country: Optional[str] = None
 
     poi_name: Optional[str] = None
+    itinerary_id: Optional[str] = None
+    current_itinerary: Optional[dict] = None
 
     # NEW: what *kind* of POI in the KG
     poi_category: Optional[str] = None   # "attraction", "restaurant", "hotel", ...
