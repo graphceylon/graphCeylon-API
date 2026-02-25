@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import psycopg
 from .context_resolver import resolve_context
+from ..api.schemas import Entities 
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -34,6 +35,11 @@ import os
 
 from .mappers.crowd_mapper import map_crowd_request
 from .contracts.crowd import CrowdForecastResponse
+from ..api.schemas import AgentCallError
+from .clients.recommender_client import RecommenderClient
+from .contracts.itinerary_modify import ItineraryModifyResponse
+
+
 
 # Phase 3 semantic recall (local module)
 from ..profile_semantic.embedder import embed_texts, vector_literal
@@ -859,9 +865,9 @@ class OrchestratorService:
                 if trip and trip.plan_json:
                     # Put these into patched_intent.entities so mapper can pick them up
                     ents = (
-                        patched_intent.entities.model_dump(exclude_none=True)
-                        if hasattr(patched_intent.entities, "model_dump")
-                        else dict(patched_intent.entities or {})
+                        parsed_intent.entities.model_dump(exclude_none=False)
+                        if hasattr(parsed_intent.entities, "model_dump")
+                        else dict(parsed_intent.entities or {})
                     )
                     ents["itinerary_id"] = active_trip_id
                     ents["current_itinerary"] = trip.plan_json
@@ -967,8 +973,10 @@ class OrchestratorService:
                 )
             )
 
-        if raw is None:
-            return
+        if not raw:
+            return None
+        if isinstance(raw, dict) and raw.get("ok") is False:
+            return None
 
 
         # 7) Parse response ONCE (support response_model=None)
@@ -1081,7 +1089,7 @@ class OrchestratorService:
 
         # also handle "tomorrow" already extracted - fine
 
-        parsed_intent = parsed_intent.model_copy(update={"entities": ents})
+        parsed_intent = parsed_intent.model_copy(update={"entities": Entities(**ents)})
 
         active_trip_id = None
         if session_state:
@@ -1150,7 +1158,12 @@ class OrchestratorService:
             raw
         ))
 
-        if active_trip_id and (duration_edit or date_edit or generic_modify) and not hotel_like:
+        weather_like = bool(re.search(
+            r"\b(weather|forecast|rain|temperature|climate)\b",
+            raw
+        ))
+
+        if active_trip_id and (duration_edit or date_edit or generic_modify) and not hotel_like and not weather_like:
             scores = dict(parsed_intent.scores or {})
 
             # hard boost modify
@@ -1243,6 +1256,7 @@ class OrchestratorService:
             "transport_result": None,
             "attraction_result": None,
         }
+        errors: List[AgentCallError] = []
 
                 # ---------------------------
         # NEW: Execute task graph (DAG)
@@ -1261,10 +1275,22 @@ class OrchestratorService:
         for t in exec_tasks:
             ttype = (t.type or "").strip()
 
-            if ttype in {"parse_intent", "extract_entities", "format_response"}:
-                async def _noop(task, ctx, results):
-                    return {"ok": True}
-                fn = _noop
+            if ttype == "parse_intent":
+                async def _parse(task, ctx, results, pi=parsed_intent):
+                    # give executor something meaningful
+                    return pi.model_dump(mode="json") if hasattr(pi, "model_dump") else dict(pi)
+                fn = _parse
+
+            elif ttype == "extract_entities":
+                async def _extract(task, ctx, results, pi=parsed_intent):
+                    ents = pi.entities
+                    return ents.model_dump(mode="json") if hasattr(ents, "model_dump") else dict(ents or {})
+                fn = _extract
+
+            elif ttype == "format_response":
+                async def _format(task, ctx, results):
+                    return {"ok": True}   # fine as noop
+                fn = _format
 
             elif ttype in self.handlers:
                 def make_handler(intent_name: str):
@@ -1285,7 +1311,6 @@ class OrchestratorService:
                     return {"ok": False, "error": f"Unknown task type: {tt}"}
                 fn = _unknown
 
-            # register both keys (NO extra overwrite)
             handlers[ttype] = fn
             handlers[t.id] = fn
 
@@ -1307,6 +1332,19 @@ class OrchestratorService:
         for task in exec_tasks:
             out = dag_results.get(task.id)
             if not out:
+                continue
+
+            # If handler returned a failure dict, convert it into an AgentCallError
+            if isinstance(out, dict) and out.get("ok") is False:
+                errors.append(
+                    AgentCallError(
+                        agent=str(out.get("agent") or "unknown"),
+                        endpoint=str(out.get("endpoint") or self.handlers.get(task.type).endpoint if task.type in self.handlers else ""),
+                        status_code=int(out.get("status_code") or 0),
+                        error=str(out.get("error") or "Downstream call failed"),
+                        detail=out,
+                    )
+                )
                 continue
 
             ttype = task.type
@@ -1464,7 +1502,7 @@ class OrchestratorService:
             )
 
         return OrchestrateResponse(
-            status="ok",
+            status="partial" if errors else "ok",
             message="Orchestration executed.",
             parsed_intent=parsed_intent,
             tasks=tasks,
@@ -1481,4 +1519,5 @@ class OrchestratorService:
             final_message=formatted.get("text"),
             followups=formatted.get("followups"),
             trip_id=trip_id,
+            errors=errors,
         )

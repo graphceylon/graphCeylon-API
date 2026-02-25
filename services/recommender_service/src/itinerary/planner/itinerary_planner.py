@@ -15,6 +15,8 @@ from .resolve_travel_mode import resolve_travel_mode
 from .gate import needs_clarification
 from .city_planner import get_candidates_city
 from .corridor_planner import get_candidates_corridor
+import os
+import httpx
 
 from copy import deepcopy
 from typing import Literal
@@ -191,13 +193,101 @@ class PlannerConfig:
 # Dynamic priority extraction
 # ----------------------------
 
+KG_BASE_URL = os.getenv("KG_BASE_URL", "http://localhost:8000").rstrip("/")
+KG_SUB_ATTRACTIONS_PATH = "/sub-attractions/orchestrator/call/sub-attractions"
+
+
+def _parse_coords_from_kg(x: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+    c = x.get("coordinates")
+    if isinstance(c, str) and "," in c:
+        a, b = c.split(",", 1)
+        try:
+            return float(a.strip()), float(b.strip())
+        except Exception:
+            return None, None
+    # also support lat/lng fields if KG returns them later
+    lat = x.get("lat") or x.get("latitude")
+    lng = x.get("lng") or x.get("longitude")
+    try:
+        return (float(lat), float(lng)) if lat is not None and lng is not None else (None, None)
+    except Exception:
+        return None, None
+
+
+def _kg_item_to_candidate(x: Dict[str, Any]) -> Dict[str, Any]:
+    title = x.get("title") or x.get("name") or ""
+    district = x.get("district") or x.get("city") or ""
+
+    # ✅ pass a dict (normalize expects dict-like raw)
+    attraction_id = x.get("attraction_id") or normalize_to_attraction_id({
+        "title": title,
+        "district": district,
+        "city": x.get("city"),
+        "province": x.get("province"),
+        "name": x.get("name"),
+    })
+
+    lat, lng = _parse_coords_from_kg(x)
+
+    return {
+        "attraction_id": attraction_id,
+        "title": title,
+        "category": x.get("category"),
+        "description": x.get("description"),
+        "city": x.get("city"),
+        "district": x.get("district"),
+        "province": x.get("province"),
+        "location": x.get("location"),
+        "rating": x.get("rating"),
+        "lat": lat,
+        "lng": lng,
+        "source": x.get("source", "kg_service"),
+        "_kg_raw": x,
+    }
+
+
+def fetch_city_attractions_from_kg(
+    city: str,
+    country: str = "Sri Lanka",
+    limit: int = 60,
+    timeout: float = 20.0,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Calls KG endpoint and returns (candidates, debug)
+    """
+    url = f"{KG_BASE_URL}{KG_SUB_ATTRACTIONS_PATH}"
+    payload = {
+        "city": city,
+        "country": country,
+        "limit": limit,
+    }
+
+    with httpx.Client(timeout=timeout) as client:
+        r = client.post(url, json=payload)
+        r.raise_for_status()
+        data = r.json()
+
+    items = data.get("items") or []
+    candidates = [_kg_item_to_candidate(x) for x in items if isinstance(x, dict)]
+
+    debug = {
+        "kg_url": url,
+        "kg_payload": payload,
+        "kg_returned": len(items),
+        "candidates_returned": len(candidates),
+    }
+    return candidates, debug
+
 @dataclass
 class Priority:
     key: str                # canonical key e.g. "eco-friendly"
     weight: float           # higher means more important
     source: str             # "raw_text" | "structured"
     matched_phrase: str     # what matched in text
-
+@dataclass
+class CandidatesResult:
+    candidates: List[Dict[str, Any]]
+    debug: Dict[str, Any]
 
 def _normalize_text(s: str) -> str:
     s = (s or "").lower()
@@ -662,11 +752,28 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         )
         kg_mode = "corridor"
     else:
-        res = get_candidates_city(
-            payload=payload,
-            kg_path=kg_path,
+        # ✅ NEW: fetch from KG endpoint instead of attractions_clean.json
+        city_for_query = tm.destination_city or city
+        candidates, kg_dbg = fetch_city_attractions_from_kg(
+            city=city_for_query,
+            country=country,
             limit=int(payload.get("max_candidates", cfg.max_candidates)),
+            timeout=20.0,
         )
+
+        # add scoring hints (so later pipeline still works)
+        for c in candidates:
+            c["_eco_hint"] = _eco_score_hint(c)
+            # keep your existing scoring field names consistent
+            c["_score"] = float(c.get("_score", 0.0))  # you can compute a base score if needed
+
+            # optional: store features if you print them
+            c["_features"] = {
+                "eco_hint": float(c.get("_eco_hint", 0.5)),
+                # "proximity": ... (only if you compute it)
+            }
+
+        res = CandidatesResult(candidates=candidates, debug=kg_dbg)
         kg_mode = "city"
     dbg = getattr(res, "debug", None) or {}
 

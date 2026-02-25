@@ -100,17 +100,31 @@ class TaskSummary(BaseModel):
     assigned_agent: Optional[str] = None
 
 
+class AgentCallError(BaseModel):
+    agent: str
+    endpoint: str
+    status_code: int
+    error: str
+    detail: Optional[Any] = None
+
 class OrchestrateResponse(BaseModel):
     status: str
     message: str
     parsed_intent: ParsedIntent
     tasks: list[TaskSummary]
     protocol_mode: str
+
     weather_result: Optional[WeatherForecastResponse] = None
     crowd_result: Optional[CrowdForecastResponse] = None
-    price_result : Optional[PriceForecastResponse] = None
-    itinerary_result :Optional[ItineraryPlanResponse] = None
-    modify_result :Optional[ItineraryModifyResponse] = None
+    price_result: Optional[PriceForecastResponse] = None
+    itinerary_result: Optional[ItineraryPlanResponse] = None
+
+    # ✅ keep modify_result ONLY for success payloads
+    modify_result: Optional[ItineraryModifyResponse] = None
+
+    # ✅ new: errors list for downstream failures
+    errors: List[AgentCallError] = Field(default_factory=list)
+
     visa_result: Optional[VisaPolicyResponse] = None
     accommodation_result: Optional[Any] = None
     transport_result: Optional[Any] = None
@@ -123,7 +137,4 @@ class OrchestrateResponse(BaseModel):
 
 
 
-
-
-
-
+    
