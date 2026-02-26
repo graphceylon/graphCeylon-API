@@ -139,30 +139,39 @@ class TripRepo:
                         version=row[7],
                         plan_json=row[8] if isinstance(row[8], dict) else {},
                     )
-    def get_trip(self, *, trip_id: str, user_id: str) -> Optional[TripPlanRow]:
+    def get_trip(self, *, trip_id: str) -> Optional[Dict[str, Any]]:
         sql = """
         SELECT trip_id::text, user_id, title, destination,
-               start_date::text, travel_month::text, days, version, plan_json
+            start_date::text, travel_month::text, days, version, plan_json
         FROM trip_plans
-        WHERE trip_id = %s::uuid AND user_id = %s
+        WHERE trip_id = %s::uuid
+        LIMIT 1
         """
         with psycopg.connect(self.dsn) as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (trip_id, user_id))
+                cur.execute(sql, (trip_id,))
                 row = cur.fetchone()
                 if not row:
                     return None
-                return TripPlanRow(
-                    trip_id=row[0],
-                    user_id=row[1],
-                    title=row[2],
-                    destination=row[3],
-                    start_date=row[4],
-                    travel_month=row[5],
-                    days=row[6],
-                    version=row[7],
-                    plan_json=row[8] if isinstance(row[8], dict) else {},
-                )
+
+                plan_json = row[8]
+                if isinstance(plan_json, str):
+                    try:
+                        plan_json = json.loads(plan_json)
+                    except Exception:
+                        plan_json = {}
+
+                return {
+                    "trip_id": row[0],
+                    "user_id": row[1],
+                    "title": row[2],
+                    "destination": row[3],
+                    "start_date": row[4],
+                    "travel_month": row[5],
+                    "days": row[6],
+                    "version": row[7],
+                    "plan_json": plan_json if isinstance(plan_json, dict) else {},
+                }
     def get_latest_trip_for_user(self, *, user_id: str) -> Optional[TripPlanRow]:
         """
         Fallback: return user's most recently updated trip.
