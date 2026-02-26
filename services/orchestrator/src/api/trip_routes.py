@@ -16,8 +16,19 @@ def list_trips(
     return repo.list_trips(user_id=user_id, limit=limit)
 
 @router.get("/{trip_id}")
-def get_trip(trip_id: str) -> Dict[str, Any]:
-    trip = repo.get_trip(trip_id=trip_id)
+def get_trip(trip_id: str, user_id: str = Query(None)) -> Dict[str, Any]:
+    trip = repo.get_trip(trip_id=trip_id, user_id=user_id)
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")
-    return trip
+
+    return {
+        "trip_id": trip.trip_id,
+        "user_id": trip.user_id,
+        "title": trip.title,
+        "destination": trip.destination,
+        "start_date": trip.start_date,
+        "travel_month": trip.travel_month,
+        "days": trip.days,
+        "version": trip.version,
+        "plan_json": trip.plan_json,
+    }
