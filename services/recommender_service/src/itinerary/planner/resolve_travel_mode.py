@@ -13,19 +13,7 @@ def resolve_travel_mode(payload: Dict[str, Any]) -> TravelMode:
     tm = payload.get("travel_mode") or {}
     geo_mode = (payload.get("geo_scope") or {}).get("mode")
 
-    tm_type = str(tm.get("type") or geo_mode or "city").lower()
-
-    # ✅ HARD OVERRIDE: if caller forced city mode, respect it
-    if tm_type == "city":
-        return TravelMode(
-            type="city",
-            origin_city=None,              # not relevant for destination-only plan
-            destination_city=dest,
-            include_stops=False,
-            origin_confidence="explicit",
-            assumptions=[],
-        )
-
+    # ✅ read origin early (before any returns)
     origin_city = str(
         tm.get("origin_city")
         or payload.get("origin_city")
@@ -35,17 +23,37 @@ def resolve_travel_mode(payload: Dict[str, Any]) -> TravelMode:
 
     include_stops = bool(tm.get("include_stops")) or bool(payload.get("on_the_way"))
 
+    # ✅ ONLY treat "city" as a hard override if the CALLER explicitly set travel_mode.type
+    explicit_tm_type = (tm.get("type") or "")
+    explicit_tm_type = str(explicit_tm_type).lower().strip() if explicit_tm_type else None
+
+    # If caller explicitly forced city mode, respect it (even if origin exists)
+    if explicit_tm_type == "city":
+        return TravelMode(
+            type="city",
+            origin_city=origin_city,        # keep it for logging/debug if you want
+            destination_city=dest,
+            include_stops=False,
+            origin_confidence="explicit" if origin_city else "unknown",
+            assumptions=[],
+        )
+
+    # Otherwise: infer mode from origin/dest + include_stops + geo_scope
+    tm_type = str(tm.get("type") or geo_mode or "city").lower()
+
     assumptions = []
     origin_conf = "unknown"
 
-    # ✅ If origin provided
     if origin_city:
         origin_conf = "explicit"
-
-        # ✅ Route trip detected (origin != dest) => corridor
+        # ✅ if origin != dest -> corridor
         if origin_city.lower() != dest.lower():
             tm_type = "corridor"
-            include_stops = True if tm.get("include_stops") is None else bool(tm.get("include_stops"))
+            # default include_stops True unless explicitly false
+            if tm.get("include_stops") is None:
+                include_stops = True
+            else:
+                include_stops = bool(tm.get("include_stops"))
 
     wants_corridor = (tm_type == "corridor") or include_stops
 
