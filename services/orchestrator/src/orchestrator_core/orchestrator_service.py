@@ -7,6 +7,7 @@ import psycopg
 from .context_resolver import resolve_context
 from ..api.schemas import Entities 
 
+
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Type
@@ -126,6 +127,71 @@ def has_explicit_other_intent(text: str) -> bool:
     if any(k in t for k in EXPLICIT_WEATHER): return True
     if any(k in t for k in EXPLICIT_TRANSPORT): return True
     return False
+
+def apply_intent_policy(parsed_intent: ParsedIntent, req_text: str, session_state: Optional[SessionState]) -> ParsedIntent:
+    raw = norm(req_text)
+    ents = parsed_intent.entities
+
+    active_trip_id = None
+    if session_state:
+        active_trip_id = session_state.slots.get("active_trip_id")
+    active_trip = bool(active_trip_id)
+
+    # --- signals ---
+    plan_like = has_plan_signal(raw)
+    edit_like = has_edit_signal(raw, ents)
+
+    hotel_like = bool(re.search(r"\b(hotel|book|booking|reserve|reservation|check[-\s]?in|check[-\s]?out)\b", raw))
+    weather_like = bool(re.search(r"\b(weather|forecast|rain|temperature|climate)\b", raw))
+    visa_like = bool(re.search(r"\b(visa|eta|entry)\b", raw))
+    transport_like = bool(re.search(r"\b(bus|train|taxi|transport|route|how to go)\b", raw))
+
+    # --- RULE 0: if user is explicitly asking hotel/weather/visa/transport, never override to itinerary ---
+    if hotel_like or weather_like or visa_like or transport_like:
+        return parsed_intent
+
+    # --- RULE 1: planning beats modify (even if active trip exists) ---
+    if plan_like:
+        scores = dict(parsed_intent.scores or {})
+        scores["plan_itinerary"] = max(scores.get("plan_itinerary", 0.0), 0.95)
+
+        ents_dict = ents.model_dump(exclude_none=False) if hasattr(ents, "model_dump") else dict(ents or {})
+        # do not carry active itinerary into a new plan
+        ents_dict.pop("itinerary_id", None)
+        ents_dict.pop("current_itinerary", None)
+
+        return parsed_intent.model_copy(update={
+            "intent": "plan_itinerary",
+            "domain_category": "itinerary",
+            "confidence": float(scores.get("plan_itinerary", 0.95)),
+            "secondary_intents": [],
+            "scores": scores,
+            "entities": Entities(**ents_dict),
+        })
+
+    # --- RULE 2: modify only when active trip exists + edit signal ---
+    if active_trip and edit_like:
+        scores = dict(parsed_intent.scores or {})
+        scores["modify_itinerary"] = max(scores.get("modify_itinerary", 0.0), 0.95)
+
+        # suppress booking-like secondaries if they exist
+        for k in ["book_hotel", "cancel_booking", "modify_booking", "check_availability"]:
+            if k in scores:
+                scores[k] = min(scores[k], 0.01)
+
+        ents_dict = ents.model_dump(exclude_none=True) if hasattr(ents, "model_dump") else dict(ents or {})
+        ents_dict["itinerary_id"] = active_trip_id
+
+        return parsed_intent.model_copy(update={
+            "intent": "modify_itinerary",
+            "domain_category": "itinerary",
+            "confidence": 0.95,
+            "secondary_intents": [],
+            "scores": scores,
+            "entities": Entities(**ents_dict),
+        })
+
+    return parsed_intent
 def has_edit_signal(text: str, entities) -> bool:
     t = norm(text)
 
@@ -1149,6 +1215,14 @@ class OrchestratorService:
         if not ents.get("country"):
             ents["country"] = (resolved.country if hasattr(resolved, "country") else None) or \
                             (session_state.slots.get("country") if session_state else None)
+            
+                # ✅ carry origin from session if user already provided it (for corridor routing)
+        if session_state and not ents.get("origin_city"):
+            ents["origin_city"] = session_state.slots.get("origin_city")
+
+        # (optional if your schema uses "origin" sometimes)
+        if session_state and not ents.get("origin"):
+            ents["origin"] = session_state.slots.get("origin")
 
         # also handle "tomorrow" already extracted - fine
 
@@ -1192,93 +1266,93 @@ class OrchestratorService:
         #     })
 
         # active_trip_id is decided above
-        raw = (req.input_text or "").lower().strip()
-        def is_plan_request(raw: str) -> bool:
-            return bool(re.search(r"\b(plan|create|build|generate)\b.*\b(itinerary|trip)\b", raw))
-        plan_like = is_plan_request(raw)
+        # raw = (req.input_text or "").lower().strip()
+        # def is_plan_request(raw: str) -> bool:
+        #     return bool(re.search(r"\b(plan|create|build|generate)\b.*\b(itinerary|trip)\b", raw))
+        # plan_like = is_plan_request(raw)
 
-        refers = any(w in raw for w in ["there", "it", "that place", "that city", "in that area"])
+        # refers = any(w in raw for w in ["there", "it", "that place", "that city", "in that area"])
 
-        if refers and not ents.get("city") and session_state:
-            ents["city"] = session_state.slots.get("active_place") or session_state.slots.get("city")
-            ents["country"] = ents.get("country") or session_state.slots.get("country")
+        # if refers and not ents.get("city") and session_state:
+        #     ents["city"] = session_state.slots.get("active_place") or session_state.slots.get("city")
+        #     ents["country"] = ents.get("country") or session_state.slots.get("country")
 
-        duration_edit = bool(re.search(
-            r"\b(?:make(?:\s+it)?|change(?:\s+it)?|set|extend|shorten|reduce|increase)\s+\d{1,2}\s+day(?:s)?\b",
-            raw
-        ))
-        plan_like = bool(re.search(
-            r"\b(plan|create|build|generate)\b.*\b(itinerary|trip)\b",
-            raw
-        ))
+        # duration_edit = bool(re.search(
+        #     r"\b(?:make(?:\s+it)?|change(?:\s+it)?|set|extend|shorten|reduce|increase)\s+\d{1,2}\s+day(?:s)?\b",
+        #     raw
+        # ))
+        # plan_like = bool(re.search(
+        #     r"\b(plan|create|build|generate)\b.*\b(itinerary|trip)\b",
+        #     raw
+        # ))
 
-        date_edit = bool(re.search(
-            r"\b(?:start|begin)\s+(?:the\s+trip\s+)?on\s+\d{4}-\d{2}-\d{2}\b",
-            raw
-        )) or bool(getattr(parsed_intent.entities, "start_date", None))
+        # date_edit = bool(re.search(
+        #     r"\b(?:start|begin)\s+(?:the\s+trip\s+)?on\s+\d{4}-\d{2}-\d{2}\b",
+        #     raw
+        # )) or bool(getattr(parsed_intent.entities, "start_date", None))
 
-        # if user is clearly talking about hotels/bookings, don't force modify
-        hotel_like = bool(re.search(
-            r"\b(hotel|book|booking|reserve|reservation|check[-\s]?in|check[-\s]?out)\b",
-            raw
-        ))
+        # # if user is clearly talking about hotels/bookings, don't force modify
+        # hotel_like = bool(re.search(
+        #     r"\b(hotel|book|booking|reserve|reservation|check[-\s]?in|check[-\s]?out)\b",
+        #     raw
+        # ))
 
-        generic_modify = bool(re.search(
-            r"\b(modify|change|update|edit|remove|delete|drop|swap|move|redo|regenerate|replan)\b",
-            raw
-        ))
+        # generic_modify = bool(re.search(
+        #     r"\b(modify|change|update|edit|remove|delete|drop|swap|move|redo|regenerate|replan)\b",
+        #     raw
+        # ))
 
-        weather_like = bool(re.search(
-            r"\b(weather|forecast|rain|temperature|climate)\b",
-            raw
-        ))
-        if plan_like:
-            scores = dict(parsed_intent.scores or {})
-            scores["plan_itinerary"] = max(scores.get("plan_itinerary", 0.0), 0.95)
+        # weather_like = bool(re.search(
+        #     r"\b(weather|forecast|rain|temperature|climate)\b",
+        #     raw
+        # ))
+        # if plan_like:
+        #     scores = dict(parsed_intent.scores or {})
+        #     scores["plan_itinerary"] = max(scores.get("plan_itinerary", 0.0), 0.95)
 
-            # IMPORTANT: do NOT carry the active itinerary into a plan request
-            ents = (
-                parsed_intent.entities.model_dump(exclude_none=False)
-                if hasattr(parsed_intent.entities, "model_dump")
-                else dict(parsed_intent.entities or {})
-            )
-            ents.pop("itinerary_id", None)
-            ents.pop("current_itinerary", None)
+        #     # IMPORTANT: do NOT carry the active itinerary into a plan request
+        #     ents = (
+        #         parsed_intent.entities.model_dump(exclude_none=False)
+        #         if hasattr(parsed_intent.entities, "model_dump")
+        #         else dict(parsed_intent.entities or {})
+        #     )
+        #     ents.pop("itinerary_id", None)
+        #     ents.pop("current_itinerary", None)
 
-            parsed_intent = parsed_intent.model_copy(update={
-                "intent": "plan_itinerary",
-                "domain_category": "itinerary",
-                "confidence": float(scores.get("plan_itinerary", 0.95)),
-                "secondary_intents": [],
-                "scores": scores,
-                "entities": Entities(**ents),
-            })
-        if active_trip_id and (not plan_like) and (duration_edit or date_edit or generic_modify) and not hotel_like and not weather_like:
-            scores = dict(parsed_intent.scores or {})
+        #     parsed_intent = parsed_intent.model_copy(update={
+        #         "intent": "plan_itinerary",
+        #         "domain_category": "itinerary",
+        #         "confidence": float(scores.get("plan_itinerary", 0.95)),
+        #         "secondary_intents": [],
+        #         "scores": scores,
+        #         "entities": Entities(**ents),
+        #     })
+        # if active_trip_id and (not plan_like) and (duration_edit or date_edit or generic_modify) and not hotel_like and not weather_like:
+        #     scores = dict(parsed_intent.scores or {})
 
-            # hard boost modify
-            scores["modify_itinerary"] = 0.95
+        #     # hard boost modify
+        #     scores["modify_itinerary"] = 0.95
 
-            # suppress booking branches so cancel_booking/book_hotel doesn't get scheduled
-            for k in ["book_hotel", "cancel_booking", "modify_booking", "check_availability"]:
-                if k in scores:
-                    scores[k] = min(scores[k], 0.01)
+        #     # suppress booking branches so cancel_booking/book_hotel doesn't get scheduled
+        #     for k in ["book_hotel", "cancel_booking", "modify_booking", "check_availability"]:
+        #         if k in scores:
+        #             scores[k] = min(scores[k], 0.01)
 
-            ents = (
-                parsed_intent.entities.model_dump(exclude_none=True)
-                if hasattr(parsed_intent.entities, "model_dump")
-                else dict(parsed_intent.entities or {})
-            )
-            ents["itinerary_id"] = active_trip_id
+        #     ents = (
+        #         parsed_intent.entities.model_dump(exclude_none=True)
+        #         if hasattr(parsed_intent.entities, "model_dump")
+        #         else dict(parsed_intent.entities or {})
+        #     )
+        #     ents["itinerary_id"] = active_trip_id
 
-            parsed_intent = parsed_intent.model_copy(update={
-                "intent": "modify_itinerary",
-                "domain_category": "itinerary",
-                "confidence": 0.95,
-                "secondary_intents": [],   # ✅ critical
-                "scores": scores,          # ✅ critical
-                "entities": Entities(**ents),
-            })
+        #     parsed_intent = parsed_intent.model_copy(update={
+        #         "intent": "modify_itinerary",
+        #         "domain_category": "itinerary",
+        #         "confidence": 0.95,
+        #         "secondary_intents": [],   # ✅ critical
+        #         "scores": scores,          # ✅ critical
+        #         "entities": Entities(**ents),
+        #     })
 
         # ✅ update session slots (active context)
         if session_state:
@@ -1332,8 +1406,92 @@ class OrchestratorService:
                     },
                 )
             )
-        active_trip = bool(active_trip_id)
-        parsed_intent = resolve_intent(parsed_intent, req.input_text, active_trip)
+        # active_trip = bool(active_trip_id)
+        # parsed_intent = resolve_intent(parsed_intent, req.input_text, active_trip)
+        parsed_intent = apply_intent_policy(parsed_intent, req.input_text, session_state)
+
+        # after: parsed_intent = apply_intent_policy(...)
+
+        def _is_unknown_origin(text: str) -> bool:
+            t = (text or "").strip().lower()
+            return t in {"idk", "i don't know", "dont know", "not sure", "no idea", "skip", "ignore"}
+
+        # --- 1) If we previously asked for origin, consume this message as the answer ---
+        if session_state and session_state.slots.get("pending_clarification") == "origin_city":
+            raw = (req.input_text or "").strip()
+
+            if _is_unknown_origin(raw):
+                # user refused/doesn't know → stop asking, plan destination-only
+                session_state.slots.pop("pending_clarification", None)
+                session_state.slots.pop("clarification_attempts", None)
+
+            else:
+                # treat message as origin
+                session_state.slots["origin_city"] = raw
+                session_state.slots.pop("pending_clarification", None)
+
+                # patch entities with origin so plan_itinerary sees it
+                ents = parsed_intent.entities.model_dump(exclude_none=False)
+                ents["origin_city"] = raw
+                parsed_intent = parsed_intent.model_copy(update={"entities": Entities(**ents)})
+
+        # --- 2) If it’s a plan request and origin missing, ask first (gate) ---
+        if parsed_intent.intent == "plan_itinerary" and session_state:
+            ents = parsed_intent.entities.model_dump(exclude_none=False)
+            dest = ents.get("city") or ents.get("destination")
+            origin = ents.get("origin_city") or ents.get("origin") or session_state.slots.get("origin_city")
+
+            attempts = int(session_state.slots.get("clarification_attempts", 0))
+
+            if dest and not origin and attempts < 2:
+                session_state.slots["pending_clarification"] = "origin_city"
+                session_state.slots["pending_destination"] = dest
+                session_state.slots["clarification_attempts"] = attempts + 1
+
+                # save session before returning (important)
+                if user_id and session_id != "no_session":
+                    self.session_store.save(user_id=user_id, session_id=session_id, state=session_state.to_dict())
+
+                question = f"Where are you coming from (e.g., Colombo)? If you’re already in {dest} or not sure, just say “skip” and I’ll plan {dest}-only."
+
+                return OrchestrateResponse(
+                    status="ok",
+                    message="Need clarification.",
+                    parsed_intent=parsed_intent,
+                    tasks=[],  # no DAG run yet
+                    protocol_mode=self.protocol_mode,
+                    weather_result=None,
+                    crowd_result=None,
+                    price_result=None,
+                    itinerary_result=None,
+                    modify_result=None,
+                    visa_result=None,
+                    accommodation_result=None,
+                    pois_result=None,
+                    transport_result=None,
+                    attraction_result=None,
+                    final_message=question,
+                    followups=[f"Starting from Colombo", f"Already in {dest}", "Skip"],
+                    trip_id=trip_id,
+                    errors=[],
+                )
+
+
+
+        # ✅ if we asked for origin previously, try to treat the new message as origin
+        if session_state and session_state.slots.get("pending_clarification") == "origin_city":
+            attempts = int(session_state.slots.get("clarification_attempts", 0))
+            raw = (req.input_text or "").strip()
+
+            # If user says "don't know" etc → stop asking and continue destination-only
+            if raw.lower() in {"idk", "i don't know", "dont know", "not sure", "no idea"}:
+                session_state.slots.pop("pending_clarification", None)
+
+            else:
+                # Treat entire text as origin city (simple approach)
+                # (later you can add NER / place extractor)
+                session_state.slots["origin_city"] = raw
+                session_state.slots.pop("pending_clarification", None)
         tasks: List[TaskSummary] = self.task_graph_builder.build(parsed_intent)
 
         results: Dict[str, Any] = {
@@ -1347,6 +1505,7 @@ class OrchestratorService:
             "transport_result": None,
             "attraction_result": None,
             "pois_result": None, 
+            "route_clarification": None,
         }
         errors: List[AgentCallError] = []
 
@@ -1382,6 +1541,42 @@ class OrchestratorService:
                 async def _format(task, ctx, results):
                     return {"ok": True}
                 fn = _format
+            elif ttype == "forecast_weather":
+                async def _weather(task, ctx, results):
+                    # Try to inherit from plan_itinerary output if available
+                    it_out = results.get("plan_itinerary") or results.get("T3")  # depends on how executor stores keys
+
+                    ents = (
+                        parsed_intent.entities.model_dump(exclude_none=False)
+                        if hasattr(parsed_intent.entities, "model_dump")
+                        else dict(parsed_intent.entities or {})
+                    )
+
+                    if not ents.get("start_date") and it_out:
+                        it_json = it_out.model_dump(mode="json") if hasattr(it_out, "model_dump") else dict(it_out)
+                        meta = it_json.get("meta") or {}
+
+                        if meta.get("start_date"):
+                            ents["start_date"] = meta["start_date"]
+                        if meta.get("days") and not ents.get("days"):
+                            ents["days"] = meta["days"]
+                        if meta.get("destination") and not ents.get("city"):
+                            ents["city"] = meta["destination"]
+                        if meta.get("country") and not ents.get("country"):
+                            ents["country"] = meta["country"]
+
+                    patched_pi = parsed_intent.model_copy(update={"entities": Entities(**ents)})
+
+                    return await anyio.to_thread.run_sync(
+                        self._execute_intent,
+                        "forecast_weather",
+                        patched_pi,
+                        req,
+                        db_prefs,
+                        session_state,
+                    )
+
+                fn = _weather
 
             elif ttype in self.handlers:
                 def make_handler(intent_name: str):
@@ -1446,6 +1641,38 @@ class OrchestratorService:
 
                 it_res = out
                 it_json = it_res.model_dump(mode="json") if hasattr(it_res, "model_dump") else dict(it_res)
+
+                # --- ADD THIS AFTER it_json IS CREATED (still inside plan_itinerary block) ---
+                route_plan = (it_json.get("plans") or {}).get("route_plan") or {}
+                needs_origin = (
+                    isinstance(route_plan, dict)
+                    and route_plan.get("status") == "needs_clarification"
+                    and route_plan.get("reason") == "origin_required_for_corridor"
+                )
+
+                # current extracted entities
+                ents_now = (
+                    parsed_intent.entities.model_dump(exclude_none=False)
+                    if hasattr(parsed_intent.entities, "model_dump")
+                    else dict(parsed_intent.entities or {})
+                )
+
+                origin_missing = not (ents_now.get("origin") or ents_now.get("origin_city"))
+
+                if needs_origin and origin_missing:
+                    # ✅ Save clarification in results so formatter can add it nicely
+                    results["route_clarification"] = {
+                        "type": "clarify_origin",
+                        "question": route_plan.get("question")
+                            or "Where are you starting from (e.g., Colombo), or are you already in Kandy? If you’re not sure, I can still plan just Kandy.",
+                        "options": route_plan.get("options") or ["Starting from Colombo", "Already in Kandy", "Other / Not sure"]
+                    }
+
+                    # ✅ Save in session so next message can fill it
+                    if session_state:
+                        session_state.slots["pending_clarification"] = "origin_city"
+                        session_state.slots["pending_destination"] = (it_json.get("meta") or {}).get("destination")
+                        session_state.slots["clarification_attempts"] = int(session_state.slots.get("clarification_attempts", 0)) + 1
 
                 ok = (it_json.get("status") == "ok") or (it_json.get("ok") is True)
                 if ok:
@@ -1605,6 +1832,13 @@ class OrchestratorService:
             results=results,
             tasks=[t.model_dump(mode="json") for t in tasks],
         )
+
+        # ✅ If planner asked for origin clarification, append it to final message
+        rc = results.get("route_clarification")
+        if rc and isinstance(formatted, dict):
+            formatted["text"] = (formatted.get("text") or "") + "\n\n" + str(rc.get("question") or "")
+            if rc.get("options"):
+                formatted["followups"] = (formatted.get("followups") or []) + list(rc["options"])
         if session_state and user_id and session_id != "no_session":
             self.session_store.save(
                 user_id=user_id,
