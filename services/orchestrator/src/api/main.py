@@ -8,7 +8,7 @@ from .events_routes import router as events_router
 
 from .phase2_routes import router as phase2_router
 from .semantic_routes import router as semantic_router
-
+from .trip_routes import router as trips_router
 
 
 
@@ -22,10 +22,11 @@ app.include_router(events_router)
 
 app.include_router(phase2_router)
 app.include_router(semantic_router)
+app.include_router(trips_router)
 
 intent_parser_agent = IntentParserAgent(
-    model_dir=r"C:/Users/HP/OneDrive/Documents/graphCeylon-API/models/orchestrator/intent_multilabel_final_v4",
-    #model_dir=r"/Users/dev/Desktop/graphCeylon-API/models/orchestrator/intent_multilabel_final_v4",
+    # model_dir=r"C:/Users/HP/OneDrive/Documents/graphCeylon-API/models/orchestrator/intent_multilabel_final_v4",
+    model_dir=r"/Users/dev/Desktop/graphCeylon-API/models/orchestrator/intent_multilabel_final_v4",
     threshold=0.2,
     top_k_if_empty=2,
 )

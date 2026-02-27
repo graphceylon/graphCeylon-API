@@ -1,5 +1,5 @@
-from typing import Optional, List
-from pydantic import BaseModel
+from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field
 from .common import BaseLocationTimeRequest
 
 
@@ -14,7 +14,8 @@ class RecommendPOIsRequest(BaseLocationTimeRequest):
 
 
 class RecommendPOIsResponse(BaseModel):
-    city: Optional[str]
-    country: Optional[str]
-
-    recommendations: List[dict]   # each dict = POI card
+    status: str = "ok"
+    mode: Optional[str] = None
+    city: Optional[str] = None
+    country: Optional[str] = None
+    items: List[Dict[str, Any]] = Field(default_factory=list)

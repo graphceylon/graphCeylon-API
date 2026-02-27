@@ -12,12 +12,27 @@ class CrowdForecastRequest(BaseLocationTimeRequest):
 
 
 class CrowdForecastResponse(BaseModel):
-    location: str                 # city or poi_name chosen by service
-    start_date: str
-    end_date: str
-    time_of_day: Optional[str] = None
-    crowd_level: str              # "low" | "medium" | "high"
-    confidence: Optional[float] = None
-    summary: str
-    daily: List[Dict[str, Any]] = []
+    poi_id: str
+    poi_title: Optional[str] = None
+    district: Optional[str] = None
+    province: Optional[str] = None
+    month_start: str
+
+    total_foreign_arrivals_month: Optional[float] = None
+    foreign_in_target_district_mean: Optional[float] = None
+    foreign_to_poi_mean: Optional[float] = None
+    domestic_multiplier_used: Optional[float] = None
+
+    estimated_monthly_visitors_mean: Optional[float] = None
+    avg_daily_visitors_mean: Optional[float] = None
+
+    capacity_per_day: Optional[float] = None
+    crowd_index_mean: Optional[float] = None
+
+    thresholds: Optional[Dict[str, float]] = None
+    crowd_level: str
+
+    drivers: Optional[List[str]] = None
+    uncertainty: Optional[Dict[str, Any]] = None
+    arrivals_source: Optional[str] = None
 

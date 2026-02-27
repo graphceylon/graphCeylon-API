@@ -1,39 +1,50 @@
+from typing import Any, Dict
 from ...api.schemas import OrchestrateRequest, ParsedIntent
 from ..contracts.itinerary_modify import ItineraryModifyRequest
-from ..utils.pref_access import pref_get
+from .modify_ops_builder import build_modify_ops
 
+def map_itinerary_modify_request(
+    parsed_intent: ParsedIntent,
+    req: OrchestrateRequest,
+) -> ItineraryModifyRequest:
 
-def map_itinerary_modify_request(parsed_intent: ParsedIntent, req: OrchestrateRequest) -> ItineraryModifyRequest:
-    e = parsed_intent.entities
-    p = parsed_intent.preference_overrides
+    entities: Dict[str, Any] = (
+        parsed_intent.entities.model_dump(exclude_none=True)
+        if hasattr(parsed_intent.entities, "model_dump")
+        else dict(parsed_intent.entities or {})
+    )
 
-    # If you later store itinerary_id in session/db, you can fetch it here.
-    itinerary_id = None
+    # ✅ MUST exist (or modify can't work)
+    trip_id = entities.get("itinerary_id") or entities.get("trip_id")
+    existing_plan = entities.get("current_itinerary") or {}
 
-    # Prefer override budget_level, fallback to entity-extracted budget_level
-    budget_level = pref_get(p, "budget_level") or pref_get(e, "budget_level")
+    # ✅ merged prefs are already placed into preference_overrides by your orchestrator
+    merged_prefs = (
+        parsed_intent.preference_overrides.model_dump(exclude_none=True)
+        if hasattr(parsed_intent.preference_overrides, "model_dump")
+        else dict(parsed_intent.preference_overrides or {})
+    )
+
+    ops = build_modify_ops(
+        parsed_entities=entities,
+        preference_overrides=merged_prefs,
+        raw_text=req.input_text,
+        existing_plan=existing_plan,
+    )
 
     return ItineraryModifyRequest(
-        user_id=req.user_id,
-        session_id=req.session_id,
-
-        # Use whichever field you actually have in OrchestrateRequest
-        raw_text=getattr(req, "text", None) or getattr(req, "input_text", ""),
-
-        itinerary_id=itinerary_id,
-        current_itinerary=None,
-
-        modification_text=getattr(req, "text", None) or getattr(req, "input_text", ""),
-
-        start_date=pref_get(e, "start_date"),
-        end_date=pref_get(e, "end_date"),
-        days=pref_get(e, "days"),
-
-        budget_level=budget_level,
-        avoid_crowds=bool(pref_get(p, "avoid_crowds") or False),
-        travel_style=pref_get(p, "travel_style") or [],
-
-        city=pref_get(e, "city"),
-        poi_name=pref_get(e, "poi_name"),
-        country=pref_get(e, "country"),
+        trip_id=trip_id,
+        existing_plan=existing_plan,
+        change_request={
+            "ops": ops,
+            "notes": req.input_text,
+            "strict": False,
+        },
+        context={
+            "user_id": req.user_id,
+            "session_id": req.session_id,
+            "lang": req.lang,
+            "channel": req.channel,
+            "prefs": merged_prefs,
+        },
     )

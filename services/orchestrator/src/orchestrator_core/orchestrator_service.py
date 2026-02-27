@@ -4,7 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import psycopg
-
+from .context_resolver import resolve_context
+from ..api.schemas import Entities 
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, Type
 from uuid import uuid4
 
 import os
+import re
 from pydantic import BaseModel
 
 from ..api.schemas import (
@@ -27,14 +29,23 @@ from .intent_parser.agent import IntentParserAgent
 # ---- mappers + contracts ----
 from .mappers.weather_mapper import map_weather_request
 from .contracts.weather import WeatherForecastResponse
+from .memory.session_store import SessionStore
+from .memory.session_state import SessionState
+import os
 
 from .mappers.crowd_mapper import map_crowd_request
 from .contracts.crowd import CrowdForecastResponse
+from ..api.schemas import AgentCallError
+from .clients.recommender_client import RecommenderClient
+from .contracts.itinerary_modify import ItineraryModifyResponse
+
+from .contracts.recommend_pois import RecommendPOIsResponse
 
 # Phase 3 semantic recall (local module)
 from ..profile_semantic.embedder import embed_texts, vector_literal
 from ..profile_semantic.db import db_conn
 from .response_formatter import ResponseFormatter
+from .trips.trip_repo import TripRepo
 
 
 from .mappers.price_mapper import map_price_request
@@ -81,71 +92,163 @@ import anyio
 from .task_executor import TaskExecutor, ExecTask
 from .task_graph_builder import TaskGraphBuilder
 
-def normalize_executor_output(out: Any) -> tuple[dict, list]:
+import re
+
+EDIT_VERBS = [
+    "make it", "extend", "shorten", "change", "shift", "move", "swap",
+    "redo", "regenerate", "replan", "remove", "delete", "drop", "exclude",
+    "modify", "update", "edit"
+]
+
+EXPLICIT_HOTEL = ["book hotel", "hotel booking", "reserve hotel", "find hotels", "rooms", "check-in", "check out"]
+EXPLICIT_VISA  = ["visa", "eta", "entry requirements"]
+EXPLICIT_WEATHER = ["weather", "rain", "temperature", "forecast"]
+EXPLICIT_TRANSPORT = ["how to go", "bus", "train", "taxi", "transport", "route"]
+
+def norm(t: str) -> str:
+    return re.sub(r"\s+", " ", (t or "").strip().lower())
+
+def has_edit_signal(text: str, entities) -> bool:
+    t = norm(text)
+    if getattr(entities, "days", None):
+        return True
+    if getattr(entities, "start_date", None):
+        return True
+    if re.search(r"\bday\s*\d+\b", t):   # swap day 1 etc.
+        return True
+    return any(v in t for v in EDIT_VERBS)
+
+def has_explicit_other_intent(text: str) -> bool:
+    t = norm(text)
+    # if any explicit other-intent phrases exist, don't override
+    if any(k in t for k in EXPLICIT_HOTEL): return True
+    if any(k in t for k in EXPLICIT_VISA): return True
+    if any(k in t for k in EXPLICIT_WEATHER): return True
+    if any(k in t for k in EXPLICIT_TRANSPORT): return True
+    return False
+def has_edit_signal(text: str, entities) -> bool:
+    t = norm(text)
+
+    # explicit edit verbs
+    if any(v in t for v in EDIT_VERBS):
+        return True
+
+    # explicit day swap like "day 2" / "swap day 1 and day 3"
+    if re.search(r"\bday\s*\d+\b", t):
+        return True
+
+    # explicit date edit like "start on 2026-03-01"
+    if getattr(entities, "start_date", None):
+        return True
+    if re.search(r"\b(?:start|begin)\b.*\b\d{4}-\d{2}-\d{2}\b", t):
+        return True
+
+    # days only counts as edit if accompanied by edit verb ("make it 2 days")
+    if getattr(entities, "days", None):
+        if re.search(r"\b(make it|change it|set|extend|shorten|reduce|increase)\b", t):
+            return True
+
+    return False
+PLAN_PHRASES = [
+    "plan a trip", "plan trip", "plan an itinerary", "plan itinerary",
+    "create a trip", "create an itinerary", "make an itinerary",
+    "build an itinerary", "generate an itinerary",
+]
+
+def has_plan_signal(text: str) -> bool:
+    t = norm(text)
+    return ("plan" in t and ("trip" in t or "itinerary" in t)) or any(p in t for p in PLAN_PHRASES)
+def resolve_intent(parsed_intent, req_text: str, active_trip: bool):
+    t = req_text or ""
+    entities = parsed_intent.entities
+
+    if not active_trip:
+        return parsed_intent
+
+    # 1) If user is clearly planning, DO NOT force modify
+    if has_plan_signal(t) and not has_explicit_other_intent(t):
+        parsed_intent.intent = "plan_itinerary"
+        parsed_intent.domain_category = "itinerary"
+        return parsed_intent
+
+    # 2) Otherwise, if edit signals appear, force modify
+    if has_edit_signal(t, entities) and not has_explicit_other_intent(t):
+        parsed_intent.intent = "modify_itinerary"
+        parsed_intent.domain_category = "itinerary"
+        return parsed_intent
+
+    return parsed_intent
+
+
+def normalize_executor_output(out: Any) -> Tuple[Dict[str, Any], List[Any], Any]:
     """
     Normalize TaskExecutor.run() output into:
-      (dag_results_dict, exec_results_list)
+      (dag_results_dict, exec_results_list, ctx)
+    Supports:
+      - dict
+      - (dict, list)
+      - (dict, list, ctx)
+      - ((dict, list), ctx)
+      - (ctx, (dict, list)) etc.
     """
-
-    # Case: already dict
+    # Already dict
     if isinstance(out, dict):
-        return out, []
+        return out, [], {}
 
-    # Case: ((dict, list), anything)
-    if isinstance(out, tuple) and len(out) == 2:
-        a, b = out
+    # Tuple forms
+    if isinstance(out, tuple):
+        # (dict, list, ctx)
+        if len(out) == 3 and isinstance(out[0], dict):
+            dag = out[0]
+            execs = out[1] if isinstance(out[1], list) else []
+            ctx = out[2]
+            return dag, execs, ctx
 
-        if isinstance(a, tuple) and len(a) == 2 and isinstance(a[0], dict):
-            dag, execs = a
-            return dag, execs if isinstance(execs, list) else []
+        # (dict, list)
+        if len(out) == 2 and isinstance(out[0], dict):
+            dag = out[0]
+            execs = out[1] if isinstance(out[1], list) else []
+            return dag, execs, {}
 
-        if isinstance(b, tuple) and len(b) == 2 and isinstance(b[0], dict):
-            dag, execs = b
-            return dag, execs if isinstance(execs, list) else []
+        # ((dict, list), ctx)
+        if len(out) == 2 and isinstance(out[0], tuple) and len(out[0]) == 2 and isinstance(out[0][0], dict):
+            dag, execs = out[0]
+            execs = execs if isinstance(execs, list) else []
+            return dag, execs, out[1]
 
-        if isinstance(a, dict):
-            return a, b if isinstance(b, list) else []
+        # (ctx, (dict, list))
+        if len(out) == 2 and isinstance(out[1], tuple) and len(out[1]) == 2 and isinstance(out[1][0], dict):
+            dag, execs = out[1]
+            execs = execs if isinstance(execs, list) else []
+            return dag, execs, out[0]
 
-    return {}, []
-def _resolve_weather_city(self, entities: Dict[str, Any]) -> Optional[str]:
-    city = (entities.get("city") or "").strip()
-    if city:
-        return city
+    return {}, [], {}
 
-    region = (entities.get("region") or "").strip().lower()
-
-    REGION_DEFAULT_CITY = {
-        "south": "Galle",
-        "southern": "Galle",
-        "hill country": "Kandy",
-        "central": "Kandy",
-        "east": "Trincomalee",
-        "eastern": "Trincomalee",
-        "north": "Jaffna",
-        "northern": "Jaffna",
-        "west": "Colombo",
-        "western": "Colombo",
-    }
-
-    return REGION_DEFAULT_CITY.get(region)
 
 
 def build_exec_tasks(builder: TaskGraphBuilder, parsed_intent) -> List[ExecTask]:
-    """
-    Convert TaskNodes (internal DAG) -> ExecTask (executor input).
-    """
-    nodes = builder.get_nodes()  # Dict[str, TaskNode]
+    nodes = builder.get_nodes()
+
+    # map type -> id (parse_intent -> T1, extract_entities -> T2, etc.)
+    type_to_id = {n.type: n.id for n in nodes.values()}
+
     tasks: List[ExecTask] = []
-    for t in nodes.values():
+    for n in nodes.values():
+        deps = []
+        for d in (n.depends_on or []):
+            # if depends_on contains types, convert them
+            deps.append(type_to_id.get(d, d))
+
         tasks.append(
             ExecTask(
-                id=t.id,
-                type=t.type,
-                assigned_agent=t.assigned_agent,
-                depends_on=list(t.depends_on or []),
+                id=n.id,
+                type=n.type,
+                assigned_agent=n.assigned_agent,
+                depends_on=deps,
             )
         )
     return tasks
+
 
 
 async def run_task_graph(
@@ -168,8 +271,9 @@ VISA_STUB_JSON = Path(__file__).resolve().parent / "visa_policy" / "visa.json"
 
 RECOMMENDER_BASE_URL = os.getenv(
     "RECOMMENDER_SERVICE_URL",
-    "http://recommender_service:8003",
+    "http://127.0.0.1:8003",
 ).rstrip("/")
+
 
 # ✅ NEW: Visa/KG base URL (your friend’s KG interface layer service)
 VISA_KG_BASE_URL = os.getenv(
@@ -204,6 +308,12 @@ class OrchestratorService:
         self.task_graph_builder = task_graph_builder
         self.protocol_mode = protocol_mode
         self.profile_event_store = ProfileEventStore()
+        self.trip_repo = TripRepo()
+        self.session_store = SessionStore(
+            redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+            prefix=os.getenv("SESSION_PREFIX", "gc:sess:"),
+            ttl_sec=int(os.getenv("SESSION_TTL_SEC", str(60*60*6))),
+        )
 
         # ✅ Profile client (User Service)
         self.profile_client = ProfileClient()
@@ -222,7 +332,7 @@ class OrchestratorService:
                 result_field="transport_result",
             ),
             "info_attraction": IntentHandler(
-                endpoint="/attractions/orchestrator/call/attractions",        # <-- your attraction agent endpoint
+                endpoint="/sub-attractions/orchestrator/call/sub-attractions",
                 mapper=map_attraction_request,
                 response_model=None,
                 timeout=20,
@@ -282,9 +392,9 @@ class OrchestratorService:
             "recommend_pois": IntentHandler(
                 endpoint="/recommend/pois",
                 mapper=map_recommend_pois_request,
-                response_model=None,
+                response_model=RecommendPOIsResponse,
                 timeout=20,
-                result_field=None,
+                result_field="pois_result",
             ),
             # ✅ VisaPolicy handler (calls KG interface layer)
             "info_visa_policy": IntentHandler(
@@ -334,7 +444,27 @@ class OrchestratorService:
         # ---------------------------
     # Phase 3 — Semantic Memory trigger (PGVector)
     # ---------------------------
-    
+    def _resolve_weather_city(self, entities: Dict[str, Any]) -> Optional[str]:
+        city = (entities.get("city") or "").strip()
+        if city:
+            return city
+
+        region = (entities.get("region") or "").strip().lower()
+
+        REGION_DEFAULT_CITY = {
+            "south": "Galle",
+            "southern": "Galle",
+            "hill country": "Kandy",
+            "central": "Kandy",
+            "east": "Trincomalee",
+            "eastern": "Trincomalee",
+            "north": "Jaffna",
+            "northern": "Jaffna",
+            "west": "Colombo",
+            "western": "Colombo",
+        }
+
+        return REGION_DEFAULT_CITY.get(region)
 
     def _semantic_recall_for_request(
             self,
@@ -715,13 +845,7 @@ class OrchestratorService:
             )
             return None
 
-    def _execute_intent(
-        self,
-        intent_name: str,
-        parsed_intent: ParsedIntent,
-        req: OrchestrateRequest,
-        db_prefs: Dict[str, Any],
-    ) -> Any:
+    def _execute_intent(self, intent_name, parsed_intent, req, db_prefs, session_state=None) -> Any:
 
 
         handler = self.handlers.get(intent_name)
@@ -781,8 +905,29 @@ class OrchestratorService:
         patched_intent = patched_intent.model_copy(
             update={"preference_overrides": merged_prefs}
         )
+        # ✅ Attach base plan for modify so recommender can patch
+        if intent_name == "modify_itinerary" and session_state and req.user_id:
+            active_trip_id = session_state.slots.get("active_trip_id")
+            if active_trip_id:
+                trip = self.trip_repo.get_trip(trip_id=active_trip_id, user_id=req.user_id)
+                if trip and trip.plan_json:
+                    # Put these into patched_intent.entities so mapper can pick them up
+                    ents = (
+                        parsed_intent.entities.model_dump(exclude_none=False)
+                        if hasattr(parsed_intent.entities, "model_dump")
+                        else dict(parsed_intent.entities or {})
+                    )
+                    ents["itinerary_id"] = active_trip_id
+                    ents["current_itinerary"] = trip.plan_json
 
+                    # also backfill location if missing
+                    ents.setdefault("city", session_state.slots.get("city"))
+                    ents.setdefault("country", session_state.slots.get("country"))
+                    ents.setdefault("start_date", trip.start_date)
+
+                    patched_intent = patched_intent.model_copy(update={"entities": Entities(**ents)})  # ✅ wrap back
         # 4) Build contract payload via mapper
+        print("[debug] entities_type =", type(patched_intent.entities))
         contract_obj = handler.mapper(patched_intent, req)
 
         # 5) DEBUG prints (DB vs query vs final)
@@ -878,7 +1023,23 @@ class OrchestratorService:
             )
 
         if raw is None:
-            return
+            return {
+                "ok": False,
+                "agent": "unknown",
+                "endpoint": handler.endpoint,
+                "status_code": 0,
+                "error": "Downstream call failed (raw=None)",
+            }
+
+        if isinstance(raw, dict) and raw.get("ok") is False:
+            return {
+                "ok": False,
+                "agent": "unknown",
+                "endpoint": handler.endpoint,
+                "status_code": int(raw.get("status_code") or 0),
+                "error": str(raw.get("error") or "Downstream returned ok:false"),
+                "detail": raw,
+            }
 
 
         # 7) Parse response ONCE (support response_model=None)
@@ -929,7 +1090,18 @@ class OrchestratorService:
     # ---------------------------
     def orchestrate(self, req: OrchestrateRequest) -> OrchestrateResponse:
         user_id = (req.user_id or "").strip()
-        session_id = (req.session_id or "no_session").strip()
+        session_id = (req.session_id or "").strip() or "no_session"
+        session_state: Optional[SessionState] = None
+        trip_id: Optional[str] = None
+
+
+         # ✅ load session (per chat window / per session_id)
+        session_state = None
+        if user_id and session_id != "no_session":
+            raw_state = self.session_store.get(user_id=user_id, session_id=session_id)
+            session_state = SessionState.from_dict(raw_state)
+        if session_state:
+            trip_id = session_state.slots.get("active_trip_id")
 
         # ✅ EVENT 1: raw query received (store raw text)
         if user_id:
@@ -954,6 +1126,187 @@ class OrchestratorService:
         db_prefs = self._extract_db_preferences(profile_json)
 
         parsed_intent: ParsedIntent = self._run_intent_parser(req)
+        resolved = resolve_context(
+            parsed_intent=parsed_intent,
+            req=req,
+            session_state=session_state,
+            trip_repo=self.trip_repo,
+        )
+
+        # --- APPLY resolved context into entities ---
+        ents = (
+            parsed_intent.entities.model_dump(exclude_none=False)
+            if hasattr(parsed_intent.entities, "model_dump")
+            else dict(parsed_intent.entities or {})
+        )
+
+        # Fill missing fields from session / resolver
+        if not ents.get("city"):
+            ents["city"] = (resolved.city if hasattr(resolved, "city") else None) or \
+                        (session_state.slots.get("city") if session_state else None) or \
+                        (session_state.slots.get("active_place") if session_state else None)
+
+        if not ents.get("country"):
+            ents["country"] = (resolved.country if hasattr(resolved, "country") else None) or \
+                            (session_state.slots.get("country") if session_state else None)
+
+        # also handle "tomorrow" already extracted - fine
+
+        parsed_intent = parsed_intent.model_copy(update={"entities": Entities(**ents)})
+
+        active_trip_id = None
+        if session_state:
+            active_trip_id = session_state.slots.get("active_trip_id")
+
+        if not active_trip_id:
+            active_trip_id = resolved.trip_id or trip_id  # fallback
+#         raw = (req.input_text or "").lower().strip()
+#         duration_edit = bool(re.search(
+#     r"\b(?:make(?:\s+it)?(?:\s+the\s+trip)?|change(?:\s+it)?|set)\s+\d{1,2}\s+day(?:s)?\b",
+#     raw
+# ))
+
+#         active_trip_id = None
+#         if session_state:
+#             active_trip_id = session_state.slots.get("active_trip_id")
+        # if not active_trip_id:
+        #     active_trip_id = resolved.trip_id or trip_id  # fallback
+
+        # if active_trip_id and duration_edit:
+        #     scores = dict(parsed_intent.scores or {})
+        #     scores["modify_itinerary"] = max(scores.get("modify_itinerary", 0.0), 0.95)
+
+        #     ents = (
+        #         parsed_intent.entities.model_dump(exclude_none=True)
+        #         if hasattr(parsed_intent.entities, "model_dump")
+        #         else dict(parsed_intent.entities or {})
+        #     )
+        #     ents["itinerary_id"] = active_trip_id
+
+        #     parsed_intent = parsed_intent.model_copy(update={
+        #         "intent": "modify_itinerary",
+        #         "confidence": 0.95,
+        #         "secondary_intents": [],   # prevent book_hotel DAG branch
+        #         "scores": scores,
+        #         "entities": ents,
+        #     })
+
+        # active_trip_id is decided above
+        raw = (req.input_text or "").lower().strip()
+        def is_plan_request(raw: str) -> bool:
+            return bool(re.search(r"\b(plan|create|build|generate)\b.*\b(itinerary|trip)\b", raw))
+        plan_like = is_plan_request(raw)
+
+        refers = any(w in raw for w in ["there", "it", "that place", "that city", "in that area"])
+
+        if refers and not ents.get("city") and session_state:
+            ents["city"] = session_state.slots.get("active_place") or session_state.slots.get("city")
+            ents["country"] = ents.get("country") or session_state.slots.get("country")
+
+        duration_edit = bool(re.search(
+            r"\b(?:make(?:\s+it)?|change(?:\s+it)?|set|extend|shorten|reduce|increase)\s+\d{1,2}\s+day(?:s)?\b",
+            raw
+        ))
+        plan_like = bool(re.search(
+            r"\b(plan|create|build|generate)\b.*\b(itinerary|trip)\b",
+            raw
+        ))
+
+        date_edit = bool(re.search(
+            r"\b(?:start|begin)\s+(?:the\s+trip\s+)?on\s+\d{4}-\d{2}-\d{2}\b",
+            raw
+        )) or bool(getattr(parsed_intent.entities, "start_date", None))
+
+        # if user is clearly talking about hotels/bookings, don't force modify
+        hotel_like = bool(re.search(
+            r"\b(hotel|book|booking|reserve|reservation|check[-\s]?in|check[-\s]?out)\b",
+            raw
+        ))
+
+        generic_modify = bool(re.search(
+            r"\b(modify|change|update|edit|remove|delete|drop|swap|move|redo|regenerate|replan)\b",
+            raw
+        ))
+
+        weather_like = bool(re.search(
+            r"\b(weather|forecast|rain|temperature|climate)\b",
+            raw
+        ))
+        if plan_like:
+            scores = dict(parsed_intent.scores or {})
+            scores["plan_itinerary"] = max(scores.get("plan_itinerary", 0.0), 0.95)
+
+            # IMPORTANT: do NOT carry the active itinerary into a plan request
+            ents = (
+                parsed_intent.entities.model_dump(exclude_none=False)
+                if hasattr(parsed_intent.entities, "model_dump")
+                else dict(parsed_intent.entities or {})
+            )
+            ents.pop("itinerary_id", None)
+            ents.pop("current_itinerary", None)
+
+            parsed_intent = parsed_intent.model_copy(update={
+                "intent": "plan_itinerary",
+                "domain_category": "itinerary",
+                "confidence": float(scores.get("plan_itinerary", 0.95)),
+                "secondary_intents": [],
+                "scores": scores,
+                "entities": Entities(**ents),
+            })
+        if active_trip_id and (not plan_like) and (duration_edit or date_edit or generic_modify) and not hotel_like and not weather_like:
+            scores = dict(parsed_intent.scores or {})
+
+            # hard boost modify
+            scores["modify_itinerary"] = 0.95
+
+            # suppress booking branches so cancel_booking/book_hotel doesn't get scheduled
+            for k in ["book_hotel", "cancel_booking", "modify_booking", "check_availability"]:
+                if k in scores:
+                    scores[k] = min(scores[k], 0.01)
+
+            ents = (
+                parsed_intent.entities.model_dump(exclude_none=True)
+                if hasattr(parsed_intent.entities, "model_dump")
+                else dict(parsed_intent.entities or {})
+            )
+            ents["itinerary_id"] = active_trip_id
+
+            parsed_intent = parsed_intent.model_copy(update={
+                "intent": "modify_itinerary",
+                "domain_category": "itinerary",
+                "confidence": 0.95,
+                "secondary_intents": [],   # ✅ critical
+                "scores": scores,          # ✅ critical
+                "entities": Entities(**ents),
+            })
+
+        # ✅ update session slots (active context)
+        if session_state:
+            if resolved.city:
+                session_state.slots["active_place"] = resolved.city
+            if resolved.trip_id:
+                session_state.slots["active_trip_id"] = resolved.trip_id
+        # ✅ merge entities into session slots (save context)
+        # merge entities into session slots (save context)
+        if session_state:
+            ents = parsed_intent.entities.model_dump(exclude_none=True)
+
+            for k, v in ents.items():
+                if v in (None, "", [], {}, "unknown"):
+                    continue
+
+                # ✅ avoid poisoning session before a plan is generated
+                if parsed_intent.intent == "plan_itinerary" and k in {"city", "destination", "active_place"}:
+                    continue
+
+                session_state.slots[k] = v
+
+            # track last intent
+            session_state.last_intent = parsed_intent.intent
+
+            # minimal stage update (optional)
+            if parsed_intent.intent in {"plan_itinerary", "modify_itinerary"}:
+                session_state.conversation_stage = "itinerary"
         if user_id:
             self.profile_event_store.append(
                 ProfileEvent(
@@ -979,7 +1332,8 @@ class OrchestratorService:
                     },
                 )
             )
-
+        active_trip = bool(active_trip_id)
+        parsed_intent = resolve_intent(parsed_intent, req.input_text, active_trip)
         tasks: List[TaskSummary] = self.task_graph_builder.build(parsed_intent)
 
         results: Dict[str, Any] = {
@@ -992,7 +1346,9 @@ class OrchestratorService:
             "accommodation_result": None,
             "transport_result": None,
             "attraction_result": None,
+            "pois_result": None, 
         }
+        errors: List[AgentCallError] = []
 
                 # ---------------------------
         # NEW: Execute task graph (DAG)
@@ -1006,38 +1362,49 @@ class OrchestratorService:
         # 1) Build ExecTasks from your graph builder
         exec_tasks: List[ExecTask] = build_exec_tasks(self.task_graph_builder, parsed_intent)
 
-        # 2) Build handlers for each task id
         handlers: Dict[str, HandlerFn] = {}
 
         for t in exec_tasks:
             ttype = (t.type or "").strip()
 
-            if ttype in {"parse_intent", "extract_entities", "format_response"}:
-                async def _noop(task, ctx, results):
-                    return {"ok": True}
-                handlers[ttype] = _noop
-                continue
+            if ttype == "parse_intent":
+                async def _parse(task, ctx, results, pi=parsed_intent):
+                    return pi.model_dump(mode="json") if hasattr(pi, "model_dump") else dict(pi)
+                fn = _parse
 
-            if ttype in self.handlers:
+            elif ttype == "extract_entities":
+                async def _extract(task, ctx, results, pi=parsed_intent):
+                    ents = pi.entities
+                    return ents.model_dump(mode="json") if hasattr(ents, "model_dump") else dict(ents or {})
+                fn = _extract
+
+            elif ttype == "format_response":
+                async def _format(task, ctx, results):
+                    return {"ok": True}
+                fn = _format
+
+            elif ttype in self.handlers:
                 def make_handler(intent_name: str):
-                    async def _run(task, ctx, results):
+                    async def _run(task, ctx, results, _intent=intent_name):
                         return await anyio.to_thread.run_sync(
                             self._execute_intent,
-                            intent_name,
+                            _intent,
                             parsed_intent,
                             req,
                             db_prefs,
+                            session_state,
                         )
                     return _run
+                fn = make_handler(ttype)
 
-                handlers[ttype] = make_handler(ttype)
-                continue
+            else:
+                async def _unknown(task, ctx, results, tt=ttype):
+                    return {"ok": False, "error": f"Unknown task type: {tt}"}
+                fn = _unknown
 
-            async def _unknown(task, ctx, results, tt=ttype):
-                return {"ok": False, "error": f"Unknown task type: {tt}"}
-
-            handlers[ttype] = _unknown
-
+            # ✅ register BOTH
+            handlers[ttype] = fn
+            handlers[t.id] = fn
 
         
 
@@ -1047,11 +1414,11 @@ class OrchestratorService:
 
 
 
-        # 3) Run the graph (IMPORTANT: anyio.run takes only a coroutine function)
         async def _runner():
             return await run_task_graph(exec_tasks=exec_tasks, handlers=handlers)
 
-        dag_results, exec_results, ctx = anyio.run(_runner)
+        out = anyio.run(_runner)
+        dag_results, exec_results, ctx = normalize_executor_output(out)
 
         # 🔥 Map DAG outputs into response fields
         for task in exec_tasks:
@@ -1059,7 +1426,91 @@ class OrchestratorService:
             if not out:
                 continue
 
+            # If handler returned a failure dict, convert it into an AgentCallError
+            if isinstance(out, dict) and out.get("ok") is False:
+                errors.append(
+                    AgentCallError(
+                        agent=str(out.get("agent") or "unknown"),
+                        endpoint=str(out.get("endpoint") or self.handlers.get(task.type).endpoint if task.type in self.handlers else ""),
+                        status_code=int(out.get("status_code") or 0),
+                        error=str(out.get("error") or "Downstream call failed"),
+                        detail=out,
+                    )
+                )
+                continue
+
             ttype = task.type
+
+            if ttype == "plan_itinerary":
+                results["itinerary_result"] = out
+
+                it_res = out
+                it_json = it_res.model_dump(mode="json") if hasattr(it_res, "model_dump") else dict(it_res)
+
+                ok = (it_json.get("status") == "ok") or (it_json.get("ok") is True)
+                if ok:
+                    meta = it_json.get("meta") or {}
+                    days = meta.get("days") or it_json.get("days")
+                    start_date = meta.get("start_date") or it_json.get("start_date")
+
+                    dest = meta.get("destination")
+                    if not dest:
+                        plans = it_json.get("plans") or {}
+                        dp = plans.get("destination_plan") or {}
+                        dest = dp.get("city") or dp.get("destination") or meta.get("destination")
+
+                    title = f"{dest or 'Trip'} ({days or ''} days)".strip()
+
+                    
+
+                    active_trip_id = session_state.slots.get("active_trip_id") if session_state else None
+
+                    # destination from response
+                    dest = meta.get("destination") or dest  # as you already compute
+
+                    # destination currently active in session
+                    active_trip_id = session_state.slots.get("active_trip_id") if session_state else None
+
+                    active_trip_dest = None
+                    if active_trip_id and user_id:
+                        trip = self.trip_repo.get_trip(trip_id=active_trip_id, user_id=user_id)
+                        if trip:
+                            active_trip_dest = (trip.destination or "").strip()
+
+                    is_new_trip = bool(dest) and bool(active_trip_dest) and dest.lower() != active_trip_dest.lower()
+
+                    if active_trip_id and not is_new_trip:
+                        # UPDATE same trip only if same destination (replan same trip)
+                        self.trip_repo.update_trip_plan(
+                            trip_id=active_trip_id,
+                            title=title,
+                            destination=dest,
+                            start_date=start_date,
+                            days=int(days) if days else None,
+                            plan_json=it_json,
+                        )
+                        trip_id = active_trip_id
+                    else:
+                        # ✅ CREATE new trip when destination changed OR no active trip
+                        trip_id = self.trip_repo.create_trip(
+                            user_id=user_id,
+                            title=title,
+                            destination=dest,
+                            start_date=start_date,
+                            travel_month=None,
+                            days=int(days) if days else None,
+                            plan_json=it_json,
+                        )
+
+                    # ✅ set new active trip
+                    if session_state and trip_id:
+                        session_state.slots["active_trip_id"] = trip_id
+                        session_state.slots["active_place"] = dest
+                        session_state.slots["city"] = dest
+
+                continue
+            elif ttype == "modify_itinerary":
+                results["modify_result"] = out
 
             if ttype == "info_visa_policy":
                 results["visa_result"] = out
@@ -1076,10 +1527,37 @@ class OrchestratorService:
                 results["crowd_result"] = out
             elif ttype == "forecast_price":
                 results["price_result"] = out
-            elif ttype == "plan_itinerary":
-                results["itinerary_result"] = out
-            elif ttype == "modify_itinerary":
-                results["modify_result"] = out
+            elif ttype == "recommend_pois":
+                results["pois_result"] = out
+
+            
+        # ✅ After DAG mapping: apply modify update to active trip
+        # ✅ apply modify update once
+        mod_res = results.get("modify_result")
+        if user_id and mod_res and session_state:
+            active_trip_id = session_state.slots.get("active_trip_id")
+            if active_trip_id:
+                mod_json = mod_res.model_dump(mode="json") if hasattr(mod_res, "model_dump") else dict(mod_res)
+                ok = (mod_json.get("status") == "ok") or (mod_json.get("ok") is True)
+                if ok:
+                    meta = mod_json.get("meta") or {}
+                    days = meta.get("days") or mod_json.get("days")
+                    start_date = meta.get("start_date") or mod_json.get("start_date")
+
+                    dest = meta.get("destination")
+                    title = None
+                    if dest or days:
+                        title = f"{dest or 'Trip'} ({days or ''} days)".strip()
+
+                    new_plan = mod_json.get("plan") or mod_json  # depends on response structure
+                    self.trip_repo.update_trip_plan(
+                        trip_id=active_trip_id,
+                        title=title,
+                        destination=dest,
+                        start_date=start_date,
+                        days=int(days) if days else None,
+                        plan_json=new_plan,
+                    )
 
 
 
@@ -1127,10 +1605,15 @@ class OrchestratorService:
             results=results,
             tasks=[t.model_dump(mode="json") for t in tasks],
         )
-
+        if session_state and user_id and session_id != "no_session":
+            self.session_store.save(
+                user_id=user_id,
+                session_id=session_id,
+                state=session_state.to_dict(),
+            )
 
         return OrchestrateResponse(
-            status="ok",
+            status="partial" if errors else "ok",
             message="Orchestration executed.",
             parsed_intent=parsed_intent,
             tasks=tasks,
@@ -1142,8 +1625,11 @@ class OrchestratorService:
             modify_result=results["modify_result"],
             visa_result=results["visa_result"],
             accommodation_result=results["accommodation_result"],
+            pois_result = results["pois_result"],
             transport_result=results["transport_result"],
             attraction_result=results["attraction_result"],
             final_message=formatted.get("text"),
             followups=formatted.get("followups"),
+            trip_id=trip_id,
+            errors=errors,
         )

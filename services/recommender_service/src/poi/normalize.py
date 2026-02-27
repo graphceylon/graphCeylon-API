@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, Any, Optional, List
 import json
 from pathlib import Path
+import re
 
 
 def _find_repo_root() -> Path:
@@ -71,29 +72,44 @@ def load_attractions_index() -> Dict[str, Dict[str, Any]]:
 
 ATTRACTION_INDEX = load_attractions_index()
 
+def _slug(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = re.sub(r"[^\w\s-]", "", s)
+    s = re.sub(r"[\s_-]+", "-", s)
+    return s.strip("-")
 
-def normalize_to_attraction_id(raw: Dict[str, Any]) -> Optional[str]:
+def normalize_to_attraction_id(raw: Any) -> Optional[str]:
     """
-    Convert any POI-like object to a valid attraction_id using the index.
-    Returns None if cannot be resolved.
+    Accepts:
+      - str: "Temple of the Tooth" -> "temple-of-the-tooth"
+      - dict: {"name": "..."} or {"id": "..."} etc.
+      - other: stringifies safely
     """
-    # ID-like fields
-    for k in ("attraction_id", "poi_id", "id", "slug"):
-        if raw.get(k):
-            key = str(raw[k]).strip().lower()
-            rec = ATTRACTION_INDEX.get(key)
-            if rec:
-                return str(rec["attraction_id"]).strip()
+    if raw is None:
+        return None
 
-    # Title-like fields
-    for k in ("title", "name"):
-        if raw.get(k):
-            key = str(raw[k]).strip().lower()
-            rec = ATTRACTION_INDEX.get(key)
-            if rec:
-                return str(rec["attraction_id"]).strip()
+    # ✅ raw is already a string
+    if isinstance(raw, str):
+        s = raw
 
-    return None
+    # ✅ raw is dict-like
+    elif isinstance(raw, dict):
+        s = None
+        for k in ("attraction_id", "id", "poi_id", "name", "title", "poi_name"):
+            v = raw.get(k)
+            if isinstance(v, str) and v.strip():
+                s = v
+                break
+        if s is None:
+            s = str(raw)
+
+    else:
+        s = str(raw)
+
+    s = s.strip()
+    if not s:
+        return None
+    return _slug(s)
 
 
 def get_attraction_record(attraction_id: str) -> Optional[Dict[str, Any]]:
