@@ -11,40 +11,19 @@ from the Neo4j knowledge graph structure, enabling:
 
 import logging
 from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import Data
-from torch_geometric.nn import GATConv, global_mean_pool
+from torch_geometric.nn import GATConv
 from torch_geometric.utils import negative_sampling
 from neo4j import Driver
-from neo4j.time import DateTime, Date, Time
+
+from core.utils import sanitize_neo4j_types
 
 logger = logging.getLogger(__name__)
-
-
-def sanitize_neo4j_types(obj: Any) -> Any:
-    """
-    Convert Neo4j-specific types to Python-native types for JSON serialization.
-    
-    Args:
-        obj: Any object that might contain Neo4j types
-        
-    Returns:
-        Object with Neo4j types converted to Python native types
-    """
-    if isinstance(obj, (DateTime, Date, Time)):
-        return obj.iso_format()
-    elif isinstance(obj, dict):
-        return {k: sanitize_neo4j_types(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [sanitize_neo4j_types(item) for item in obj]
-    elif isinstance(obj, tuple):
-        return tuple(sanitize_neo4j_types(item) for item in obj)
-    else:
-        return obj
 
 
 class TourismKGEmbedder(nn.Module):
@@ -297,15 +276,7 @@ class GNNEmbeddingService:
             features.append(0.0)
         
         return features[:128]
-        
-        # Cached data
-        self.node_embeddings: Optional[torch.Tensor] = None
-        self.node_id_map: Optional[Dict[str, int]] = None
-        self.reverse_node_map: Optional[Dict[int, str]] = None
-        self.edge_index: Optional[torch.Tensor] = None
-        
-        logger.info(f"GNN Embedding Service initialized on device: {self.device}")
-    
+
     def extract_graph_from_neo4j(
         self,
         node_labels: Optional[List[str]] = None,
@@ -798,12 +769,14 @@ class GNNEmbeddingService:
                     })
         
         return results
-    
+
+    def get_entity_embedding(self, entity_neo4j_id: str) -> Optional[Any]:
+        """Get raw embedding vector for an entity by its Neo4j element ID."""
         if self.node_embeddings is None:
             return None
-        
+
         if entity_neo4j_id not in self.node_id_map:
             return None
-        
+
         idx = self.node_id_map[entity_neo4j_id]
         return self.node_embeddings[idx].cpu().numpy()

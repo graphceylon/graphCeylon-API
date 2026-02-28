@@ -1,1 +1,1 @@
-"""API endpoints and FastAPI application."""
+"""API package — FastAPI application, dependencies, and routers."""

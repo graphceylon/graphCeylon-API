@@ -1,7 +1,7 @@
 """Utility functions for the Knowledge Graph Service."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from datetime import datetime, date
 from pathlib import Path
 
@@ -177,3 +177,92 @@ def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     c = 2 * atan2(sqrt(a), sqrt(1-a))
     
     return R * c
+
+
+# ---------------------------------------------------------------------------
+# Neo4j type sanitization
+# ---------------------------------------------------------------------------
+
+def sanitize_neo4j_types(obj: Any) -> Any:
+    """
+    Convert Neo4j-specific types to Python-native types for JSON serialization.
+
+    Handles DateTime, Date, Time and recursively processes dicts, lists, and tuples.
+    """
+    try:
+        from neo4j.time import DateTime, Date, Time
+        if isinstance(obj, (DateTime, Date, Time)):
+            return obj.iso_format()
+    except ImportError:
+        pass
+
+    if isinstance(obj, dict):
+        return {k: sanitize_neo4j_types(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_neo4j_types(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(sanitize_neo4j_types(item) for item in obj)
+    return obj
+
+
+# ---------------------------------------------------------------------------
+# Location name normalization
+# ---------------------------------------------------------------------------
+
+# Common Sri Lankan city aliases for consistent matching
+CITY_ALIASES: Dict[str, str] = {
+    "colombo": "Colombo",
+    "kandy": "Kandy",
+    "galle": "Galle",
+    "jaffna": "Jaffna",
+    "negombo": "Negombo",
+    "trincomalee": "Trincomalee",
+    "anuradhapura": "Anuradhapura",
+    "polonnaruwa": "Polonnaruwa",
+    "nuwara eliya": "Nuwara Eliya",
+    "ella": "Ella",
+    "matara": "Matara",
+    "badulla": "Badulla",
+    "ratnapura": "Ratnapura",
+    "kurunegala": "Kurunegala",
+    "dambulla": "Dambulla",
+    "sigiriya": "Sigiriya",
+    "bentota": "Bentota",
+    "hikkaduwa": "Hikkaduwa",
+    "mirissa": "Mirissa",
+    "arugam bay": "Arugam Bay",
+}
+
+# Station-specific aliases (extends city aliases)
+STATION_ALIASES: Dict[str, str] = {
+    "colombo": "Colombo Fort",
+    "fort": "Colombo Fort",
+    "kandy": "Kandy",
+    "galle": "Galle",
+    "matara": "Matara",
+    "jaffna": "Jaffna",
+    "anuradhapura": "Anuradhapura",
+    "batticaloa": "Batticaloa",
+    "trincomalee": "Trincomalee",
+    "badulla": "Badulla",
+    "ella": "Ella",
+}
+
+
+def normalize_location_name(
+    name: str,
+    aliases: Optional[Dict[str, str]] = None,
+) -> str:
+    """
+    Normalize a location name using an alias map, falling back to title-case.
+
+    Args:
+        name: Raw location/city/station name.
+        aliases: Optional alias dictionary. Defaults to CITY_ALIASES.
+
+    Returns:
+        Normalized name.
+    """
+    if aliases is None:
+        aliases = CITY_ALIASES
+    return aliases.get(name.lower().strip(), name.title())

@@ -3,9 +3,9 @@
 import logging
 from typing import List, Dict, Any, Optional
 from neo4j import Driver
-from sentence_transformers import SentenceTransformer
 
 from core.config import settings
+from services.embeddings import embedding_service
 from services.graphrag.config import graphrag_config
 from services.llm import LLMFactory
 
@@ -23,17 +23,6 @@ class RAGQueryEngine:
         """
         self.driver = driver
         self.llm = None
-        
-        # Initialize embedding model
-        try:
-            self.embedding_model = SentenceTransformer(
-                settings.embedding_model_name,
-                device="cpu"  # Explicitly set device to avoid PyTorch meta tensor issues
-            )
-            logger.info(f"Embedding model '{settings.embedding_model_name}' initialized")
-        except Exception as e:
-            logger.error(f"Failed to initialize embedding model: {e}")
-            raise
         
         # Get API key based on configured provider
         api_key = None
@@ -129,20 +118,11 @@ class RAGQueryEngine:
             raise
     
     def _generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding for text.
-        
-        Args:
-            text: Text to embed
-            
-        Returns:
-            Embedding vector
-        """
-        try:
-            embedding = self.embedding_model.encode(text)
-            return embedding.tolist()
-        except Exception as e:
-            logger.error(f"Failed to generate embedding: {e}")
-            raise
+        """Generate embedding for text using the centralized embedding service."""
+        embedding = embedding_service.generate_embedding(text)
+        if not embedding:
+            raise ValueError("Failed to generate embedding for query text")
+        return embedding
     
     def _retrieve_similar_chunks(
         self, 

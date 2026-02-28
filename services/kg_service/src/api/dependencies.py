@@ -10,7 +10,7 @@ from typing import Optional
 from neo4j import Driver
 
 from database.manager import DatabaseManager
-from services.reasoning import ReasoningOrchestrator
+from services.reasoning.symbolic import ReasoningOrchestrator
 
 # Global variables for dependency injection (set by main.py during startup)
 _driver: Optional[Driver] = None

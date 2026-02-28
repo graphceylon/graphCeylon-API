@@ -11,16 +11,15 @@ Ingests hotels from JSON data into Neo4j knowledge graph with:
 """
 
 import json
-import math
 import time
 from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime
 from pathlib import Path
 
 from neo4j import GraphDatabase
 from pydantic import ValidationError
 
 from core.config import settings
+from core.utils import calculate_distance
 from models.domain.hotel import (
     HotelCreate,
     HotelIngestionBatch,
@@ -50,23 +49,8 @@ class HotelIngestionService:
     
     @staticmethod
     def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-        """
-        Calculate distance between two points on Earth using Haversine formula
-        
-        Returns:
-            Distance in kilometers
-        """
-        R = 6371  # Earth's radius in kilometers
-        
-        φ1 = math.radians(lat1)
-        φ2 = math.radians(lat2)
-        Δφ = math.radians(lat2 - lat1)
-        Δλ = math.radians(lon2 - lon1)
-        
-        a = math.sin(Δφ/2)**2 + math.cos(φ1) * math.cos(φ2) * math.sin(Δλ/2)**2
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-        
-        return R * c
+        """Calculate distance between two points on Earth (km). Delegates to core utility."""
+        return calculate_distance(lat1, lon1, lat2, lon2)
     
     @staticmethod
     def get_proximity_level(distance_km: float) -> ProximityLevel:
@@ -131,6 +115,18 @@ class HotelIngestionService:
             h.eco_certified = $eco_certified,
             h.distance_to_attraction_km = $distance_km,
             h.proximity_level = $proximity_level,
+            h.attraction = $attraction_name,
+            h.country = $country,
+            h.country_code = $country_code,
+            h.province = $province,
+            h.district = $district,
+            h.city = $city,
+            h.town = $town,
+            h.postal_code = $postal_code,
+            h.formatted_address = $formatted_address,
+            h.google_maps_url = $google_maps_url,
+            h.coordinates_decimal = $coordinates_decimal,
+            h.coordinates_dms = $coordinates_dms,
             h.created_at = datetime(),
             h.updated_at = datetime()
         
@@ -164,7 +160,19 @@ class HotelIngestionService:
             serpapi_link=hotel.serpapi_link,
             eco_certified=hotel.eco_certified,
             distance_km=distance_km,
-            proximity_level=proximity_level.value
+            proximity_level=proximity_level.value,
+            attraction_name=attraction_name,
+            country=hotel.country,
+            country_code=hotel.country_code,
+            province=hotel.province,
+            district=hotel.district,
+            city=hotel.city,
+            town=hotel.town,
+            postal_code=hotel.postal_code,
+            formatted_address=hotel.formatted_address,
+            google_maps_url=hotel.google_maps_url,
+            coordinates_decimal=hotel.coordinates_decimal,
+            coordinates_dms=hotel.coordinates_dms,
         )
         
         return result.single()["hotel_id"]
@@ -306,14 +314,49 @@ class HotelIngestionService:
         return result.single() is not None
     
     def link_hotel_to_geography(self, session, hotel_id: str, hotel: HotelCreate):
-        """Link hotel to District and Province based on coordinates"""
-        # For now, we'll need to find the closest district/province
-        # This is a simplified version - you might want to use reverse geocoding
+        """Link hotel to District and Province nodes using stored administrative_areas data"""
         
-        query = """
+        # Primary: use district/province extracted directly from geolocation
+        if hotel.district or hotel.province:
+            query = """
+            MATCH (h:Hotel {hotel_id: $hotel_id})
+            
+            // Match district by name (case-insensitive)
+            OPTIONAL MATCH (d:District)
+            WHERE $district IS NOT NULL AND toLower(d.name) = toLower($district)
+            
+            WITH h, d
+            FOREACH (_ IN CASE WHEN d IS NOT NULL THEN [1] ELSE [] END |
+                MERGE (h)-[:LOCATED_IN_DISTRICT]->(d)
+            )
+            
+            // Match province either via district relationship or by name directly
+            WITH h, d
+            OPTIONAL MATCH (p:Province)
+            WHERE $province IS NOT NULL AND toLower(p.name) = toLower($province)
+            
+            WITH h, d, p
+            FOREACH (_ IN CASE WHEN p IS NOT NULL THEN [1] ELSE [] END |
+                MERGE (h)-[:LOCATED_IN_PROVINCE]->(p)
+            )
+            
+            RETURN d.name as district, p.name as province
+            """
+            
+            result = session.run(
+                query,
+                hotel_id=hotel_id,
+                district=hotel.district,
+                province=hotel.province
+            )
+            record = result.single()
+            if record and (record["district"] or record["province"]):
+                return record
+        
+        # Fallback: derive geography via the associated attraction
+        fallback_query = """
         MATCH (h:Hotel {hotel_id: $hotel_id})
         
-        // Try to find district by matching with attraction's district
         OPTIONAL MATCH (a:Attraction)-[:LOCATED_IN]->(d:District)
         WHERE a.title = $attraction_name OR a.name = $attraction_name
         
@@ -321,7 +364,6 @@ class HotelIngestionService:
         WHERE d IS NOT NULL
         MERGE (h)-[:LOCATED_IN_DISTRICT]->(d)
         
-        // Link to province through district
         WITH h, d
         OPTIONAL MATCH (d)-[:HAS_DISTRICT]-(p:Province)
         WHERE p IS NOT NULL
@@ -331,11 +373,10 @@ class HotelIngestionService:
         """
         
         result = session.run(
-            query,
+            fallback_query,
             hotel_id=hotel_id,
             attraction_name=hotel.attraction_name
         )
-        
         record = result.single()
         return record if record else None
     
@@ -499,6 +540,24 @@ class HotelIngestionService:
             print(f"Processing: {attraction_name}")
             print(f"{'='*80}")
             
+            # Extract geolocation data from the attraction's geolocation block
+            geolocation = attraction_data.get("geolocation", {}) or {}
+            address_info = geolocation.get("address_info", {}) or {}
+            admin_areas = address_info.get("administrative_areas", {}) or {}
+            map_links = geolocation.get("map_links", {}) or {}
+
+            attraction_country = admin_areas.get("country")
+            attraction_country_code = admin_areas.get("country_code")
+            attraction_province = admin_areas.get("province")
+            attraction_district = admin_areas.get("district")
+            attraction_city = admin_areas.get("city") or admin_areas.get("town")
+            attraction_town = admin_areas.get("town")
+            attraction_postal_code = admin_areas.get("postal_code")
+            attraction_formatted_address = address_info.get("formatted_address")
+            attraction_google_maps_url = map_links.get("google_maps_url")
+            attraction_coordinates_decimal = map_links.get("coordinates_decimal")
+            attraction_coordinates_dms = map_links.get("coordinates_dms")
+
             # Convert to HotelCreate models
             hotels = []
             for hotel_data in attraction_data.get("hotels", []):
@@ -525,7 +584,7 @@ class HotelIngestionService:
                             )
                         )
                     
-                    # Create hotel
+                    # Create hotel — populate all geo fields from attraction's geolocation block
                     hotel = HotelCreate(
                         name=hotel_data.get("name"),
                         description=hotel_data.get("description"),
@@ -542,7 +601,19 @@ class HotelIngestionService:
                         images=hotel_data.get("images", []),
                         amenities=hotel_data.get("amenities", []),
                         nearby_places=nearby_places,
-                        attraction_name=attraction_name
+                        attraction_name=attraction_name,
+                        # Authoritative geo fields from administrative_areas
+                        country=attraction_country,
+                        country_code=attraction_country_code,
+                        province=attraction_province,
+                        district=attraction_district,
+                        city=attraction_city,
+                        town=attraction_town,
+                        postal_code=attraction_postal_code,
+                        formatted_address=attraction_formatted_address,
+                        google_maps_url=attraction_google_maps_url,
+                        coordinates_decimal=attraction_coordinates_decimal,
+                        coordinates_dms=attraction_coordinates_dms,
                     )
                     hotels.append(hotel)
                     

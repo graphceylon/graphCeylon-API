@@ -16,7 +16,14 @@ from .knowledge_graph import (
     ExplainResponse,
 )
 
+from .temporal import (
+    TemporalMetadata,
+    ProvenanceMetadata,
+    TemporalProvenance,
+)
+
 __all__ = [
+    # Knowledge Graph
     "QueryRequest",
     "ReasonRequest",
     "PredictRequest",
@@ -30,4 +37,8 @@ __all__ = [
     "ValidationResponse",
     "ExportResponse",
     "ExplainResponse",
+    # Temporal
+    "TemporalMetadata",
+    "ProvenanceMetadata",
+    "TemporalProvenance",
 ]

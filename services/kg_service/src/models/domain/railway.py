@@ -10,6 +10,17 @@ from datetime import datetime, time
 from pydantic import BaseModel, Field, validator
 from enum import Enum
 
+# Import common geolocation models
+from models.common import (
+    CoordinatesModel as Coordinates,
+    MapLinksModel as MapLinks,
+    AdministrativeAreasModel as AdministrativeAreas,
+    AddressInfoModel as AddressInfo,
+    GeocodingMetadataModel as GeocodingMetadata,
+    GeolocationModel as Geolocation,
+    GooglePlaceDataModel as GooglePlaceData,
+)
+
 
 class TrainType(str, Enum):
     """Train types in Sri Lanka Railway"""
@@ -17,86 +28,6 @@ class TrainType(str, Enum):
     SEMI_EXPRESS = "Semi Express"
     SLOW = "Slow"
     INTERCITY = "Intercity"
-
-
-class TrainClass(str, Enum):
-    """Train class categories"""
-    FIRST_CLASS = "1st_class"
-    SECOND_CLASS = "2nd_class"
-    THIRD_CLASS = "3rd_class"
-
-
-# ========== Nested Models (from enriched JSON) ==========
-
-class Coordinates(BaseModel):
-    """GPS coordinates for railway stations"""
-    latitude: float = Field(..., ge=-90, le=90)
-    longitude: float = Field(..., ge=-180, le=180)
-    accuracy: Optional[str] = Field(None, description="Accuracy level (high, medium, low)")
-
-
-class MapLinks(BaseModel):
-    """Map service links"""
-    google_maps_url: Optional[str] = None
-    google_maps_coordinates_url: Optional[str] = None
-    google_maps_directions_url: Optional[str] = None
-    google_maps_satellite_url: Optional[str] = None
-    google_earth_url: Optional[str] = None
-    google_street_view_url: Optional[str] = None
-    coordinates_decimal: Optional[str] = None
-    coordinates_dms: Optional[str] = None
-    apple_maps_url: Optional[str] = None
-    google_maps_place_url: Optional[str] = None
-
-
-class AdministrativeAreas(BaseModel):
-    """Administrative division information"""
-    country: Optional[str] = Field(default="Sri Lanka")
-    country_code: Optional[str] = Field(default="LK")
-    province: Optional[str] = None
-    district: Optional[str] = None
-    city: Optional[str] = None
-    town: Optional[str] = None
-    village: Optional[str] = None
-    postal_code: Optional[str] = None
-    route: Optional[str] = None
-    street_number: Optional[str] = None
-
-
-class AddressInfo(BaseModel):
-    """Complete address information"""
-    formatted_address: Optional[str] = None
-    administrative_areas: Optional[AdministrativeAreas] = None
-
-
-class GeocodingMetadata(BaseModel):
-    """Geocoding metadata"""
-    geocoded_at: Optional[str] = None
-    geocoding_service: Optional[str] = Field(default="google_maps")
-    geocoding_confidence: Optional[str] = None
-    place_id: Optional[str] = None
-
-
-class GooglePlaceData(BaseModel):
-    """Google Places API data"""
-    rating: Optional[float] = Field(None, ge=0, le=5)
-    user_ratings_total: Optional[int] = Field(None, ge=0)
-    place_url: Optional[str] = None
-    editorial_summary: Optional[str] = None
-    place_name: Optional[str] = None
-    icon: Optional[str] = None
-    vicinity: Optional[str] = None
-    website: Optional[str] = None
-    phone_number: Optional[str] = None
-    opening_hours: Optional[Dict[str, Any]] = None
-
-
-class Geolocation(BaseModel):
-    """Complete geolocation data"""
-    coordinates: Optional[Coordinates] = None
-    map_links: Optional[MapLinks] = None
-    address_info: Optional[AddressInfo] = None
-    geocoding_metadata: Optional[GeocodingMetadata] = None
 
 
 # ========== Main Models ==========
@@ -368,34 +299,43 @@ class ScheduleStatistics(BaseModel):
     date_range: Optional[Dict[str, str]] = None
 
 
-# ========== Legacy/Backward Compatibility ==========
+# ========== Transport Orchestrator Models ==========
 
-# Export commonly used types
-__all__ = [
-    # Enums
-    "TrainType",
-    "TrainClass",
-    # Main Models
-    "RailwayStation",
-    "RailwayStationBase",
-    "TrainSchedule",
-    "TrainScheduleBase",
-    # Nested Models
-    "Coordinates",
-    "Geolocation",
-    "AdministrativeAreas",
-    "GooglePlaceData",
-    # Request/Response
-    "RailwayStationQueryRequest",
-    "RailwayStationResponse",
-    "TrainScheduleQueryRequest",
-    "TrainScheduleResponse",
-    "RouteQueryRequest",
-    "RouteResponse",
-    "RouteSegment",
-    "RouteOption",
-    "CreateRailwayStationRequest",
-    "CreateTrainScheduleRequest",
-    "StationStatistics",
-    "ScheduleStatistics",
-]
+class TransportSearchRequest(BaseModel):
+    """Request model for orchestrator transport search."""
+    origin: str = Field(..., description="Starting location/city")
+    destination: str = Field(..., description="Ending location/city")
+    city: Optional[str] = Field(None, description="City context (optional)")
+    country: str = Field(default="Sri Lanka", description="Country")
+    time_of_day: Optional[str] = Field(None, description="Preferred time (morning/afternoon/evening)")
+    days: Optional[List[str]] = Field(None, description="Specific days of week")
+    budget_level: Optional[str] = Field(None, description="Budget constraint (low/medium/high)")
+    preferred_transport: List[str] = Field(default_factory=list, description="Preferred transport modes")
+    tags: List[str] = Field(default_factory=list, description="Additional tags/preferences")
+    user_id: str = Field(..., description="User UUID")
+    session_id: str = Field(..., description="Session identifier")
+    query: str = Field(..., description="User's original query")
+
+
+class TransportOption(BaseModel):
+    """Individual transport option in orchestrator response."""
+    mode: str = Field(..., description="Transport mode (train/bus/car/etc)")
+    summary: str = Field(..., description="Brief description of the route")
+    estimated_time_min: int = Field(..., description="Estimated travel time in minutes")
+    estimated_cost_lkr: float = Field(..., description="Estimated cost in LKR")
+    tips: str = Field(..., description="Travel tips and recommendations")
+    source: str = Field(..., description="Data source (e.g., 'Sri Lanka Railways')")
+
+
+class TransportSearchResponse(BaseModel):
+    """Response model for orchestrator transport search."""
+    ok: bool
+    origin: str
+    destination: str
+    country: str = "Sri Lanka"
+    options: List[TransportOption] = Field(default_factory=list)
+    summary: str = Field(..., description="Overall summary and recommendations")
+    error: Optional[str] = None
+    details: Optional[str] = None
+
+

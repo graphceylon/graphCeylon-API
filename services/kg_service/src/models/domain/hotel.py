@@ -9,15 +9,9 @@ from datetime import datetime
 from pydantic import BaseModel, Field, validator
 from enum import Enum
 
+# Import common geolocation model
+from models.common import CoordinatesModel as GPSCoordinates
 
-class TransportType(str, Enum):
-    """Transportation modes"""
-    TAXI = "taxi"
-    PUBLIC_TRANSPORT = "public_transport"
-    WALKING = "walking"
-    TRAIN = "train"
-    BUS = "bus"
-    
 
 class HotelType(str, Enum):
     """Hotel accommodation types"""
@@ -48,20 +42,6 @@ class ProximityLevel(str, Enum):
 
 
 # ========== Nested Models ==========
-
-class GPSCoordinates(BaseModel):
-    """Geographic coordinates"""
-    latitude: float = Field(..., ge=-90, le=90)
-    longitude: float = Field(..., ge=-180, le=180)
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "latitude": 8.327515199999999,
-                "longitude": 80.3793055
-            }
-        }
-
 
 class TransportationOption(BaseModel):
     """Transportation details to nearby places"""
@@ -118,14 +98,6 @@ class NearbyPlace(BaseModel):
     transportations: List[TransportationOption] = Field(default_factory=list)
 
 
-class HotelAmenity(BaseModel):
-    """Hotel amenity/feature"""
-    name: str = Field(..., description="Amenity name (wifi, pool, etc.)")
-    category: Optional[str] = Field(None, description="Category (connectivity, recreation, dining)")
-    available: bool = Field(True, description="Whether amenity is available")
-    additional_charge: bool = Field(False, description="Whether extra charge applies")
-
-
 # ========== Main Models ==========
 
 class HotelBase(BaseModel):
@@ -135,19 +107,45 @@ class HotelBase(BaseModel):
     description: Optional[str] = Field(None, description="Hotel description")
     link: Optional[str] = Field(None, description="Hotel website URL")
     
-    # Location
+    # Location (GPS)
     gps_coordinates: GPSCoordinates
     
-    # Administrative location (to be enriched)
+    # Administrative location from geolocation.address_info.administrative_areas
+    country: Optional[str] = None
+    country_code: Optional[str] = None
     province: Optional[str] = None
     district: Optional[str] = None
     city: Optional[str] = None
+    town: Optional[str] = None
+    postal_code: Optional[str] = None
+    formatted_address: Optional[str] = None
+    
+    # Map links from geolocation.map_links
+    google_maps_url: Optional[str] = None
+    coordinates_decimal: Optional[str] = None
+    coordinates_dms: Optional[str] = None
     
     # Pricing
     rate_per_night: Optional[float] = Field(None, ge=0, description="Rate per night in USD")
     total_rate: Optional[float] = Field(None, ge=0, description="Total rate for stay")
     currency: str = Field(default="USD", description="Currency code")
     price_tier: Optional[PriceTier] = None
+    
+    @validator('rate_per_night', pre=True, always=True)
+    def parse_rate_per_night(cls, v):
+        """Parse rate strings like 'US$85', '$120', or plain numbers"""
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            cleaned = v.replace('US$', '').replace('$', '').replace(',', '').strip()
+            if cleaned:
+                try:
+                    return float(cleaned)
+                except ValueError:
+                    return None
+        return None
     
     # Check-in/out
     check_in_time: Optional[str] = Field(None, description="Check-in time (e.g., '2:00 PM')")
@@ -236,57 +234,6 @@ class HotelInDB(HotelBase):
 class HotelResponse(HotelInDB):
     """Hotel response model for API"""
     nearby_attractions: List[str] = Field(default_factory=list, description="List of nearby attraction names")
-
-
-# ========== Relationship Models ==========
-
-class HotelAttractionRelationship(BaseModel):
-    """Relationship between hotel and attraction"""
-    hotel_id: str
-    attraction_id: str
-    attraction_name: str
-    
-    # Spatial
-    distance_km: float = Field(..., ge=0, description="Distance in kilometers")
-    proximity_level: ProximityLevel
-    
-    # Accessibility
-    travel_time_taxi: Optional[int] = Field(None, description="Travel time by taxi (minutes)")
-    travel_time_public: Optional[int] = Field(None, description="Travel time by public transport")
-    travel_cost_taxi: Optional[float] = Field(None, description="Taxi cost estimate")
-    
-    # Confidence
-    confidence: float = Field(default=1.0, ge=0, le=1, description="Relationship confidence score")
-    source: str = Field(default="google_hotels", description="Data source")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "hotel_id": "hotel_heritage_anuradhapura",
-                "attraction_id": "attraction_anuradhapura",
-                "attraction_name": "Anuradhapura",
-                "distance_km": 2.5,
-                "proximity_level": "close",
-                "travel_time_taxi": 12,
-                "travel_time_public": 89,
-                "travel_cost_taxi": 5.0,
-                "confidence": 1.0
-            }
-        }
-
-
-class HotelPOIRelationship(BaseModel):
-    """Relationship between hotel and point of interest"""
-    hotel_id: str
-    poi_name: str
-    poi_category: str
-    
-    distance_km: Optional[float] = None
-    travel_time: Optional[int] = Field(None, description="Travel time in minutes")
-    transport_type: Optional[TransportType] = None
-    
-    rating: Optional[float] = None
-    reviews: Optional[int] = None
 
 
 # ========== Ingestion Models ==========
@@ -378,3 +325,48 @@ class HotelStatistics(BaseModel):
         default_factory=dict,
         description="Attraction -> [Hotel IDs] mapping"
     )
+
+
+# ========== Orchestrator Models ==========
+
+class AccommodationSearchRequest(BaseModel):
+    """Request model for orchestrator hotel search."""
+    intent: str = Field(..., description="Intent type (e.g., 'info_accommodation')")
+    raw_text: str = Field(..., description="User's original query")
+    user_id: str = Field(..., description="User UUID")
+    session_id: str = Field(..., description="Session identifier")
+    city: Optional[str] = Field(None, description="City name filter")
+    country: Optional[str] = Field(None, description="Country filter (e.g., 'Sri Lanka')")
+    min_star_rating: Optional[int] = Field(None, ge=0, le=5, description="Minimum star rating")
+    max_star_rating: Optional[int] = Field(None, ge=0, le=5, description="Maximum star rating")
+    must_have_amenities: List[str] = Field(
+        default_factory=list,
+        description="Required amenities (normalized: wifi, ac, pool, breakfast, parking, gym, spa, family_rooms)"
+    )
+    max_price_lkr: Optional[float] = Field(None, ge=0, description="Maximum price in LKR")
+    limit: int = Field(10, ge=1, le=100, description="Maximum number of results")
+    trace: Optional[Dict[str, Any]] = Field(None, description="Trace metadata")
+
+
+class HotelItemResponse(BaseModel):
+    """Individual hotel item in orchestrator response."""
+    name: str
+    city: Optional[str]
+    country: str = "Sri Lanka"
+    star_rating: Optional[int]
+    price_range_lkr: Dict[str, float]
+    amenities: List[str]
+    address: Optional[str]
+    geo: Dict[str, float]
+    source: str = "neo4j"
+    kg_id: str
+
+
+class OrchestratorSearchResponse(BaseModel):
+    """Response model for orchestrator hotel search."""
+    ok: bool
+    count: Optional[int] = None
+    items: Optional[List[HotelItemResponse]] = None
+    trace: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    details: Optional[str] = None
