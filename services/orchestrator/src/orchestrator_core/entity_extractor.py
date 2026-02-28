@@ -70,12 +70,17 @@ Return ONLY valid JSON with this exact structure:
 
     "origin": string|null,
     "destination": string|null,
+    "origin_city": string|null,
+    "include_stops": bool|null,
+    "route_direction": string|null,   // "outbound" | "return" | "both"
+    "waypoints": string[],                 // ordered intermediate stops if mentioned
+    "stop_durations_days": { "string": int },  // map of waypoint -> days staying there
 
     "budget_level": string|null,     // "low" | "medium" | "high" or null
 
-    "tags": string[]                 // descriptive tags like ["nature", "culture", "family-friendly"]
-    "legal_service": string|null   // "visa" | "citizenship" | null
-    "citizenship_type": string|null // "dual_citizenship" | "citizenship_registration" | null
+    "tags": string[],          // descriptive tags like ["nature", "culture", "family-friendly"]
+    "legal_service": string|null,   // "visa" | "citizenship" | null
+    "citizenship_type": string|null, // "dual_citizenship" | "citizenship_registration" | null
 
 
   },
@@ -130,6 +135,10 @@ Rules:
 - Use only real Sri Lankan city names when detected.
 - If user asks about attractions but no specific POI, set poi_name = null.
 - Output ONLY raw JSON. No extra text, no markdown, no explanation.
+- If the user mentions intermediate stops like "via", "stop at", "on the way to", "pass through", extract them in "waypoints" in travel order.
+- Do NOT include origin_city or destination inside waypoints.
+- If the user says "stay/spend X days in Y", add Y to waypoints (if not already) and set stop_durations_days[Y] = X.
+- stop_durations_days must only include locations present in waypoints.
 """
 
 
@@ -508,6 +517,89 @@ NATIONALITY_ADJ_TO_COUNTRY = {
 }
 
 NEXT_MONTH_GENERIC = re.compile(r"\bnext\s+month\b", re.IGNORECASE)
+
+ROUTE_BOTH_PATTERN = re.compile(
+    r"\b(both|both ways|both directions|to and fro|round\s*trip|going and coming back|go and return)\b",
+    re.IGNORECASE,
+)
+
+ROUTE_RETURN_PATTERN = re.compile(
+    r"\b(coming back|on the way back|on return|return trip|while returning|back home|back to)\b",
+    re.IGNORECASE,
+)
+
+ROUTE_OUTBOUND_PATTERN = re.compile(
+    r"\b(on the way(?: there)?|while going|en route|on the way to|include stops|stops on the way|stop by|pit stop)\b",
+    re.IGNORECASE,
+)
+STOP_DURATION_PATTERNS = [
+    re.compile(r"\b(?:stay|spend)\s+(?:in|at)\s+([A-Za-z][A-Za-z\s\-]+?)\s+for\s+(\d+)\s+days?\b", re.IGNORECASE),
+    re.compile(r"\b(?:stay|spend)\s+(\d+)\s+days?\s+(?:in|at)\s+([A-Za-z][A-Za-z\s\-]+?)\b", re.IGNORECASE),
+    re.compile(r"\bstop\s+(?:in|at)\s+([A-Za-z][A-Za-z\s\-]+?)\s+for\s+(\d+)\s+days?\b", re.IGNORECASE),
+]
+
+def _override_stop_durations(data: Dict[str, Any], text: str) -> None:
+    entities = data.setdefault("entities", {})
+    stop_map = entities.get("stop_durations_days")
+    if not isinstance(stop_map, dict):
+        stop_map = {}
+
+    # Ensure waypoints list exists
+    wps = entities.get("waypoints")
+    if not isinstance(wps, list):
+        wps = [] if wps is None else [wps]
+
+    for pat in STOP_DURATION_PATTERNS:
+        for m in pat.finditer(text):
+            # pattern order differs: sometimes (place, days) or (days, place)
+            g1, g2 = m.group(1), m.group(2)
+
+            if g1.isdigit():
+                days = int(g1)
+                place = g2
+            else:
+                place = g1
+                days = int(g2)
+
+            place_clean = re.sub(r"\s+", " ", place.strip()).title()
+            if not place_clean:
+                continue
+
+            # add to waypoints if not already
+            if place_clean.lower() not in {w.lower() for w in wps}:
+                wps.append(place_clean)
+
+            # set duration
+            if days > 0:
+                stop_map[place_clean] = days
+
+    entities["waypoints"] = wps
+    entities["stop_durations_days"] = stop_map
+
+    # include_stops auto
+    if entities.get("include_stops") is None:
+        entities["include_stops"] = bool(wps)
+def _override_route_direction(data: Dict[str, Any], text: str) -> None:
+    entities = data.setdefault("entities", {})
+    t = text.lower()
+
+    # strongest first
+    if ROUTE_BOTH_PATTERN.search(t):
+        entities["route_direction"] = "both"
+        return
+
+    if ROUTE_RETURN_PATTERN.search(t):
+        entities["route_direction"] = "return"
+        return
+
+    if ROUTE_OUTBOUND_PATTERN.search(t):
+        entities["route_direction"] = "outbound"
+        return
+
+    # If they said "include stops on the way" but didn't specify direction,
+    # choose your default behavior:
+    if entities.get("include_stops") is True and entities.get("route_direction") is None:
+        entities["route_direction"] = "outbound"   # or keep None if you want to ask follow-up
 
 def _override_next_month_generic(data: Dict[str, Any], text: str, now: datetime) -> None:
     if not NEXT_MONTH_GENERIC.search(text):
@@ -926,7 +1018,16 @@ def _override_relative_dates(
     entities["end_date"] = end_date
     entities["travel_month"] = travel_month
 
-
+def _sanitize_route_direction(data: Dict[str, Any]) -> None:
+    entities = data.setdefault("entities", {})
+    v = entities.get("route_direction")
+    if v is None:
+        return
+    if not isinstance(v, str):
+        entities["route_direction"] = None
+        return
+    v = v.strip().lower()
+    entities["route_direction"] = v if v in {"outbound", "return", "both"} else None
 
 
 def _override_time_of_day(data: Dict[str, Any], text: str) -> None:
@@ -1000,6 +1101,9 @@ def extract_entities_and_prefs(
 
 
     entities = data.setdefault("entities", {})
+    _override_route_direction(data, text) 
+    _sanitize_route_direction(data)
+    _override_stop_durations(data, text)
 
     # If user asked for N days and we have a start_date but end_date is missing/same, compute it
     try:
@@ -1061,6 +1165,11 @@ def extract_entities_and_prefs(
         "tags": [],
         "legal_service": None,
         "citizenship_type": None,
+        "origin_city": None,
+        "include_stops": None,
+        "route_direction": None,
+        "waypoints": [],
+        "stop_durations_days": {},
 
 
         # NEW hotel-specific constraints

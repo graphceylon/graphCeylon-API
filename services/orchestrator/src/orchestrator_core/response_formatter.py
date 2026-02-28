@@ -108,7 +108,9 @@ class ResponseFormatter:
         if intent == "smalltalk":
             if self.debug:
                 print("[ResponseFormatter:format] path=templates (reason=smalltalk)")
-            return self._format_with_templates(user_text, parsed_intent, results, tasks)
+            return self._sanitize_output(
+                self._format_with_templates(user_text, parsed_intent, results, tasks)
+            )
 
         # Determine whether to use LLM
         use_llm = (self.provider == "groq" and bool(self.groq_key))
@@ -128,7 +130,7 @@ class ResponseFormatter:
             if out and out.get("text"):
                 if self.debug:
                     print("[ResponseFormatter:format] path=groq (success)")
-                return out
+                return self._sanitize_output(out)
             if self.debug:
                 print("[ResponseFormatter:format] path=groq (empty/failed) -> fallback templates")
 
@@ -291,6 +293,44 @@ class ResponseFormatter:
                     return s
 
         return intent
+    
+    def _sanitize_output(self, out: Any) -> Dict[str, Any]:
+        """
+        Guarantee formatter output shape:
+        - text: plain string (never JSON string, never dict)
+        - followups: list[str]
+        """
+        if not isinstance(out, dict):
+            return {"text": str(out), "followups": []}
+
+        text = out.get("text", "")
+        followups = out.get("followups", [])
+
+        # 1) text must be string
+        if text is None:
+            text = ""
+        if not isinstance(text, str):
+            text = str(text)
+
+        # 2) if text looks like JSON string with {"text": "..."} unwrap it
+        t = text.strip()
+        if t.startswith("{") and t.endswith("}") and '"text"' in t:
+            try:
+                j = json.loads(t)
+                if isinstance(j, dict) and isinstance(j.get("text"), str):
+                    text = j["text"].strip()
+                    fu = j.get("followups")
+                    if isinstance(fu, list):
+                        followups = fu
+            except Exception:
+                pass
+
+        # 3) followups must be list[str]
+        if not isinstance(followups, list):
+            followups = []
+        followups = [str(x) for x in followups if isinstance(x, (str, int, float))]
+
+        return {"text": text.strip(), "followups": followups}
     def _pick_effective_intent_with_results(self, parsed_intent: Dict[str, Any], results: Dict[str, Any]) -> str:
         """
         Pick an intent that matches available results.
@@ -650,11 +690,17 @@ class ResponseFormatter:
             # Try to extract the first JSON object from the text
             m = re.search(r"\{.*\}", content, re.DOTALL)
             if not m:
-                return {"text": content.strip(), "followups": []}
+                return self._sanitize_output({
+                    "text": str(out.get("text", "")).strip(),
+                    "followups": out.get("followups", []) or [],
+                })
             try:
                 out = json.loads(m.group(0))
             except Exception:
-                return {"text": content.strip(), "followups": []}
+                return self._sanitize_output({
+                    "text": str(out.get("text", "")).strip(),
+                    "followups": out.get("followups", []) or [],
+                })
 
         if isinstance(out, dict) and "text" in out:
             return {
@@ -664,7 +710,7 @@ class ResponseFormatter:
 
         # Soft fallback: if model returned something unexpected, still show it
         if content:
-            return {"text": content.strip(), "followups": []}
+            return self._sanitize_output({"text": content.strip(), "followups": []})
 
         return self._format_with_templates(user_text, parsed_intent, results, tasks)
 

@@ -1,5 +1,5 @@
 # api/schemas.py
-from typing import Optional, List, Dict,Any
+from typing import Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, Field
 from ..orchestrator_core.contracts.weather import WeatherForecastResponse
 from ..orchestrator_core.contracts.crowd import CrowdForecastResponse
@@ -35,6 +35,11 @@ class Entities(BaseModel):
     poi_name: Optional[str] = None
     itinerary_id: Optional[str] = None
     current_itinerary: Optional[dict] = None
+    origin_city: Optional[str] = None
+    include_stops: Optional[bool] = None
+    route_direction: Optional[Literal["outbound", "return", "both"]] = None
+    waypoints: List[str] = Field(default_factory=list)
+    stop_durations_days: Dict[str, int] = Field(default_factory=dict)
 
     # NEW: what *kind* of POI in the KG
     poi_category: Optional[str] = None   # "attraction", "restaurant", "hotel", ...
@@ -76,6 +81,7 @@ class OrchestrateRequest(BaseModel):
     channel: Optional[str] = "chat"   # later: app, web, voice
     lang: Optional[str] = "auto"      # si, ta, en, auto
     session_id: Optional[str] = None  # for multi-turn context
+    entities: Optional[Dict[str, Any]] = None 
 
 
 # what intent parser returns (after wrapping)
@@ -121,22 +127,25 @@ class OrchestrateResponse(BaseModel):
     price_result: Optional[PriceForecastResponse] = None
     itinerary_result: Optional[ItineraryPlanResponse] = None
 
-    # ✅ keep modify_result ONLY for success payloads
     modify_result: Optional[ItineraryModifyResponse] = None
 
-    # ✅ new: errors list for downstream failures
     errors: List[AgentCallError] = Field(default_factory=list)
 
     visa_result: Optional[VisaPolicyResponse] = None
     accommodation_result: Optional[Any] = None
-    pois_result:Optional[Any] = None
+    pois_result: Optional[Any] = None
     transport_result: Optional[Any] = None
     attraction_result: Optional[Any] = None
+
     final_message: Optional[str] = None
-    followups: Optional[List[str]] = None
+
+    # ✅ Always a list (frontend can render safely)
+    followups: List[str] = Field(default_factory=list)
+
+    # ✅ Return a top-level trace object
+    trace: Optional[Dict[str, Any]] = None
+
+    # ✅ Optional patch (you already had this)
     session_state_patch: Optional[Dict[str, Any]] = None
+
     trip_id: Optional[str] = None
-
-
-
-
