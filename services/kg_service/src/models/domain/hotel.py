@@ -107,19 +107,45 @@ class HotelBase(BaseModel):
     description: Optional[str] = Field(None, description="Hotel description")
     link: Optional[str] = Field(None, description="Hotel website URL")
     
-    # Location
+    # Location (GPS)
     gps_coordinates: GPSCoordinates
     
-    # Administrative location (to be enriched)
+    # Administrative location from geolocation.address_info.administrative_areas
+    country: Optional[str] = None
+    country_code: Optional[str] = None
     province: Optional[str] = None
     district: Optional[str] = None
     city: Optional[str] = None
+    town: Optional[str] = None
+    postal_code: Optional[str] = None
+    formatted_address: Optional[str] = None
+    
+    # Map links from geolocation.map_links
+    google_maps_url: Optional[str] = None
+    coordinates_decimal: Optional[str] = None
+    coordinates_dms: Optional[str] = None
     
     # Pricing
     rate_per_night: Optional[float] = Field(None, ge=0, description="Rate per night in USD")
     total_rate: Optional[float] = Field(None, ge=0, description="Total rate for stay")
     currency: str = Field(default="USD", description="Currency code")
     price_tier: Optional[PriceTier] = None
+    
+    @validator('rate_per_night', pre=True, always=True)
+    def parse_rate_per_night(cls, v):
+        """Parse rate strings like 'US$85', '$120', or plain numbers"""
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            cleaned = v.replace('US$', '').replace('$', '').replace(',', '').strip()
+            if cleaned:
+                try:
+                    return float(cleaned)
+                except ValueError:
+                    return None
+        return None
     
     # Check-in/out
     check_in_time: Optional[str] = Field(None, description="Check-in time (e.g., '2:00 PM')")

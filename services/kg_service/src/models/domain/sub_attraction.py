@@ -169,10 +169,10 @@ class SubAttractionSearchRequest(BaseModel):
     Mirrors AttractionSearchRequest so the orchestrator can call both
     endpoints with the same payload shape.
     """
-    city: Optional[str] = Field(None, description="City name (e.g., 'Kandy', 'Colombo', 'Galle'). Optional if poi_category is provided.")
+    city: Optional[str] = Field(None, description="City name (e.g., 'Kandy', 'Colombo', 'Galle'). Optional if preferred_poi_category is provided.")
     country: str = Field(default="Sri Lanka", description="Country name (e.g., 'Sri Lanka')")
     poi_name: Optional[str] = Field(None, description="Specific POI name to search for")
-    poi_category: Optional[str] = Field(None, description="Category of POI (e.g., 'temple', 'museum', 'park')")
+    preferred_poi_category: Optional[str] = Field(None, description="Preferred category of POI to include (e.g., 'temple', 'museum', 'park')")
     days: Optional[int] = Field(None, description="Number of days for trip planning context")
     tags: Optional[List[str]] = Field(None, description="Tags for filtering (e.g., ['historical', 'cultural'])")
     user_id: Optional[str] = Field(None, description="User ID for personalization")
