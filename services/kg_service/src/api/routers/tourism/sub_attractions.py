@@ -25,6 +25,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sub-attractions", tags=["sub-attractions"])
 
+# ------------------------------------------------------------------
+# Categories always excluded from orchestrator sub-attraction results.
+# Add/remove entries here to control what the orchestrator never returns.
+# ------------------------------------------------------------------
+REJECTED_POI_CATEGORIES: list[str] = [
+    "Shopping & City",
+    "Food & Markets",
+]
+
 
 # ------------------------------------------------------------------
 # Orchestrator endpoint
@@ -46,10 +55,13 @@ def search_sub_attractions_for_orchestrator(
     endpoint so the orchestrator can call both endpoints uniformly.
 
     **Search Strategies:**
-    1. **City Only** (no poi_category): All POIs in that location
-    2. **City + POI Category**: POIs filtered by location and type
-    3. **POI Category Only** (no city): POIs across all locations
+    1. **City Only** (no preferred_poi_category): All POIs in that location
+    2. **City + Preferred POI Category**: POIs filtered by location and preferred type
+    3. **Preferred POI Category Only** (no city): POIs of that type across all locations
     4. **POI Name**: Specific POI name search
+
+    Certain non-tourism categories (hotels, banks, schools, etc.) are always
+    excluded internally by the service layer regardless of the request.
 
     Example Request:
     ```json
@@ -57,7 +69,7 @@ def search_sub_attractions_for_orchestrator(
         "city": "Kandy",
         "country": "Sri Lanka",
         "poi_name": null,
-        "poi_category": null,
+        "preferred_poi_category": "temple",
         "days": 1,
         "tags": [],
         "user_id": "abfe4e3e-06d7-4081-815d-150d92f3070a",
@@ -95,11 +107,15 @@ def search_sub_attractions_for_orchestrator(
         city_display = request.city or "all cities"
         logger.info(
             f"Orchestrator sub-attraction search: city={city_display}, "
-            f"country={request.country}, poi_category={request.poi_category}"
+            f"country={request.country}, "
+            f"preferred_poi_category={request.preferred_poi_category}"
         )
 
         service = OrchestratorSubAttractionService(db.driver)
-        response = service.search_sub_attractions(request)
+        response = service.search_sub_attractions(
+            request,
+            rejected_categories=REJECTED_POI_CATEGORIES,
+        )
 
         logger.info(f"Found {len(response.items)} sub-attractions")
         return response
@@ -310,6 +326,71 @@ def get_by_group(
 # ------------------------------------------------------------------
 # Metadata / statistics
 # ------------------------------------------------------------------
+
+@router.get("/tags/groups", response_model=dict)
+def get_unique_group_tags(
+    db: DatabaseManager = Depends(get_db_manager),
+):
+    """Get all unique group tags across every sub-attraction in the knowledge graph.
+
+    Unwinds the ``groups`` list property stored on each SubAttraction node
+    and returns a deduplicated, sorted list of tag strings along with the
+    total count.
+
+    Example response:
+    ```json
+    {
+        "tags": [
+            "Adventure & Hiking",
+            "Culture & Heritage",
+            "Food & Markets",
+            "Nature & Eco",
+            "Religious / Spiritual",
+            "Shopping & City"
+        ],
+        "count": 6
+    }
+    ```
+    """
+    try:
+        tags = db.sub_attractions.get_unique_group_tags()
+        return {"tags": tags, "count": len(tags)}
+    except Exception as e:
+        logger.error(f"Failed to get unique group tags: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/tags/osm", response_model=dict)
+def get_unique_osm_tags(
+    db: DatabaseManager = Depends(get_db_manager),
+):
+    """Get all unique OSM tag keys and their possible values across every sub-attraction.
+
+    Parses the ``osmTags`` JSON string stored on each SubAttraction node and
+    returns a mapping of every tag key to the sorted list of unique values
+    found for it in the knowledge graph.
+
+    Example response:
+    ```json
+    {
+        "tags": {
+            "amenity": ["cafe", "place_of_worship", "restaurant"],
+            "cuisine": ["chinese", "coffee_shop", "sri_lankan"],
+            "religion": ["buddhist", "christian", "hindu", "muslim"],
+            "shop": ["clothes", "gift", "supermarket"],
+            "tourism": ["attraction", "museum", "viewpoint"]
+        },
+        "count": 5
+    }
+    ```
+    """
+    try:
+        tags = db.sub_attractions.get_osm_tags_with_values()
+        return {"tags": tags, "count": len(tags)}
+    except Exception as e:
+        logger.error(f"Failed to get unique OSM tags: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/groups", response_model=dict)
 def get_poi_groups(

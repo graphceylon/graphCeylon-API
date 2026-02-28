@@ -6,7 +6,7 @@ RESTful endpoints for hotel queries, search, recommendations, and ingestion
 
 from typing import List, Optional, Dict, Any
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Query, Depends, UploadFile, File
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel, Field
 import json
 import time
@@ -654,203 +654,112 @@ async def get_hotels_near_attraction(
         }
 
 
-@router.post("/ingest", response_model=Dict[str, Any])
-async def ingest_hotels(
-    file: UploadFile = File(..., description="Hotels JSON file"),
+@router.get("/debug/inspect", response_model=Dict[str, Any])
+async def debug_inspect_hotels(
+    city: Optional[str] = None,
+    limit: int = 20,
+    driver = Depends(get_driver)
 ):
     """
-    Ingest hotels from uploaded JSON file
-    
-    **Upload a hotels.json file** containing:
-    - Attraction names
-    - Hotel details (name, coordinates, pricing, etc.)
-    - Nearby places and amenities
-    
-    **Returns:**
-    - Total hotels created
-    - Relationships established
-    - POIs and amenities added
-    - Processing time
-    
-    **Example usage:**
-    ```bash
-    curl -X POST "http://localhost:8000/hotels/ingest" \\
-      -F "file=@hotels.json"
-    ```
+    Debug endpoint: shows raw h.city, h.district, h.province stored on Hotel nodes
+    and their LOCATED_IN_DISTRICT / LOCATED_IN_PROVINCE relationships.
+    Use this to verify correct ingestion before running searches.
     """
-    if not file.filename.endswith('.json'):
-        raise HTTPException(
-            status_code=400,
-            detail="Only JSON files are accepted"
-        )
-    
-    try:
-        # Read uploaded file
-        contents = await file.read()
-        data = json.loads(contents.decode('utf-8'))
+    with driver.session() as session:
+        query = """
+        MATCH (h:Hotel)
+        OPTIONAL MATCH (h)-[:LOCATED_IN_DISTRICT]->(d:District)
+        OPTIONAL MATCH (h)-[:LOCATED_IN_PROVINCE]->(p:Province)
+        RETURN
+            h.hotel_id        AS hotel_id,
+            h.name            AS name,
+            h.city            AS h_city,
+            h.district        AS h_district,
+            h.province        AS h_province,
+            h.country         AS h_country,
+            h.rating          AS rating,
+            h.attraction      AS scrape_attraction,
+            d.name            AS district_node,
+            p.name            AS province_node
+        ORDER BY h.name ASC
+        LIMIT $limit
+        """
+        params: Dict[str, Any] = {"limit": limit}
+        if city:
+            query = """
+            MATCH (h:Hotel)
+            OPTIONAL MATCH (h)-[:LOCATED_IN_DISTRICT]->(d:District)
+            OPTIONAL MATCH (h)-[:LOCATED_IN_PROVINCE]->(p:Province)
+            WHERE toLower(h.city) CONTAINS toLower($city)
+               OR toLower(h.district) CONTAINS toLower($city)
+               OR toLower(d.name) CONTAINS toLower($city)
+               OR toLower(p.name) CONTAINS toLower($city)
+            RETURN
+                h.hotel_id        AS hotel_id,
+                h.name            AS name,
+                h.city            AS h_city,
+                h.district        AS h_district,
+                h.province        AS h_province,
+                h.country         AS h_country,
+                h.rating          AS rating,
+                h.attraction      AS scrape_attraction,
+                d.name            AS district_node,
+                p.name            AS province_node
+            ORDER BY h.name ASC
+            LIMIT $limit
+            """
+            params["city"] = city
         
-        # Initialize ingestion service
-        service = HotelIngestionService()
-        
-        try:
-            # Process the data
-            overall_start = time.time()
-            
-            total_results = {
-                "total_attractions": 0,
-                "total_hotels_created": 0,
-                "total_relationships": 0,
-                "total_pois": 0,
-                "total_amenities": 0,
-                "total_errors": 0,
-                "attraction_results": []
+        records = list(session.run(query, **params))
+        hotels_raw = [
+            {
+                "hotel_id":        r["hotel_id"],
+                "name":            r["name"],
+                "h.city":          r["h_city"],
+                "h.district":      r["h_district"],
+                "h.province":      r["h_province"],
+                "h.country":       r["h_country"],
+                "rating":          r["rating"],
+                "scrape_attraction": r["scrape_attraction"],
+                "district_node":   r["district_node"],
+                "province_node":   r["province_node"],
             }
-            
-            # Process each attraction's hotels
-            for attraction_data in data.get("attractions", []):
-                attraction_name = attraction_data.get("attraction")
-                if not attraction_name or not attraction_data.get("hotels"):
-                    continue
-                
-                # Convert to ingestion batch format
-                from models.domain.hotel import (
-                    HotelIngestionBatch,
-                    HotelCreate,
-                    GPSCoordinates,
-                    NearbyPlace,
-                    TransportationOption
-                )
-                
-                hotels = []
-                for hotel_data in attraction_data.get("hotels", []):
-                    try:
-                        # Parse nearby places
-                        nearby_places = []
-                        for place_data in hotel_data.get("nearby_places", []):
-                            transportations = []
-                            for trans_data in place_data.get("transportations", []):
-                                transportations.append(TransportationOption(**trans_data))
-                            
-                            gps = place_data.get("gps_coordinates")
-                            gps_coords = GPSCoordinates(**gps) if gps else None
-                            
-                            nearby_places.append(
-                                NearbyPlace(
-                                    **{**place_data, "transportations": transportations, "gps_coordinates": gps_coords}
-                                )
-                            )
-                        
-                        # Create hotel - Handle missing/invalid GPS coordinates
-                        gps_data = hotel_data.get("gps_coordinates")
-                        if isinstance(gps_data, str) or not gps_data:
-                            # Skip hotels with empty/invalid GPS - they must have coordinates
-                            total_results["total_errors"] += 1
-                            continue
-                        
-                        # Parse numeric fields safely
-                        rate_per_night = hotel_data.get("rate_per_night")
-                        if isinstance(rate_per_night, str):
-                            # Remove currency symbols and parse
-                            rate_per_night = rate_per_night.replace("US$", "").replace("$", "").strip()
-                            try:
-                                rate_per_night = float(rate_per_night)
-                            except:
-                                rate_per_night = None
-                        
-                        rating = hotel_data.get("rating") or hotel_data.get("overall_rating")
-                        
-                        hotel = HotelCreate(
-                            name=hotel_data.get("name"),
-                            description=hotel_data.get("description"),
-                            link=hotel_data.get("link"),
-                            gps_coordinates=GPSCoordinates(**gps_data),
-                            rate_per_night=rate_per_night,
-                            total_rate=hotel_data.get("total_rate"),
-                            check_in_time=hotel_data.get("check_in_time"),
-                            check_out_time=hotel_data.get("check_out_time"),
-                            property_token=hotel_data.get("property_token"),
-                            serpapi_link=hotel_data.get("serpapi_property_details_link"),
-                            rating=rating,
-                            reviews_count=hotel_data.get("reviews"),
-                            images=hotel_data.get("images", []),
-                            amenities=hotel_data.get("amenities", []),
-                            nearby_places=nearby_places,
-                            attraction_name=attraction_name
-                        )
-                        hotels.append(hotel)
-                    except Exception as e:
-                        total_results["total_errors"] += 1
-                        continue
-                
-                if hotels:
-                    # Create batch
-                    batch = HotelIngestionBatch(
-                        attraction_name=attraction_name,
-                        attraction_description=attraction_data.get("attraction_description"),
-                        attraction_geolocation=attraction_data.get("geolocation"),
-                        hotel_count=len(hotels),
-                        hotels=hotels,
-                        metadata=data.get("scrape_metadata", {})
-                    )
-                    
-                    # Ingest
-                    batch_result = service.ingest_batch(batch)
-                    
-                    # Aggregate results
-                    total_results["total_attractions"] += 1
-                    total_results["total_hotels_created"] += batch_result.hotels_created
-                    total_results["total_relationships"] += batch_result.relationships_created
-                    total_results["total_pois"] += batch_result.pois_created
-                    total_results["total_amenities"] += batch_result.amenities_created
-                    total_results["total_errors"] += len(batch_result.errors)
-                    
-                    total_results["attraction_results"].append({
-                        "attraction": attraction_name,
-                        "hotels_created": batch_result.hotels_created,
-                        "relationships": batch_result.relationships_created,
-                        "errors": batch_result.errors if batch_result.errors else []
-                    })
-            
-            total_results["total_time_seconds"] = time.time() - overall_start
-            
-            return {
-                "success": True,
-                "message": f"Successfully ingested {total_results['total_hotels_created']} hotels",
-                "results": total_results
-            }
-            
-        finally:
-            service.close()
+            for r in records
+        ]
         
-    except json.JSONDecodeError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid JSON file format"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Ingestion failed: {str(e)}"
-        )
+        # Show a summary of unique h.city values across ALL hotels
+        city_summary = list(session.run(
+            "MATCH (h:Hotel) RETURN DISTINCT h.city AS city, count(*) AS cnt ORDER BY cnt DESC"
+        ))
+        
+        return {
+            "total_matched": len(hotels_raw),
+            "city_summary": [{"city": r["city"], "count": r["cnt"]} for r in city_summary],
+            "hotels": hotels_raw,
+        }
 
 
 @router.post("/initialize", response_model=Dict[str, Any])
-async def initialize_hotels():
+async def initialize_hotels(
+    force_reset: bool = False,
+    driver = Depends(get_driver)
+):
     """
     Initialize hotels from the local hotels.json data file.
     
     Reads the hotels dataset from the data directory and ingests all hotels
     into the knowledge graph. This is the recommended method for KG initialization.
     
+    - **force_reset**: If True, deletes all existing Hotel nodes before ingesting (clean slate)
+    
     **Returns:**
     - Total hotels created
     - Relationships established
     - POIs and amenities added
     - Processing time
     """
-    # Resolve path: hotels.py -> tourism -> routers -> api -> src -> kg_service -> services -> graphCeylon-API
-    data_dir = Path(__file__).parent.parent.parent.parent.parent.parent.parent / "data" / "kg_service" / "data"
-    hotels_file = data_dir / "hotels.json"
+    # Resolve path: hotels.py -> tourism -> routers -> api -> src -> kg_service root
+    hotels_file = Path(__file__).parent.parent.parent.parent.parent / "data" / "hotels.json"
     
     if not hotels_file.exists():
         raise HTTPException(
@@ -867,6 +776,11 @@ async def initialize_hotels():
         
         try:
             overall_start = time.time()
+            
+            # Wipe existing Hotel nodes if requested
+            if force_reset:
+                with driver.session() as wipe_session:
+                    wipe_session.run("MATCH (h:Hotel) DETACH DELETE h")
             
             total_results = {
                 "total_attractions": 0,
@@ -892,6 +806,24 @@ async def initialize_hotels():
                 if not attraction_name or not attraction_data.get("hotels"):
                     continue
                 
+                # Extract authoritative geo data from attraction's geolocation block
+                geolocation = attraction_data.get("geolocation", {}) or {}
+                address_info = geolocation.get("address_info", {}) or {}
+                admin_areas = address_info.get("administrative_areas", {}) or {}
+                map_links = geolocation.get("map_links", {}) or {}
+
+                geo_country = admin_areas.get("country")
+                geo_country_code = admin_areas.get("country_code")
+                geo_province = admin_areas.get("province")
+                geo_district = admin_areas.get("district")
+                geo_city = admin_areas.get("city") or admin_areas.get("town")
+                geo_town = admin_areas.get("town")
+                geo_postal_code = admin_areas.get("postal_code")
+                geo_formatted_address = address_info.get("formatted_address")
+                geo_google_maps_url = map_links.get("google_maps_url")
+                geo_coordinates_decimal = map_links.get("coordinates_decimal")
+                geo_coordinates_dms = map_links.get("coordinates_dms")
+
                 hotels = []
                 for hotel_data in attraction_data.get("hotels", []):
                     try:
@@ -917,15 +849,6 @@ async def initialize_hotels():
                             total_results["total_errors"] += 1
                             continue
                         
-                        # Parse numeric fields safely
-                        rate_per_night = hotel_data.get("rate_per_night")
-                        if isinstance(rate_per_night, str):
-                            rate_per_night = rate_per_night.replace("US$", "").replace("$", "").strip()
-                            try:
-                                rate_per_night = float(rate_per_night)
-                            except:
-                                rate_per_night = None
-                        
                         rating = hotel_data.get("rating") or hotel_data.get("overall_rating")
                         
                         hotel = HotelCreate(
@@ -933,7 +856,7 @@ async def initialize_hotels():
                             description=hotel_data.get("description"),
                             link=hotel_data.get("link"),
                             gps_coordinates=GPSCoordinates(**gps_data),
-                            rate_per_night=rate_per_night,
+                            rate_per_night=hotel_data.get("rate_per_night"),
                             total_rate=hotel_data.get("total_rate"),
                             check_in_time=hotel_data.get("check_in_time"),
                             check_out_time=hotel_data.get("check_out_time"),
@@ -944,7 +867,19 @@ async def initialize_hotels():
                             images=hotel_data.get("images", []),
                             amenities=hotel_data.get("amenities", []),
                             nearby_places=nearby_places,
-                            attraction_name=attraction_name
+                            attraction_name=attraction_name,
+                            # Authoritative geo from administrative_areas
+                            country=geo_country,
+                            country_code=geo_country_code,
+                            province=geo_province,
+                            district=geo_district,
+                            city=geo_city,
+                            town=geo_town,
+                            postal_code=geo_postal_code,
+                            formatted_address=geo_formatted_address,
+                            google_maps_url=geo_google_maps_url,
+                            coordinates_decimal=geo_coordinates_decimal,
+                            coordinates_dms=geo_coordinates_dms,
                         )
                         hotels.append(hotel)
                     except Exception as e:
