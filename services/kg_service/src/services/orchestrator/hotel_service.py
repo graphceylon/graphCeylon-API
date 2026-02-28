@@ -9,6 +9,7 @@ from typing import List, Dict, Any
 
 from neo4j import Driver
 
+from core.utils import normalize_location_name, CITY_ALIASES
 from models.domain.hotel import (
     AccommodationSearchRequest,
     HotelItemResponse,
@@ -33,8 +34,14 @@ class OrchestratorHotelService:
         """Search hotels based on orchestrator request criteria.
 
         Filters by city/country, star rating range, required amenities, and budget.
+        City matching checks hotel city, district, province, and linked attraction name
+        (case-insensitive), mirroring the sub-attraction city filter pattern.
         """
         start_time = time.time()
+
+        # Normalise city (handles aliases like "colombo" -> "Colombo")
+        if request.city:
+            request = request.copy(update={"city": normalize_location_name(request.city, CITY_ALIASES)})
 
         try:
             with self.driver.session() as session:
@@ -68,29 +75,48 @@ class OrchestratorHotelService:
         """Build Cypher query and parameters from *request*."""
         params: Dict[str, Any] = {"limit": request.limit}
 
+        # Start with MATCH + OPTIONAL MATCHes, then move into a WITH block
+        # so that WHERE filters act as hard row-level filters — not as
+        # constraints on an OPTIONAL MATCH (which would only nullify the
+        # optional variables instead of excluding the row).
         cypher_query = """MATCH (h:Hotel)
         OPTIONAL MATCH (h)-[:LOCATED_IN_DISTRICT]->(d:District)
         OPTIONAL MATCH (h)-[:LOCATED_IN_PROVINCE]->(p:Province)
+        WITH h, d, p
         """
 
         where_clauses: list[str] = []
 
         if request.city:
+            # Match on the hotel's own city field first (exact match).
+            # Fall back to exact district / province name only when the
+            # hotel has no explicit city.  We use equality (not CONTAINS)
+            # to avoid false positives such as "Kegalle" matching "Galle".
             where_clauses.append(
-                "(toLower(d.name) = toLower($city) OR toLower(h.city) = toLower($city))"
+                "("
+                "toLower(h.city) = toLower($city) "
+                "OR (h.city IS NULL AND toLower(h.district) = toLower($city)) "
+                "OR (h.city IS NULL AND toLower(d.name) = toLower($city)) "
+                "OR (h.city IS NULL AND toLower(p.name) = toLower($city))"
+                ")"
             )
             params["city"] = request.city
 
         if request.country and request.country.lower() == "sri lanka":
             where_clauses.append("p IS NOT NULL")
 
+        # Map hotel star tiers to Google review score thresholds:
+        # 5-star → 4.5+,  4-star → 4.0+,  3-star → 3.5+,  2-star → 3.0+,  1-star → 0+
+        STAR_TO_MIN_SCORE = {5: 4.5, 4: 4.0, 3: 3.5, 2: 3.0, 1: 0.0}
+        STAR_TO_MAX_SCORE = {5: 5.0, 4: 4.49, 3: 3.99, 2: 3.49, 1: 2.99}
+
         if request.min_star_rating is not None:
             where_clauses.append("h.rating >= $min_rating")
-            params["min_rating"] = float(request.min_star_rating)
+            params["min_rating"] = STAR_TO_MIN_SCORE.get(request.min_star_rating, float(request.min_star_rating))
 
         if request.max_star_rating is not None:
             where_clauses.append("h.rating <= $max_rating")
-            params["max_rating"] = float(request.max_star_rating)
+            params["max_rating"] = STAR_TO_MAX_SCORE.get(request.max_star_rating, float(request.max_star_rating))
 
         if request.max_price_lkr is not None:
             max_price_usd = request.max_price_lkr / self.USD_TO_LKR_RATE
