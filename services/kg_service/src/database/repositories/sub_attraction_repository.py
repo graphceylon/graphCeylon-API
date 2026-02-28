@@ -747,6 +747,67 @@ class SubAttractionRepository(BaseRepository):
         """
         return self.execute_query(cypher)
 
+    def get_unique_group_tags(self) -> List[str]:
+        """Get all unique group tags from SubAttraction nodes.
+
+        Unwinds the ``groups`` list property stored on every SubAttraction
+        and returns a deduplicated, sorted list of tag strings.
+        """
+        cypher = """
+        MATCH (s:SubAttraction)
+        WHERE s.groups IS NOT NULL
+        UNWIND s.groups AS tag
+        WITH DISTINCT tag
+        WHERE tag IS NOT NULL AND trim(tag) <> ''
+        RETURN tag
+        ORDER BY tag
+        """
+        rows = self.execute_query(cypher)
+        return [row["tag"] for row in rows]
+
+    def get_unique_osm_tag_keys(self) -> List[str]:
+        """Get all unique OSM tag keys stored across every SubAttraction node.
+
+        ``osmTags`` is persisted as a JSON string (e.g.
+        ``'{"amenity": "restaurant", "name": "..."}``).  APOC is used to
+        parse each string into a map so we can enumerate its keys.
+        Returns a deduplicated, sorted list.
+        """
+        cypher = """
+        MATCH (s:SubAttraction)
+        WHERE s.osmTags IS NOT NULL AND s.osmTags <> '{}' AND s.osmTags <> ''
+        WITH apoc.convert.fromJsonMap(s.osmTags) AS tagsMap
+        UNWIND keys(tagsMap) AS tagKey
+        WITH DISTINCT tagKey
+        WHERE tagKey IS NOT NULL AND trim(tagKey) <> ''
+        RETURN tagKey
+        ORDER BY tagKey
+        """
+        rows = self.execute_query(cypher)
+        return [row["tagKey"] for row in rows]
+
+    def get_osm_tags_with_values(self) -> Dict[str, List[str]]:
+        """Get all unique OSM tag keys and their unique values across all SubAttraction nodes.
+
+        Returns a dict mapping each tag key to a sorted list of distinct
+        non-empty values found for that key.
+        """
+        cypher = """
+        MATCH (s:SubAttraction)
+        WHERE s.osmTags IS NOT NULL AND s.osmTags <> '{}' AND s.osmTags <> ''
+        WITH apoc.convert.fromJsonMap(s.osmTags) AS tagsMap
+        UNWIND keys(tagsMap) AS tagKey
+        WITH tagKey, tagsMap[tagKey] AS tagValue
+        WHERE tagKey IS NOT NULL AND trim(tagKey) <> ''
+          AND tagValue IS NOT NULL AND trim(toString(tagValue)) <> ''
+        WITH tagKey, trim(toString(tagValue)) AS cleanValue
+        WITH tagKey, collect(DISTINCT cleanValue) AS values
+        RETURN tagKey, apoc.coll.sort(values) AS values
+        ORDER BY tagKey
+        """
+        rows = self.execute_query(cypher)
+        return {row["tagKey"]: row["values"] for row in rows}
+
     def get_statistics(self) -> Dict[str, Any]:
         """Get comprehensive statistics about sub-attraction data."""
         cypher = """
