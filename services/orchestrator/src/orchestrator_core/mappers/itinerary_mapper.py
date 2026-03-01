@@ -102,6 +102,8 @@ def map_itinerary_request(parsed_intent: ParsedIntent, req: OrchestrateRequest) 
     start_date = e.start_date or str(date.today())
     days = int(e.days or 3)
     end_date = e.end_date or str(date.fromisoformat(start_date) + timedelta(days=days - 1))
+    waypoints = getattr(e, "waypoints", None) or []
+    stop_durations_days = getattr(e, "stop_durations_days", None) or {}
 
     query: Dict[str, Any] = {
         "raw_text": req.input_text,
@@ -111,6 +113,10 @@ def map_itinerary_request(parsed_intent: ParsedIntent, req: OrchestrateRequest) 
         "country": e.country or "Sri Lanka",
         "days": days,
         "origin_city": getattr(e, "origin", None) or getattr(e, "origin_city", None),
+        "include_stops": bool(waypoints),
+        "waypoints": waypoints,
+        "stop_durations_days": stop_durations_days,
+        
 
         "start_date": start_date,
         "end_date": end_date,

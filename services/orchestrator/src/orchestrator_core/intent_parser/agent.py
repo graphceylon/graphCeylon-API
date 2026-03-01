@@ -16,7 +16,7 @@ INTENT_LABELS: List[str] = [
     "plan_itinerary","recommend_pois","modify_itinerary",
     "crowd_forecast","forecast_weather","forecast_price","forecast_sustainability",
     "info_attraction","info_accommodation","info_transport","info_visa_policy",
-    "check_availability","book_hotel","modify_booking","cancel_booking",
+    "check_availability","book_hotel","modify_booking","cancel_booking","info_event_activity",
     "update_preferences","explanation_request",
     "generic_fact_query","recommend_restaurants",
     "smalltalk",           # NEW
@@ -36,7 +36,7 @@ class IntentParserAgent:
 
     def __init__(
         self,
-        model_dir: str = "intent_multilabel_final_v4",
+        model_dir: str = "intent_multilabel_final_v5",
         threshold: float = 0.2,
         top_k_if_empty: int = 2,
         enable_entity_extraction: bool = True,

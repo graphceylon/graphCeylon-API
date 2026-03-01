@@ -65,6 +65,7 @@ class ResponseFormatter:
           }
         """
         intent = self._pick_effective_intent_with_results(parsed_intent, results)
+        present_keys = self._collect_present_result_keys(results)
 
         # If nothing to format (no *_result), use LLM general answer for fact/out_of_scope
         has_any_result = any(
@@ -87,25 +88,37 @@ class ResponseFormatter:
             print(f"[ResponseFormatter:format] effective_intent={intent!r}")
 
         # Only keep smalltalk local if it is STILL smalltalk after override
-        if intent == "smalltalk":
-            return self._format_with_templates(user_text, parsed_intent, results, tasks)
+        # if intent == "smalltalk":
+        #     return self._format_with_templates(user_text, parsed_intent, results, tasks)
 
+
+        # if self.debug:
+        #     print(f"[ResponseFormatter:format] intent={intent!r}")
+
+        # # Always keep smalltalk local
+        # if intent == "smalltalk":
+        #     if self.debug:
+        #         print("[ResponseFormatter:format] path=templates (reason=smalltalk)")
+        #     return self._format_with_templates(user_text, parsed_intent, results, tasks)
 
         if self.debug:
-            print(f"[ResponseFormatter:format] intent={intent!r}")
+            print(f"[ResponseFormatter:format] effective_intent={intent!r}")
 
         # Always keep smalltalk local
         if intent == "smalltalk":
             if self.debug:
                 print("[ResponseFormatter:format] path=templates (reason=smalltalk)")
-            return self._format_with_templates(user_text, parsed_intent, results, tasks)
+            return self._sanitize_output(
+                self._format_with_templates(user_text, parsed_intent, results, tasks)
+            )
 
         # Determine whether to use LLM
         use_llm = (self.provider == "groq" and bool(self.groq_key))
 
-        # If RESPONSE_LLM_INTENTS is provided, only use LLM for those intents
-        if use_llm and self.llm_intents:
-            use_llm = intent in self.llm_intents
+        # If RESPONSE_LLM_INTENTS is set, restrict to those intents.
+        # If it's empty, Groq applies to ALL non-smalltalk intents.
+        if self.llm_intents:
+            use_llm = use_llm and (intent in self.llm_intents)
 
         if self.debug:
             print(f"[ResponseFormatter:format] provider={self.provider} groq_key_set={bool(self.groq_key)} use_llm={use_llm}")
@@ -117,13 +130,43 @@ class ResponseFormatter:
             if out and out.get("text"):
                 if self.debug:
                     print("[ResponseFormatter:format] path=groq (success)")
-                return out
+                return self._sanitize_output(out)
             if self.debug:
                 print("[ResponseFormatter:format] path=groq (empty/failed) -> fallback templates")
 
         if self.debug:
             print("[ResponseFormatter:format] path=templates (default/fallback)")
         return self._format_with_templates(user_text, parsed_intent, results, tasks)
+    def _collect_present_result_keys(self, results: Dict[str, Any]) -> List[str]:
+        """Return result keys that are present and meaningful."""
+        order = [
+            "weather_result",
+            "itinerary_result",
+            "pois_result",
+            "attraction_result",
+            "transport_result",
+            "accommodation_result",
+            "visa_result",
+            "price_result",
+            "crowd_result",
+            "modify_result",
+            "restaurant_result",
+        ]
+
+        present = []
+        for k in order:
+            v = results.get(k)
+            if v is None:
+                continue
+            # if result has items list, ensure it's non-empty
+            if isinstance(v, dict) and "items" in v:
+                if v.get("items"):
+                    present.append(k)
+                continue
+            # otherwise accept non-null objects/dicts
+            present.append(k)
+
+        return present
     def _answer_general_with_groq(self, user_text: str, parsed_intent: Dict[str, Any]) -> Dict[str, Any]:
         system = (
             "You are a helpful assistant.\n"
@@ -251,6 +294,44 @@ class ResponseFormatter:
                     return s
 
         return intent
+    
+    def _sanitize_output(self, out: Any) -> Dict[str, Any]:
+        """
+        Guarantee formatter output shape:
+        - text: plain string (never JSON string, never dict)
+        - followups: list[str]
+        """
+        if not isinstance(out, dict):
+            return {"text": str(out), "followups": []}
+
+        text = out.get("text", "")
+        followups = out.get("followups", [])
+
+        # 1) text must be string
+        if text is None:
+            text = ""
+        if not isinstance(text, str):
+            text = str(text)
+
+        # 2) if text looks like JSON string with {"text": "..."} unwrap it
+        t = text.strip()
+        if t.startswith("{") and t.endswith("}") and '"text"' in t:
+            try:
+                j = json.loads(t)
+                if isinstance(j, dict) and isinstance(j.get("text"), str):
+                    text = j["text"].strip()
+                    fu = j.get("followups")
+                    if isinstance(fu, list):
+                        followups = fu
+            except Exception:
+                pass
+
+        # 3) followups must be list[str]
+        if not isinstance(followups, list):
+            followups = []
+        followups = [str(x) for x in followups if isinstance(x, (str, int, float))]
+
+        return {"text": text.strip(), "followups": followups}
     def _pick_effective_intent_with_results(self, parsed_intent: Dict[str, Any], results: Dict[str, Any]) -> str:
         """
         Pick an intent that matches available results.
@@ -270,6 +351,7 @@ class ResponseFormatter:
             "crowd_forecast": "crowd_result",
             "modify_itinerary": "modify_result",
             "plan_itinerary": "itinerary_result",
+            "recommend_restaurants":"restaurant_result",
         }
 
         expected_key = intent_to_result_key.get(primary)
@@ -298,6 +380,7 @@ class ResponseFormatter:
             ("forecast_price", "price_result"),
             ("crowd_forecast", "crowd_result"),
             ("modify_itinerary", "modify_result"),
+            
         ]:
             if results.get(k) is not None:
                 return fallback_intent
@@ -306,7 +389,8 @@ class ResponseFormatter:
 
 
     def _format_with_templates(self, user_text, parsed_intent, results, tasks):
-        intent = self._pick_effective_intent(parsed_intent, results)
+        intent = self._pick_effective_intent_with_results(parsed_intent, results)
+
 
         city = (parsed_intent.get("entities") or {}).get("city") or "Sri Lanka"
         stage = (results.get("meta", {}) or {}).get("conversation_stage", "idle")
@@ -450,7 +534,7 @@ class ResponseFormatter:
                 print("[ResponseFormatter:groq] groq_key missing -> templates")
             return self._format_with_templates(user_text, parsed_intent, results, tasks)
 
-        intent = (parsed_intent.get("intent") or "").strip().lower()
+        intent = effective_intent
 
                 # IMPORTANT: use effective_intent (already passed in) instead of parsed intent
         # IMPORTANT: compact itinerary only (keep)
@@ -476,6 +560,7 @@ class ResponseFormatter:
             "price_result",
             "crowd_result",
             "modify_result",
+            "restaurant_result",
         ]:
             v = results.get(k)
             if v is not None:
@@ -518,7 +603,11 @@ class ResponseFormatter:
             "- Prefer the most relevant non-null result based on intent.primary.\n"
             "- If JSON.results has a key that ends with '_result' and contains a non-empty 'items' list, format that list.\n"
             "- Do NOT say \"nothing found\" if items exist.\n"
-            "- If multiple results exist, prefer the one matching intent.primary (e.g., info_attraction -> attraction_result).\n"
+            "- Check JSON.results for all keys that end with '_result'.\n"
+            "- If multiple results exist, format ALL relevant ones as separate sections.\n"
+            "- Limit to max 2 sections unless user asks for more.\n"
+            "- If weather_result and itinerary_result both exist: show Weather first, then Itinerary.\n"
+            "- If a result has an 'items' list, show up to 5 bullets.\n"
             "- If only one item exists, still show it (don’t discard it).\n\n"
 
             "FORMATTING STYLE:\n"
@@ -605,11 +694,17 @@ class ResponseFormatter:
             # Try to extract the first JSON object from the text
             m = re.search(r"\{.*\}", content, re.DOTALL)
             if not m:
-                return {"text": content.strip(), "followups": []}
+                return self._sanitize_output({
+                    "text": str(out.get("text", "")).strip(),
+                    "followups": out.get("followups", []) or [],
+                })
             try:
                 out = json.loads(m.group(0))
             except Exception:
-                return {"text": content.strip(), "followups": []}
+                return self._sanitize_output({
+                    "text": str(out.get("text", "")).strip(),
+                    "followups": out.get("followups", []) or [],
+                })
 
         if isinstance(out, dict) and "text" in out:
             return {
@@ -619,7 +714,7 @@ class ResponseFormatter:
 
         # Soft fallback: if model returned something unexpected, still show it
         if content:
-            return {"text": content.strip(), "followups": []}
+            return self._sanitize_output({"text": content.strip(), "followups": []})
 
         return self._format_with_templates(user_text, parsed_intent, results, tasks)
 
