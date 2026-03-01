@@ -352,10 +352,11 @@ def _extract_visa_rules_from_chunks(
     for chunk in chunks[:5]:  # Use top 5 most relevant chunks
         text = chunk.get("text", "")
         source = chunk.get("source", "unknown")
+        url = chunk.get("url", "")  # Get URL from chunk
         entities = chunk.get("entities", [])
         
         # Extract rule based on entities and text content
-        rule = _create_rule_from_chunk(text, source, entities, request)
+        rule = _create_rule_from_chunk(text, source, url, entities, request)
         if rule:
             rules.append(rule)
     
@@ -373,7 +374,7 @@ def _extract_visa_rules_from_chunks(
             ),
             evidence=[EvidenceSource(
                 source=best_chunk.get("source", "knowledge_base"),
-                url="",
+                url=best_chunk.get("url", ""),
                 quote=best_chunk.get("text", "")[:200]
             )]
         ))
@@ -384,10 +385,11 @@ def _extract_visa_rules_from_chunks(
 def _create_rule_from_chunk(
     text: str,
     source: str,
+    url: str,
     entities: list,
     request: VisaPolicyQueryRequest
 ) -> VisaRule | None:
-    """Create a visa rule from chunk text and entities."""
+    """Create a visa rule from chunk text, URL, and entities."""
     text_lower = text.lower()
     
     # Detect rule type based on content
@@ -438,7 +440,7 @@ def _create_rule_from_chunk(
         ),
         evidence=[EvidenceSource(
             source=source,
-            url="",
+            url=url,  # Include URL from chunk
             quote=text[:200]
         )]
     )
