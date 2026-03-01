@@ -428,7 +428,7 @@ class OrchestratorService:
                 result_field="transport_result",
             ),
             "recommend_restaurants": IntentHandler(
-                endpoint="/restaurants/orchestrator/call/restaurants/search",  # ✅ your KG endpoint
+                endpoint="/restaurants/orchestrator/call/restaurants",  # ✅ your KG endpoint
                 mapper=map_restaurant_request,                                 # ✅ you will create this mapper
                 response_model=None,                                           # keep None until you define a contract
                 timeout=20,
@@ -1851,6 +1851,8 @@ class OrchestratorService:
             modify_result=results["modify_result"],
             visa_result=results["visa_result"],
             accommodation_result=results["accommodation_result"],
+            restaurant_result = results["restaurant_result"],
+            # "restaurant_result": None,
             pois_result = results["pois_result"],
             transport_result=results["transport_result"],
             attraction_result=results["attraction_result"],

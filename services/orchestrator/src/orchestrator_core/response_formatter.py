@@ -150,6 +150,7 @@ class ResponseFormatter:
             "price_result",
             "crowd_result",
             "modify_result",
+            "restaurant_result",
         ]
 
         present = []
@@ -350,6 +351,7 @@ class ResponseFormatter:
             "crowd_forecast": "crowd_result",
             "modify_itinerary": "modify_result",
             "plan_itinerary": "itinerary_result",
+            "recommend_restaurants":"restaurant_result",
         }
 
         expected_key = intent_to_result_key.get(primary)
@@ -378,6 +380,7 @@ class ResponseFormatter:
             ("forecast_price", "price_result"),
             ("crowd_forecast", "crowd_result"),
             ("modify_itinerary", "modify_result"),
+            
         ]:
             if results.get(k) is not None:
                 return fallback_intent
@@ -557,6 +560,7 @@ class ResponseFormatter:
             "price_result",
             "crowd_result",
             "modify_result",
+            "restaurant_result",
         ]:
             v = results.get(k)
             if v is not None:

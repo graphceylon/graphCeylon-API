@@ -136,6 +136,7 @@ class OrchestrateResponse(BaseModel):
     pois_result: Optional[Any] = None
     transport_result: Optional[Any] = None
     attraction_result: Optional[Any] = None
+    restaurant_result:Optional[Any] = None
 
     final_message: Optional[str] = None
 
