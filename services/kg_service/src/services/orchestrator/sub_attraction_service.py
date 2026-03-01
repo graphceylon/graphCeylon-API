@@ -86,14 +86,17 @@ class OrchestratorSubAttractionService:
     # ------------------------------------------------------------------
 
     def search_sub_attractions(
-        self, request: SubAttractionSearchRequest
+        self,
+        request: SubAttractionSearchRequest,
+        rejected_categories: Optional[List[str]] = None,
     ) -> SubAttractionSearchResponse:
         """Search sub-attractions using the same strategy pattern as attractions.
 
-        1. City only (no poi_category): Direct city-based search
-        2. City + poi_category: Filtered by parent location + category
-        3. poi_category only: Search across all cities
+        1. City only (no preferred_poi_category): Direct city-based search
+        2. City + preferred_poi_category: Filtered by parent location + category
+        3. preferred_poi_category only: Search across all cities
         4. poi_name: Filter by specific POI name
+        5. rejected_categories: Excluded before applying any other category filter
         """
         try:
             city = ""
@@ -104,7 +107,8 @@ class OrchestratorSubAttractionService:
                 city=city,
                 country=request.country,
                 poi_name=request.poi_name,
-                poi_category=request.poi_category,
+                preferred_poi_category=request.preferred_poi_category,
+                rejected_categories=rejected_categories or [],
                 tags=request.tags,
                 limit=10,
             )
@@ -146,11 +150,23 @@ class OrchestratorSubAttractionService:
         city: str = "",
         country: str = "Sri Lanka",
         poi_name: Optional[str] = None,
-        poi_category: Optional[str] = None,
+        preferred_poi_category: Optional[str] = None,
+        rejected_categories: Optional[List[str]] = None,
         tags: Optional[List[str]] = None,
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
-        """Fetch sub-attractions from Neo4j with filters."""
+        """Fetch sub-attractions from Neo4j with filters.
+
+        Filtering order:
+        1. ``rejected_categories`` (passed from caller) are excluded first.
+        2. Then include only sub-attractions matching ``preferred_poi_category``.
+        """
+
+        _CATEGORY_FIELDS = (
+            "s.groups", "s.amenityType", "s.shopType", "s.tourismType",
+            "s.naturalType", "s.historicType", "s.primaryType",
+            "s.placeTypes", "s.religion",
+        )
 
         where_clauses: List[str] = []
         params: Dict[str, Any] = {"limit": limit}
@@ -170,20 +186,24 @@ class OrchestratorSubAttractionService:
             where_clauses.append("toLower(s.name) CONTAINS toLower($poiName)")
             params["poiName"] = poi_name
 
-        # POI category filter – search across type fields, Google place types, AND groups
-        if poi_category and poi_category.strip():
-            where_clauses.append(
-                "(toLower(s.groups) CONTAINS toLower($poiCategory) "
-                "OR toLower(s.amenityType) CONTAINS toLower($poiCategory) "
-                "OR toLower(s.shopType) CONTAINS toLower($poiCategory) "
-                "OR toLower(s.tourismType) CONTAINS toLower($poiCategory) "
-                "OR toLower(s.naturalType) CONTAINS toLower($poiCategory) "
-                "OR toLower(s.historicType) CONTAINS toLower($poiCategory) "
-                "OR toLower(s.primaryType) CONTAINS toLower($poiCategory) "
-                "OR toLower(s.placeTypes) CONTAINS toLower($poiCategory) "
-                "OR toLower(s.religion) CONTAINS toLower($poiCategory))"
+        # --- Step 1: Rejection filter (list passed in from router) ---
+        for idx, rejected in enumerate(rejected_categories or []):
+            reject_param = f"rejected{idx}"
+            reject_conditions = " OR ".join(
+                f"toLower({f}) CONTAINS toLower(${reject_param})"
+                for f in _CATEGORY_FIELDS
             )
-            params["poiCategory"] = poi_category.strip()
+            where_clauses.append(f"NOT ({reject_conditions})")
+            params[reject_param] = rejected
+
+        # --- Step 2: Preferred category filter (applied after rejection) ---
+        if preferred_poi_category and preferred_poi_category.strip():
+            prefer_conditions = " OR ".join(
+                f"toLower({f}) CONTAINS toLower($preferredPoiCategory)"
+                for f in _CATEGORY_FIELDS
+            )
+            where_clauses.append(f"({prefer_conditions})")
+            params["preferredPoiCategory"] = preferred_poi_category.strip()
 
         # Tags filter (match any tag against groups / placeTypes / religion)
         if tags:

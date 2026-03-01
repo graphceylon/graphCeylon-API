@@ -17,7 +17,7 @@ from api import dependencies as api_deps
 
 # --- Router imports (grouped by domain) ---
 from api.routers.core import kg_operations, domains, semantic
-from api.routers.tourism import attractions, holidays, hotels, news, projects, sub_attractions, events
+from api.routers.tourism import attractions, holidays, hotels, news, projects, sub_attractions, events, restaurents, recommender
 from api.routers.transport import railway_stations, train_schedules, bus_terminals, bus_schedules
 from api.routers.intelligence import agent, ail_enhanced, graphrag, research, gnn
 
@@ -104,11 +104,13 @@ app.include_router(semantic.router)
 # Tourism entities
 app.include_router(attractions.router)
 app.include_router(sub_attractions.router)
+app.include_router(restaurents.router)
 app.include_router(events.router)
 app.include_router(holidays.router)
 app.include_router(hotels.router)
 app.include_router(news.router)
 app.include_router(projects.router)
+app.include_router(recommender.router)
 
 # Transport
 app.include_router(railway_stations.router)
