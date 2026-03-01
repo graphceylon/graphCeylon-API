@@ -22,8 +22,9 @@ from copy import deepcopy
 from typing import Literal
 PlanMode = Literal["city", "corridor_outbound", "corridor_return"]
 
+#from services.recommender_service.src.routing.graphhopper_route import fetch_route_sampled_points
+from services.recommender_service.src.routing.city_coords import resolve_city_coords
 from services.recommender_service.src.routing.graphhopper_route import fetch_route_sampled_points
-
 
 
 from services.recommender_service.src.poi.normalize import (
@@ -31,16 +32,20 @@ from services.recommender_service.src.poi.normalize import (
     get_attraction_record,
 )
 from services.recommender_service.src.itinerary.enrichment.enrich_item import enrich_attraction
+#from services.recommender_service.src.routing.city_coords1 import resolve_city_coords
 
 
 def _find_repo_root() -> Path:
+
     p = Path(__file__).resolve()
     for parent in [p] + list(p.parents):
         if (parent / "data").exists() and (parent / "services").exists():
             return parent
     # fallback (safe-ish)
     return p.parents[5]
-
+def _cities_json_path() -> Path:
+    repo_root = _find_repo_root()
+    return repo_root / "services" / "recommender_service" / "src" / "routing" / "cities.json"
 def _is_destination_candidate(c: Dict[str, Any], dest_city: str) -> bool:
     dc = (dest_city or "").strip().lower()
     if not dc:
@@ -392,6 +397,50 @@ def fetch_city_attractions_from_kg(
         "kg_payload": payload,
         "kg_returned": len(items),
         "candidates_returned": len(candidates),
+        
+    }
+    return candidates, debug
+
+KG_CORRIDOR_ATTRACTIONS_PATH = "/corridor/orchestrator/call/attractions-on-route"
+
+def fetch_corridor_attractions_from_kg(
+    origin_city: str,
+    destination_city: str,
+    sampled_points: List[Tuple[float, float]],  # [(lat, lon), ...]
+    *,
+    country: str = "Sri Lanka",
+    corridor_km: float = 15.0,
+    limit: int = 80,
+    timeout: float = 20.0,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Send downsampled route points to KG and get attractions along the corridor.
+    """
+    url = f"{KG_BASE_URL}{KG_CORRIDOR_ATTRACTIONS_PATH}"
+
+    body = {
+        "country": country,
+        "origin_city": origin_city,
+        "destination_city": destination_city,
+        "corridor_km": corridor_km,
+        "limit": limit,
+        # IMPORTANT: keep consistent format. Use [lat, lon] since your points are (lat, lon)
+        "sampled_route_points": [[lat, lon] for (lat, lon) in sampled_points],
+    }
+
+    with httpx.Client(timeout=timeout) as client:
+        r = client.post(url, json=body)
+        r.raise_for_status()
+        data = r.json()
+
+    items = data.get("items") or []
+    candidates = [_kg_item_to_candidate(x) for x in items if isinstance(x, dict)]
+
+    debug = {
+        "kg_url": url,
+        "kg_request": body,
+        "kg_returned": len(items),
+        "candidates_returned": len(candidates),
     }
     return candidates, debug
 
@@ -720,47 +769,85 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     # NEW: travel_mode decision
     # =========================
     tm = resolve_travel_mode(payload)
+    cities_path = _cities_json_path()
+
+    origin_city_pf = (payload.get("origin_city") or tm.origin_city or "").strip()
+    dest_city_pf = (payload.get("destination") or payload.get("city") or tm.destination_city or "").strip()
+
     print(
         f"\n[PLAN] {payload.get('_plan_label')}  tm={tm.type} include_stops={tm.include_stops} "
         f"origin={tm.origin_city} dest={tm.destination_city}"
         f"| payload.origin={payload.get('origin_city')} payload.dest={payload.get('destination') or payload.get('city')}"
     )
+    # --------------------------
+    # =========================
+    # GRAPHHOPPER PREFLIGHT
+    # =========================
+   
+    origin_coords = resolve_city_coords(origin_city_pf, cities_json_path=cities_path) if origin_city_pf else None
+    dest_coords   = resolve_city_coords(dest_city_pf,   cities_json_path=cities_path) if dest_city_pf else None
 
-    # ------------------------------------------------------------
-    # ✅ NEW (PRE-FLIGHT): try resolving origin/destination coords
-    # as soon as we have payload+tm (OK if KG endpoint not ready)
-    # ------------------------------------------------------------
-    od_preflight: Optional[Dict[str, Any]] = None
-    od_preflight_error: Optional[str] = None
+    sampled_points: List[Tuple[float, float]] = []
+    distance_m: Optional[float] = None
+    time_ms: Optional[int] = None
 
-    origin_city_pf = (payload.get("origin_city") or tm.origin_city or "").strip()
-    dest_city_pf = (payload.get("destination") or payload.get("city") or tm.destination_city or "").strip()
+    graphhopper_dbg = {"skipped": True, "reason": "missing coords or same city"}
 
-    if origin_city_pf and dest_city_pf and origin_city_pf.lower() != dest_city_pf.lower():
-        try:
-            od_preflight = fetch_origin_dest_coords_from_kg(
+    if origin_coords and dest_coords and origin_city_pf.lower() != dest_city_pf.lower():
+        route = fetch_route_sampled_points(
+            origin=origin_coords,   # (lat, lon)
+            dest=dest_coords,       # (lat, lon)
+            profile="car",
+            downsample_step_km=10.0,
+        )
+        sampled_points = route.sampled_points
+        corridor_candidates = []
+        kg_corridor_dbg = {"skipped": True, "reason": "not corridor mode"}
+
+        if (
+            tm.type == "corridor"
+            and tm.include_stops
+            and origin_city_pf
+            and dest_city_pf
+            and sampled_points
+        ):
+            corridor_candidates, kg_corridor_dbg = fetch_corridor_attractions_from_kg(
                 origin_city=origin_city_pf,
                 destination_city=dest_city_pf,
+                sampled_points=sampled_points,
                 country=country,
-                timeout=8.0,
+                corridor_km=15.0,
+                limit=int(payload.get("max_candidates") or cfg.max_candidates),
             )
-            print("[KG-OD] preflight OK", od_preflight)
-        except Exception as e:
-            od_preflight_error = f"{type(e).__name__}: {e}"
-            print("[KG-OD] preflight FAILED", od_preflight_error)
+        distance_m = route.distance_m
+        time_ms = route.time_ms
 
-    # store so both outbound + return can reuse
-    payload["_od_preflight"] = od_preflight
-    payload["_od_preflight_error"] = od_preflight_error
+        graphhopper_dbg = {
+            "distance_m": route.distance_m,
+            "time_ms": route.time_ms,
+            "route_points_count": route.route_points_count,
+            "sampled_points_count": route.sampled_points_count,
+            "downsample_step_km": 10.0,
+        }
 
-    #     # ✅ call your JSON-KG query
-    #     res = query_attractions_from_json(
-    #         payload,
-    #         kg_path=Path("/Users/dev/Desktop/graphCeylon-API/data/recommender_service/clean/kg/attractions_clean.json"),
-    #         #kg_path=Path("C:/Users/HP/OneDrive/Documents/graphCeylon-API/data/recommender_service/clean/kg/attractions_clean.json"),
-    #         limit=int(payload.get("max_candidates", cfg.max_candidates)),
-    #         prefilter_limit=300,
-    #     )
+    payload["_graphhopper"] = graphhopper_dbg
+    payload["_od_coords"] = {
+        "origin_city": origin_city_pf,
+        "destination_city": dest_city_pf,
+        "origin_coords": origin_coords,
+        "destination_coords": dest_coords,
+    }
+
+    print("\n--- GRAPHHOPPER PREFLIGHT ---")
+    print("origin:", origin_city_pf, origin_coords)
+    print("dest  :", dest_city_pf, dest_coords)
+    print("dbg   :", graphhopper_dbg)
+    print("----------------------------\n")
+
+    print("\n--- DOWNSAMPLED ROUTE POINTS ---")
+    for i, p in enumerate(sampled_points):
+        print(i, p)
+    print("---------------------------------\n")
 
     clarify = needs_clarification(payload, tm)
     if clarify:
@@ -774,6 +861,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     # NEW: switch KG query mode (corridor vs destination-only)
     # ==========================================================
     repo_root = _find_repo_root()
+    
     kg_path = repo_root / "data" / "recommender_service" / "clean" / "kg" / "attractions_clean.json"
 
     # if tm.type == "corridor" and tm.include_stops and tm.origin_city and tm.origin_city != tm.destination_city:
@@ -791,54 +879,29 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
 
     if tm.type == "corridor" and tm.include_stops and tm.origin_city and tm.origin_city != tm.destination_city:
         # 1) First get corridor candidates using your current method (so dbg exists)
-        res = get_candidates_corridor(
-            payload=payload,
-            origin_city=tm.origin_city,
-            dest_city=tm.destination_city,
-            limit=int(payload.get("max_candidates", cfg.max_candidates)),
-        )
-        kg_mode = "corridor"
+        res = CandidatesResult(candidates=corridor_candidates, debug=kg_corridor_dbg)
+        dbg = kg_corridor_dbg
+        kg_mode = "corridor_kg_points"
 
         # 2) Now dbg exists
         dbg = getattr(res, "debug", None) or {}
+        origin_city = (payload.get("origin_city") or tm.origin_city or "").strip()
+        dest_city = (payload.get("destination") or payload.get("city") or tm.destination_city or "").strip()
 
-        # 3) Resolve coords for GraphHopper:
-        #    - Prefer OD preflight result (once KG implements)
-        #    - Fallback to dbg coords (your current corridor pipeline)
-        origin_coords = None
-        dest_coords = None
+        origin_coords = resolve_city_coords(origin_city, cities_json_path=cities_path)
+        dest_coords = resolve_city_coords(dest_city, cities_json_path=cities_path)
 
-        od = payload.get("_od_preflight")
-        if isinstance(od, dict):
-            try:
-                origin_coords = (float(od["origin"]["lat"]), float(od["origin"]["lng"]))
-                dest_coords = (float(od["destination"]["lat"]), float(od["destination"]["lng"]))
-            except Exception:
-                origin_coords = None
-                dest_coords = None
-
-        if not origin_coords or not dest_coords:
-            origin_coords = dbg.get("origin_coords")  # (lat, lon)
-            dest_coords = dbg.get("dest_coords")      # (lat, lon)
-
-        # keep debug about the preflight attempt
-        dbg["kg_resolve_od_request"] = {
-            "origin_city": origin_city_pf or (tm.origin_city or ""),
-            "destination_city": dest_city_pf or (tm.destination_city or ""),
-            "country": country,
+        dbg["od_from_payload"] = {
+            "origin_city": origin_city,
+            "destination_city": dest_city,
+            "origin_coords": origin_coords,
+            "destination_coords": dest_coords,
         }
-        if payload.get("_od_preflight") is not None:
-            dbg["kg_resolve_od_response"] = payload.get("_od_preflight")
-        if payload.get("_od_preflight_error"):
-            dbg["kg_resolve_od_error"] = payload.get("_od_preflight_error")
 
-        # 4) Only ONE GraphHopper call (no duplicates)
         if origin_coords and dest_coords:
-            from services.recommender_service.src.routing.graphhopper_route import fetch_route_sampled_points
-
             route = fetch_route_sampled_points(
-                origin=(float(origin_coords[0]), float(origin_coords[1])),
-                dest=(float(dest_coords[0]), float(dest_coords[1])),
+                origin=origin_coords,  # (lat, lon)
+                dest=dest_coords,      # (lat, lon)
                 profile="car",
                 downsample_step_km=10.0,
             )
@@ -851,11 +914,9 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
                 "sampled_points_count": route.sampled_points_count,
                 "downsample_step_km": 10.0,
             }
-            # you will use sampled_points later to fetch POIs within 5km
         else:
             sampled_points = []
-            dbg["graphhopper"] = {"skipped": True, "reason": "origin/destination coords not resolved"}
-
+            dbg["graphhopper"] = {"skipped": True, "reason": "cities.json missing origin/dest coords"}
     else:
         # ✅ city mode: fetch from KG service
         city_for_query = tm.destination_city or city
@@ -1104,5 +1165,8 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             # (optional but useful) expose that we attempted OD preflight
             "kg_od_preflight_ok": bool(payload.get("_od_preflight")),
             "kg_od_preflight_error": payload.get("_od_preflight_error"),
+            "route_distance_m": distance_m,
+            "route_time_ms": time_ms,
+            "graphhopper_sampled_points": sampled_points,
         }
     }

@@ -1,0 +1,181 @@
+{
+  "country": "Sri Lanka",
+  "cities": [
+
+    {
+      "city": "Ampara",
+      "province": "Eastern",
+      "latitude": 7.2975,
+      "longitude": 81.6820
+    },
+
+    {
+      "city": "Anuradhapura",
+      "province": "North Central",
+      "latitude": 8.3114,
+      "longitude": 80.4037
+    },
+
+    {
+      "city": "Badulla",
+      "province": "Uva",
+      "latitude": 6.9934,
+      "longitude": 81.0550
+    },
+
+    {
+      "city": "Batticaloa",
+      "province": "Eastern",
+      "latitude": 7.7102,
+      "longitude": 81.6924
+    },
+
+    {
+      "city": "Colombo",
+      "province": "Western",
+      "latitude": 6.9271,
+      "longitude": 79.8612
+    },
+
+    {
+      "city": "Galle",
+      "province": "Southern",
+      "latitude": 6.0535,
+      "longitude": 80.2210
+    },
+
+    {
+      "city": "Gampaha",
+      "province": "Western",
+      "latitude": 7.0873,
+      "longitude": 79.9990
+    },
+
+    {
+      "city": "Hambantota",
+      "province": "Southern",
+      "latitude": 6.1247,
+      "longitude": 81.1185
+    },
+
+    {
+      "city": "Jaffna",
+      "province": "Northern",
+      "latitude": 9.6615,
+      "longitude": 80.0255
+    },
+
+    {
+      "city": "Kalutara",
+      "province": "Western",
+      "latitude": 6.5854,
+      "longitude": 79.9607
+    },
+
+    {
+      "city": "Kandy",
+      "province": "Central",
+      "latitude": 7.2906,
+      "longitude": 80.6337
+    },
+
+    {
+      "city": "Kegalle",
+      "province": "Sabaragamuwa",
+      "latitude": 7.2513,
+      "longitude": 80.3464
+    },
+
+    {
+      "city": "Kilinochchi",
+      "province": "Northern",
+      "latitude": 9.3950,
+      "longitude": 80.3982
+    },
+
+    {
+      "city": "Kurunegala",
+      "province": "North Western",
+      "latitude": 7.4863,
+      "longitude": 80.3623
+    },
+
+    {
+      "city": "Mannar",
+      "province": "Northern",
+      "latitude": 8.9800,
+      "longitude": 79.9042
+    },
+
+    {
+      "city": "Matale",
+      "province": "Central",
+      "latitude": 7.4675,
+      "longitude": 80.6234
+    },
+
+    {
+      "city": "Matara",
+      "province": "Southern",
+      "latitude": 5.9549,
+      "longitude": 80.5550
+    },
+
+    {
+      "city": "Monaragala",
+      "province": "Uva",
+      "latitude": 6.8720,
+      "longitude": 81.3507
+    },
+
+    {
+      "city": "Mullaitivu",
+      "province": "Northern",
+      "latitude": 9.2670,
+      "longitude": 80.8134
+    },
+
+    {
+      "city": "Nuwara Eliya",
+      "province": "Central",
+      "latitude": 6.9497,
+      "longitude": 80.7891
+    },
+
+    {
+      "city": "Polonnaruwa",
+      "province": "North Central",
+      "latitude": 7.9403,
+      "longitude": 81.0188
+    },
+
+    {
+      "city": "Puttalam",
+      "province": "North Western",
+      "latitude": 8.0362,
+      "longitude": 79.8283
+    },
+
+    {
+      "city": "Ratnapura",
+      "province": "Sabaragamuwa",
+      "latitude": 6.6828,
+      "longitude": 80.3992
+    },
+
+    {
+      "city": "Trincomalee",
+      "province": "Eastern",
+      "latitude": 8.5874,
+      "longitude": 81.2152
+    },
+
+    {
+      "city": "Vavuniya",
+      "province": "Northern",
+      "latitude": 8.7514,
+      "longitude": 80.4971
+    }
+
+  ]
+}
