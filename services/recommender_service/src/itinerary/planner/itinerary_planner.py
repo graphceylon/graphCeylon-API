@@ -22,6 +22,9 @@ from copy import deepcopy
 from typing import Literal
 PlanMode = Literal["city", "corridor_outbound", "corridor_return"]
 
+#from services.recommender_service.src.routing.graphhopper_route import fetch_route_sampled_points
+from services.recommender_service.src.routing.city_coords import resolve_city_coords
+from services.recommender_service.src.routing.graphhopper_route import fetch_route_sampled_points
 
 
 from services.recommender_service.src.poi.normalize import (
@@ -29,16 +32,20 @@ from services.recommender_service.src.poi.normalize import (
     get_attraction_record,
 )
 from services.recommender_service.src.itinerary.enrichment.enrich_item import enrich_attraction
+#from services.recommender_service.src.routing.city_coords1 import resolve_city_coords
 
 
 def _find_repo_root() -> Path:
+
     p = Path(__file__).resolve()
     for parent in [p] + list(p.parents):
         if (parent / "data").exists() and (parent / "services").exists():
             return parent
     # fallback (safe-ish)
     return p.parents[5]
-
+def _cities_json_path() -> Path:
+    repo_root = _find_repo_root()
+    return repo_root / "services" / "recommender_service" / "src" / "routing" / "cities.json"
 def _is_destination_candidate(c: Dict[str, Any], dest_city: str) -> bool:
     dc = (dest_city or "").strip().lower()
     if not dc:
@@ -87,13 +94,29 @@ def _build_one_plan(payload: Dict[str, Any], cfg: PlannerConfig, mode: PlanMode)
 
 def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) -> Dict[str, Any]:
     """
-    Returns TWO plans in a single response:
-      - destination_plan (city-only)
-      - route_plan (corridor outbound)
+    Returns plans in a single response.
+    If 'origin_city' is None or empty, it ONLY generates the destination_plan.
     """
+    # 1. Always build the destination (city) plan
     destination_plan = _build_one_plan(payload, cfg, mode="city")
-    route_plan = _build_one_plan(payload, cfg, mode="corridor_outbound")
-    route_return_plan = _build_one_plan(payload, cfg, mode="corridor_return")
+    
+    # 2. Safely extract origin_city
+    origin = str(payload.get("origin_city") or "").strip()
+    dest = str(payload.get("city") or payload.get("destination") or "").strip()
+
+    # 3. Initialize the plans dictionary
+    plans = {
+        "destination_plan": destination_plan,
+    }
+
+    # 4. Only build route plans if an origin is provided AND it's not the same as the destination
+    if origin and origin.lower() != dest.lower():
+        plans["route_plan"] = _build_one_plan(payload, cfg, mode="corridor_outbound")
+        plans["route_return_plan"] = _build_one_plan(payload, cfg, mode="corridor_return")
+    # else:
+    #     # Explicitly set them to None (or you can just omit them entirely)
+    #     plans["route_plan"] = None
+    #     plans["route_return_plan"] = None
 
     return {
         "status": "ok",
@@ -103,11 +126,7 @@ def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) ->
             "days": payload.get("days"),
             "start_date": payload.get("start_date"),
         },
-        "plans": {
-            "destination_plan": destination_plan,
-            "route_plan": route_plan,
-            "route_return_plan": route_return_plan,
-        }
+        "plans": plans
     }
 
 
@@ -195,6 +214,7 @@ class PlannerConfig:
 
 KG_BASE_URL = os.getenv("KG_BASE_URL", "http://localhost:8000").rstrip("/")
 KG_SUB_ATTRACTIONS_PATH = "/sub-attractions/orchestrator/call/sub-attractions"
+KG_RESOLVE_OD_PATH = "/geo/orchestrator/call/resolve-od"
 
 
 def _parse_coords_from_kg(x: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
@@ -377,8 +397,74 @@ def fetch_city_attractions_from_kg(
         "kg_payload": payload,
         "kg_returned": len(items),
         "candidates_returned": len(candidates),
+        
     }
     return candidates, debug
+
+KG_CORRIDOR_ATTRACTIONS_PATH = "/corridor/orchestrator/call/attractions-on-route"
+
+def fetch_corridor_attractions_from_kg(
+    origin_city: str,
+    destination_city: str,
+    sampled_points: List[Tuple[float, float]],  # [(lat, lon), ...]
+    *,
+    country: str = "Sri Lanka",
+    corridor_km: float = 15.0,
+    limit: int = 80,
+    timeout: float = 20.0,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Send downsampled route points to KG and get attractions along the corridor.
+    """
+    url = f"{KG_BASE_URL}{KG_CORRIDOR_ATTRACTIONS_PATH}"
+
+    body = {
+        "country": country,
+        "origin_city": origin_city,
+        "destination_city": destination_city,
+        "corridor_km": corridor_km,
+        "limit": limit,
+        # IMPORTANT: keep consistent format. Use [lat, lon] since your points are (lat, lon)
+        "sampled_route_points": [[lat, lon] for (lat, lon) in sampled_points],
+    }
+
+    with httpx.Client(timeout=timeout) as client:
+        r = client.post(url, json=body)
+        r.raise_for_status()
+        data = r.json()
+
+    items = data.get("items") or []
+    candidates = [_kg_item_to_candidate(x) for x in items if isinstance(x, dict)]
+
+    debug = {
+        "kg_url": url,
+        "kg_request": body,
+        "kg_returned": len(items),
+        "candidates_returned": len(candidates),
+    }
+    return candidates, debug
+
+def fetch_origin_dest_coords_from_kg(
+    origin_city: str,
+    destination_city: str,
+    country: str = "Sri Lanka",
+    timeout: float = 15.0,
+) -> Dict[str, Any]:
+    """
+    Sends origin_city + destination_city to KG to resolve coords.
+    KG endpoint may not exist yet -> will raise httpx error (that's OK for now).
+    """
+    url = f"{KG_BASE_URL}{KG_RESOLVE_OD_PATH}"
+    body = {
+        "origin_city": origin_city,
+        "destination_city": destination_city,
+        "country": country,
+    }
+
+    with httpx.Client(timeout=timeout) as client:
+        r = client.post(url, json=body)
+        r.raise_for_status()
+        return r.json()
 
 @dataclass
 class Priority:
@@ -562,140 +648,6 @@ def compute_rank_score(
 
     return float(score)
 
-
-# def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = PlannerConfig()) -> Dict[str, Any]:
-#     city = str(payload.get("city") or payload.get("destination") or "").strip() or "Colombo"
-#     country = str(payload.get("country") or "Sri Lanka").strip() or "Sri Lanka"
-#     eco_pref = float(payload.get("eco_preference") or 0.5)
-#     days = int(payload.get("days") or 3)
-
-#     start_str = str(payload.get("start_date") or "").strip()
-#     if not start_str:
-#         raise ValueError("payload.start_date required (YYYY-MM-DD)")
-
-#     y, m, d = [int(x) for x in start_str.split("-")]
-#     start_dt = date(y, m, d)
-
-#     warnings: List[str] = []
-
-#     res = query_attractions_from_json(
-#         payload,
-#         kg_path=Path("/Users/dev/Desktop/graphCeylon-API/data/recommender_service/clean/kg/attractions_clean.json"),
-#         limit=int(payload.get("max_candidates", cfg.max_candidates)),
-#         prefilter_limit=300,
-#     )
-#     dbg = getattr(res, "debug", None) or {}
-
-#     print("\n================ JSON-KG QUERY OUTPUT =================")
-
-#     print("\n--- Debug Keys ---")
-#     print(list(dbg.keys()))
-
-#     print("\n--- Extracted Priorities ---")
-#     for p in dbg.get("priorities", []):
-#         print(f"{p.get('key')} | w={p.get('weight')} | src={p.get('source')} | phrase={p.get('matched_phrase')}")
-
-#     print("\n--- Preference Source Map ---")
-#     pref_src = dbg.get("preference_sources") or dbg.get("trace", {}).get("preference_sources") or {}
-#     for k, v in pref_src.items():
-#         print(f"{k:25s} -> {v}")
-
-#     print("\n--- Top Ranked Attractions ---")
-#     for a in (getattr(res, "candidates", []) or [])[:10]:
-#         print(f"{a.get('title','?'):<25} | score={a.get('_rank_score', 0):.3f} | eco={a.get('_eco_hint', 0):.2f}")
-
-#     print("=======================================================\n")
-
-
-
-    
-
-#     norm_atts = res.candidates  # already ranked
-#     if not norm_atts:
-#         warnings.append(f"No attractions found for city='{city}'.")
-
-
-
-#     itinerary_days: List[Dict[str, Any]] = []
-#     used_attractions: set[str] = set()
-
-#     for i in range(days):
-#         day_date = start_dt + timedelta(days=i)
-#         day_str = day_date.isoformat()
-#         day_items: List[Dict[str, Any]] = []
-
-#         # select attractions for day
-#         selected_atts: List[Dict[str, Any]] = []
-#         for a in norm_atts:
-#             aid = str(a.get("attraction_id") or "").strip()
-#             if not aid or aid in used_attractions:
-#                 continue
-#             selected_atts.append(a)
-#             used_attractions.add(aid)
-#             if len(selected_atts) >= cfg.per_day_attractions:
-#                 break
-
-#         slots = ["morning", "afternoon"]
-#         for idx, a in enumerate(selected_atts):
-#             aid = a["attraction_id"]
-
-#             enrich = enrich_attraction(
-#                 attraction_id=aid,
-#                 date_str=day_str,
-#                 eco_preference=eco_pref,
-#                 country=country,
-#                 explicit_city=city,
-#             )
-
-#             day_items.append({
-#                 "slot": slots[idx] if idx < len(slots) else f"slot_{idx+1}",
-#                 "kind": "attraction",
-#                 "attraction_id": aid,
-#                 "title": a.get("title") or a.get("name"),
-#                 "district": a.get("district"),
-#                 "city": a.get("city") or city,
-
-#                 # 🔢 why this was chosen before others
-#                 "rank_score": float(a.get("_rank_score", 0.0)),
-
-#                 "enrichment": enrich,
-#                 "raw": {k: v for k, v in a.items() if not str(k).startswith("_")},
-#             })
-
-#         itinerary_days.append({
-#             "date": day_str,
-#             "city": city,
-#             "items": day_items,
-#         })
-
-#     return {
-#         "status": "ok",
-#         "city": city,
-#         "country": country,
-#         "start_date": start_dt.isoformat(),
-#         "days": days,
-
-#         # 🔎 show what the system extracted from this query
-#         "priorities": [
-#             {
-#                 "key": p.key,
-#                 "weight": p.weight,
-#                 "source": p.source,
-#                 "matched_phrase": p.matched_phrase,
-#             }
-#             for p in priorities
-#         ],
-
-#         "preferences_used": {
-#             "eco_preference": eco_pref,
-#             "travel_style": payload.get("travel_style"),
-#             "food_preferences": payload.get("food_preferences"),
-#             "budget_level": payload.get("budget_level"),
-#             "accommodation_type": payload.get("accommodation_type"),
-#         },
-#         "warnings": warnings,
-#         "itinerary": itinerary_days,
-#     }
 from collections import defaultdict
 
 def group_by_district(candidates):
@@ -813,28 +765,94 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
 
     warnings: List[str] = []
 
-
     # =========================
     # NEW: travel_mode decision
     # =========================
     tm = resolve_travel_mode(payload)
-    print(f"\n[PLAN] {payload.get('_plan_label')}  tm={tm.type} include_stops={tm.include_stops} origin={tm.origin_city} dest={tm.destination_city}")
+    cities_path = _cities_json_path()
 
+    origin_city_pf = (payload.get("origin_city") or tm.origin_city or "").strip()
+    dest_city_pf = (payload.get("destination") or payload.get("city") or tm.destination_city or "").strip()
 
-#     # ✅ call your JSON-KG query
-#     res = query_attractions_from_json(
-#         payload,
-#         kg_path=Path("/Users/dev/Desktop/graphCeylon-API/data/recommender_service/clean/kg/attractions_clean.json"),
-#         #kg_path=Path("C:/Users/HP/OneDrive/Documents/graphCeylon-API/data/recommender_service/clean/kg/attractions_clean.json"),
-#         limit=int(payload.get("max_candidates", cfg.max_candidates)),
-#         prefilter_limit=300,
-#     )
+    print(
+        f"\n[PLAN] {payload.get('_plan_label')}  tm={tm.type} include_stops={tm.include_stops} "
+        f"origin={tm.origin_city} dest={tm.destination_city}"
+        f"| payload.origin={payload.get('origin_city')} payload.dest={payload.get('destination') or payload.get('city')}"
+    )
+    # --------------------------
+    # =========================
+    # GRAPHHOPPER PREFLIGHT
+    # =========================
+   
+    origin_coords = resolve_city_coords(origin_city_pf, cities_json_path=cities_path) if origin_city_pf else None
+    dest_coords   = resolve_city_coords(dest_city_pf,   cities_json_path=cities_path) if dest_city_pf else None
+
+    sampled_points: List[Tuple[float, float]] = []
+    distance_m: Optional[float] = None
+    time_ms: Optional[int] = None
+
+    graphhopper_dbg = {"skipped": True, "reason": "missing coords or same city"}
+
+    if origin_coords and dest_coords and origin_city_pf.lower() != dest_city_pf.lower():
+        route = fetch_route_sampled_points(
+            origin=origin_coords,   # (lat, lon)
+            dest=dest_coords,       # (lat, lon)
+            profile="car",
+            downsample_step_km=10.0,
+        )
+        sampled_points = route.sampled_points
+        corridor_candidates = []
+        kg_corridor_dbg = {"skipped": True, "reason": "not corridor mode"}
+
+        if (
+            tm.type == "corridor"
+            and tm.include_stops
+            and origin_city_pf
+            and dest_city_pf
+            and sampled_points
+        ):
+            corridor_candidates, kg_corridor_dbg = fetch_corridor_attractions_from_kg(
+                origin_city=origin_city_pf,
+                destination_city=dest_city_pf,
+                sampled_points=sampled_points,
+                country=country,
+                corridor_km=15.0,
+                limit=int(payload.get("max_candidates") or cfg.max_candidates),
+            )
+        distance_m = route.distance_m
+        time_ms = route.time_ms
+
+        graphhopper_dbg = {
+            "distance_m": route.distance_m,
+            "time_ms": route.time_ms,
+            "route_points_count": route.route_points_count,
+            "sampled_points_count": route.sampled_points_count,
+            "downsample_step_km": 10.0,
+        }
+
+    payload["_graphhopper"] = graphhopper_dbg
+    payload["_od_coords"] = {
+        "origin_city": origin_city_pf,
+        "destination_city": dest_city_pf,
+        "origin_coords": origin_coords,
+        "destination_coords": dest_coords,
+    }
+
+    print("\n--- GRAPHHOPPER PREFLIGHT ---")
+    print("origin:", origin_city_pf, origin_coords)
+    print("dest  :", dest_city_pf, dest_coords)
+    print("dbg   :", graphhopper_dbg)
+    print("----------------------------\n")
+
+    print("\n--- DOWNSAMPLED ROUTE POINTS ---")
+    for i, p in enumerate(sampled_points):
+        print(i, p)
+    print("---------------------------------\n")
 
     clarify = needs_clarification(payload, tm)
     if clarify:
         clarify["debug"] = {"travel_mode": tm.__dict__}
         return clarify
-
 
     # ✅ priorities exist in this scope
     priorities: List[Priority] = extract_priorities(payload) or []
@@ -843,18 +861,64 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     # NEW: switch KG query mode (corridor vs destination-only)
     # ==========================================================
     repo_root = _find_repo_root()
+    
     kg_path = repo_root / "data" / "recommender_service" / "clean" / "kg" / "attractions_clean.json"
 
+    # if tm.type == "corridor" and tm.include_stops and tm.origin_city and tm.origin_city != tm.destination_city:
+    #     res = get_candidates_corridor(
+    #         payload=payload,
+    #         origin_city=tm.origin_city,
+    #         dest_city=tm.destination_city,
+    #         limit=int(payload.get("max_candidates", cfg.max_candidates)),
+    #     )
+    # ==========================================================
+    # NEW: switch KG query mode (corridor vs destination-only)
+    # ==========================================================
+
+    kg_mode = "city"  # default
+
     if tm.type == "corridor" and tm.include_stops and tm.origin_city and tm.origin_city != tm.destination_city:
-        res = get_candidates_corridor(
-            payload=payload,
-            origin_city=tm.origin_city,
-            dest_city=tm.destination_city,
-            limit=int(payload.get("max_candidates", cfg.max_candidates)),
-        )
-        kg_mode = "corridor"
+        # 1) First get corridor candidates using your current method (so dbg exists)
+        res = CandidatesResult(candidates=corridor_candidates, debug=kg_corridor_dbg)
+        dbg = kg_corridor_dbg
+        kg_mode = "corridor_kg_points"
+
+        # 2) Now dbg exists
+        dbg = getattr(res, "debug", None) or {}
+        origin_city = (payload.get("origin_city") or tm.origin_city or "").strip()
+        dest_city = (payload.get("destination") or payload.get("city") or tm.destination_city or "").strip()
+
+        origin_coords = resolve_city_coords(origin_city, cities_json_path=cities_path)
+        dest_coords = resolve_city_coords(dest_city, cities_json_path=cities_path)
+
+        dbg["od_from_payload"] = {
+            "origin_city": origin_city,
+            "destination_city": dest_city,
+            "origin_coords": origin_coords,
+            "destination_coords": dest_coords,
+        }
+
+        if origin_coords and dest_coords:
+            route = fetch_route_sampled_points(
+                origin=origin_coords,  # (lat, lon)
+                dest=dest_coords,      # (lat, lon)
+                profile="car",
+                downsample_step_km=10.0,
+            )
+
+            sampled_points = route.sampled_points
+            dbg["graphhopper"] = {
+                "distance_m": route.distance_m,
+                "time_ms": route.time_ms,
+                "route_points_count": route.route_points_count,
+                "sampled_points_count": route.sampled_points_count,
+                "downsample_step_km": 10.0,
+            }
+        else:
+            sampled_points = []
+            dbg["graphhopper"] = {"skipped": True, "reason": "cities.json missing origin/dest coords"}
     else:
-        # ✅ NEW: fetch from KG endpoint instead of attractions_clean.json
+        # ✅ city mode: fetch from KG service
         city_for_query = tm.destination_city or city
         candidates, kg_dbg = fetch_city_attractions_from_kg(
             city=city_for_query,
@@ -863,57 +927,46 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             timeout=20.0,
         )
 
-        # add scoring hints (so later pipeline still works)
         for c in candidates:
             c["_eco_hint"] = _eco_score_hint(c)
-            # keep your existing scoring field names consistent
-            c["_score"] = float(c.get("_score", 0.0))  # you can compute a base score if needed
-
-            # optional: store features if you print them
-            c["_features"] = {
-                "eco_hint": float(c.get("_eco_hint", 0.5)),
-                # "proximity": ... (only if you compute it)
-            }
+            c["_score"] = float(c.get("_score", 0.0))
+            c["_features"] = {"eco_hint": float(c.get("_eco_hint", 0.5))}
 
         res = CandidatesResult(candidates=candidates, debug=kg_dbg)
+        dbg = kg_dbg
+        sampled_points = []
         kg_mode = "city"
-    dbg = getattr(res, "debug", None) or {}
 
-    print(f"[KG] mode={kg_mode} returned={len(getattr(res,'candidates',[]) or [])}")
-    print(f"[KG] origin_coords={dbg.get('origin_coords')} dest_coords={dbg.get('dest_coords')} anchor={dbg.get('anchor_coords')} radius={dbg.get('radius_km')} corridor={dbg.get('corridor_km')}")
-    print(f"[KG] city_filter={dbg.get('city_filter')} corridor_filtered={dbg.get('corridor_filtered')}")
+        # ✅ debug dict (safe)
+        dbg = getattr(res, "debug", None) or {}
 
+        # keep dbg priorities in sync for your printing
+        dbg["priorities"] = [
+            {"key": p.key, "weight": p.weight, "source": p.source, "matched_phrase": p.matched_phrase}
+            for p in priorities
+        ]
 
-    # ✅ debug dict (safe)
-    dbg = getattr(res, "debug", None) or {}
+        # ---------------- DEBUG PRINTS ----------------
+        print("\n================ JSON-KG QUERY OUTPUT =================")
+        print("\n--- Debug Keys ---")
+        print(list(dbg.keys()))
 
-    # keep dbg priorities in sync for your printing
-    dbg["priorities"] = [
-        {"key": p.key, "weight": p.weight, "source": p.source, "matched_phrase": p.matched_phrase}
-        for p in priorities
-    ]
+        print("\n--- Extracted Priorities ---")
+        for p in dbg.get("priorities", []):
+            print(f"{p.get('key')} | w={p.get('weight')} | src={p.get('source')} | phrase={p.get('matched_phrase')}")
 
-    # ---------------- DEBUG PRINTS ----------------
-    print("\n================ JSON-KG QUERY OUTPUT =================")
-    print("\n--- Debug Keys ---")
-    print(list(dbg.keys()))
+        print("\n--- Preference Source Map ---")
+        pref_src = (
+            dbg.get("preference_sources")
+            or dbg.get("trace", {}).get("preference_sources")
+            or payload.get("trace", {}).get("preference_sources")
+            or {}
+        )
+        for k, v in pref_src.items():
+            print(f"{k:25s} -> {v}")
 
-    print("\n--- Extracted Priorities ---")
-    for p in dbg.get("priorities", []):
-        print(f"{p.get('key')} | w={p.get('weight')} | src={p.get('source')} | phrase={p.get('matched_phrase')}")
-
-    print("\n--- Preference Source Map ---")
-    pref_src = (
-        dbg.get("preference_sources")
-        or dbg.get("trace", {}).get("preference_sources")
-        or payload.get("trace", {}).get("preference_sources")
-        or {}
-    )
-    for k, v in pref_src.items():
-        print(f"{k:25s} -> {v}")
-
-    print("=======================================================\n")
-    # -----------------------------------------------------
+        print("=======================================================\n")
+        # -----------------------------------------------------
 
     # ✅ candidates
     kg_atts = getattr(res, "candidates", None) or []
@@ -953,10 +1006,6 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     if not (tm.type == "corridor" and tm.include_stops):
         route_reranked = []
 
-
-
-
-
     print("\n--- Top Reranked Attractions (base + dynamic) ---")
     for a in reranked[:10]:
         dyn = a.get("_dynamic", {}) or {}
@@ -986,10 +1035,10 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     for c in pareto_dest:
         c["_is_pareto"] = True
         pareto_ids.add(c.get("attraction_id"))
-        
+
     # ✅ NEW: Get the rest of the destination items (the ones NSGA filtered out)
     other_dest = [c for c in dest_reranked if c.get("attraction_id") not in pareto_ids]
-    
+
     # ✅ NEW: Combine them into a full pool for the destination
     full_dest_pool = pareto_dest + other_dest
 
@@ -999,7 +1048,6 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     else:
         # ✅ destination plan keeps ONLY the full destination pool
         norm_atts = full_dest_pool
-
 
     print("\n--- NSGA-II Pareto Front (DESTINATION ONLY) ---")
     for c in pareto_dest[:10]:
@@ -1015,7 +1063,6 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     # - route candidates remain reranked (NO NSGA)
     # norm_atts = pareto_dest + route_reranked
 
-
     per_day = int(payload.get("per_day_attractions") or cfg.per_day_attractions)
 
     # ==========================
@@ -1029,7 +1076,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             or dbg.get("anchor_coords")
             or dbg.get("anchor")
         )
-        
+
     is_return_leg = payload.get("_plan_label") == "corridor_return"
     route_start_coords = dbg.get("origin_coords") or dbg.get("anchor_coords")
 
@@ -1037,7 +1084,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     if is_return_leg:
         # Sort starting from Destination (Kandy)
         # tm.origin_city here will actually be Kandy due to _build_one_plan logic
-        route_start_coords = dbg.get("origin_coords") 
+        route_start_coords = dbg.get("origin_coords")
     else:
         # Sort starting from Origin (Colombo)
         route_start_coords = dbg.get("origin_coords")
@@ -1115,5 +1162,11 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         "debug": {
             "route_anchor_coords": route_start_coords,
             "kg_mode": kg_mode,
+            # (optional but useful) expose that we attempted OD preflight
+            "kg_od_preflight_ok": bool(payload.get("_od_preflight")),
+            "kg_od_preflight_error": payload.get("_od_preflight_error"),
+            "route_distance_m": distance_m,
+            "route_time_ms": time_ms,
+            "graphhopper_sampled_points": sampled_points,
         }
     }
