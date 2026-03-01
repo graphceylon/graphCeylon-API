@@ -97,6 +97,7 @@ def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) ->
     Returns plans in a single response.
     If 'origin_city' is None or empty, it ONLY generates the destination_plan.
     """
+    
     # 1. Always build the destination (city) plan
     destination_plan = _build_one_plan(payload, cfg, mode="city")
     
@@ -337,10 +338,12 @@ def recommend_city_pois_simple(payload: Dict[str, Any], cfg: PlannerConfig = Pla
     }
 
 def _kg_item_to_candidate(x: Dict[str, Any]) -> Dict[str, Any]:
-    title = x.get("title") or x.get("name") or ""
-    district = x.get("district") or x.get("city") or ""
+    title = (x.get("title") or x.get("name") or "").strip()
+    if not title:
+        return {}
 
-    # ✅ pass a dict (normalize expects dict-like raw)
+    district = (x.get("district") or x.get("city") or "").strip()
+
     attraction_id = x.get("attraction_id") or normalize_to_attraction_id({
         "title": title,
         "district": district,
@@ -349,24 +352,34 @@ def _kg_item_to_candidate(x: Dict[str, Any]) -> Dict[str, Any]:
         "name": x.get("name"),
     })
 
-    lat, lng = _parse_coords_from_kg(x)
+    # ✅ KG corridor fields
+    lat = x.get("lat") or x.get("latitude")
+    lng = x.get("lng") or x.get("lon") or x.get("longitude")
+    try:
+        lat = float(lat) if lat is not None else None
+        lng = float(lng) if lng is not None else None
+    except Exception:
+        lat, lng = None, None
 
     return {
         "attraction_id": attraction_id,
         "title": title,
         "category": x.get("category"),
-        "description": x.get("description"),
+        "description": x.get("editorial_summary") or x.get("description"),
         "city": x.get("city"),
         "district": x.get("district"),
         "province": x.get("province"),
-        "location": x.get("location"),
+        "location": x.get("formatted_address") or x.get("parent_location"),
         "rating": x.get("rating"),
         "lat": lat,
         "lng": lng,
         "source": x.get("source", "kg_service"),
+        # keep corridor metadata for visualization
+        "_route_point": x.get("_route_point"),
+        "_route_point_index": x.get("_route_point_index"),
+        "_distance_km": x.get("distance_km"),
         "_kg_raw": x,
     }
-
 
 def fetch_city_attractions_from_kg(
     city: str,
@@ -401,7 +414,7 @@ def fetch_city_attractions_from_kg(
     }
     return candidates, debug
 
-KG_CORRIDOR_ATTRACTIONS_PATH = "/corridor/orchestrator/call/attractions-on-route"
+KG_CORRIDOR_ATTRACTIONS_PATH = "/Recommender/call/attractions-on-route"
 
 def fetch_corridor_attractions_from_kg(
     origin_city: str,
@@ -434,7 +447,32 @@ def fetch_corridor_attractions_from_kg(
         data = r.json()
 
     items = data.get("items") or []
-    candidates = [_kg_item_to_candidate(x) for x in items if isinstance(x, dict)]
+
+    flat_pois: List[Dict[str, Any]] = []
+    for grp in items:
+        if not isinstance(grp, dict):
+            continue
+
+        rp = grp.get("route_point")              # [lat, lon]
+        rpi = grp.get("route_point_index")       # int
+        subs = grp.get("sub_attractions") or []  # list[dict]
+
+        for s in subs:
+            if not isinstance(s, dict):
+                continue
+            # attach group context (useful for visualization)
+            s["_route_point"] = rp
+            s["_route_point_index"] = rpi
+            flat_pois.append(s)
+
+    # optional: enforce overall limit safely
+    flat_pois = flat_pois[:limit]
+
+    candidates = []
+    for x in flat_pois:
+        c = _kg_item_to_candidate(x)
+        if c:
+            candidates.append(c)
 
     debug = {
         "kg_url": url,
@@ -848,6 +886,58 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     for i, p in enumerate(sampled_points):
         print(i, p)
     print("---------------------------------\n")
+    # ==========================================================
+    # DEBUG: print KG corridor output right after downsampled points
+    # (before NSGA / Pareto / enrichment)
+    # ==========================================================
+    if (
+        tm.type == "corridor"
+        and tm.include_stops
+        and origin_city_pf
+        and dest_city_pf
+        and sampled_points
+        and origin_city_pf.lower() != dest_city_pf.lower()
+    ):
+        try:
+            corridor_candidates, kg_corridor_dbg = fetch_corridor_attractions_from_kg(
+                origin_city=origin_city_pf,
+                destination_city=dest_city_pf,
+                sampled_points=sampled_points,
+                country=country,
+                corridor_km=15.0,
+                limit=int(payload.get("max_candidates") or cfg.max_candidates),
+                timeout=20.0,
+            )
+
+            print("\n================ KG CORRIDOR RESPONSE (AFTER GRAPHHOPPER) ================")
+            print("--- KG Debug ---")
+            print(json.dumps(kg_corridor_dbg, indent=2, ensure_ascii=False))
+
+            print("\n--- KG Corridor Candidates (ALL) ---")
+            for i, c in enumerate(corridor_candidates):
+                print(
+                    f"{i:02d} | id={c.get('id')} | title={c.get('title')} | "
+                    f"district={c.get('district')} | city={c.get('city')} | "
+                    f"lat={c.get('lat')} lng={c.get('lng')} | "
+                    f"rp_idx={c.get('rp_idx')} rp={c.get('rp')}"
+                )
+
+            print(f"\nTOTAL PRINTED: {len(corridor_candidates)}")
+            print("==========================================================================\n")
+
+            # (optional) stash them so later code can reuse without re-calling KG
+            payload["_corridor_candidates"] = corridor_candidates
+            payload["_kg_corridor_dbg"] = kg_corridor_dbg
+
+        except Exception as e:
+            print("\n🔥 KG CORRIDOR DEBUG FAILED 🔥", repr(e))
+            # keep safe defaults so pipeline doesn't crash
+            corridor_candidates = []
+            kg_corridor_dbg = {"error": repr(e)}
+    else:
+        # ensure they always exist (prevents UnboundLocalError later)
+        corridor_candidates = []
+        kg_corridor_dbg = {"skipped": True, "reason": "not corridor mode or missing route points"}
 
     clarify = needs_clarification(payload, tm)
     if clarify:
