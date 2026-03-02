@@ -8,6 +8,8 @@ from .context_resolver import resolve_context
 from ..api.schemas import Entities 
 from .runtime.blackboard import Blackboard
 from .mappers.restaurant_mapper import map_restaurant_request
+import hashlib
+import json
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,6 +19,13 @@ from .followup_resolver import resolve_followup
 import os
 import re
 from pydantic import BaseModel
+from .runtime.tools.models import ToolCall
+from .runtime.tools.router import ToolRouter
+from .runtime.tools.providers.a2a_provider import A2AToolProvider
+from .runtime.tools.providers.local_provider import LocalToolProvider
+# MCP optional
+# from .runtime.tools.providers.mcp_provider import MCPToolProvider
+
 
 from ..api.schemas import (
     OrchestrateRequest,
@@ -107,6 +116,73 @@ EXPLICIT_VISA  = ["visa", "eta", "entry requirements"]
 EXPLICIT_WEATHER = ["weather", "rain", "temperature", "forecast"]
 EXPLICIT_TRANSPORT = ["how to go", "bus", "train", "taxi", "transport", "route"]
 
+WRITE_INTENTS = {"booking_create", "booking_confirm", "cancel_booking", "modify_booking"}
+
+ALLOWED_AMENITIES = {"wifi", "ac", "pool", "breakfast", "parking", "gym", "spa", "family_rooms"}
+
+_AMENITY_MAP = {
+    "wi-fi": "wifi",
+    "wi fi": "wifi",
+    "wifi": "wifi",
+    "wireless": "wifi",
+    "wireless internet": "wifi",
+    "ac": "ac",
+    "a/c": "ac",
+    "air conditioning": "ac",
+    "family rooms": "family_rooms",
+    "family room": "family_rooms",
+}
+
+def normalize_amenities_with_unknown(items):
+    """
+    Returns:
+      normalized: list[str]  (only allowed amenities)
+      unknown:    list[str]  (things user asked that we don't support)
+    """
+    if not items:
+        return [], []
+
+    normalized = []
+    unknown = []
+
+    for x in items:
+        if not isinstance(x, str):
+            continue
+
+        raw = x.strip()
+        s = raw.lower().strip()
+        s = s.replace("_", " ")
+        s = re.sub(r"\s+", " ", s)
+
+        s = _AMENITY_MAP.get(s, s)
+        s = re.sub(r"[^a-z0-9_ ]+", "", s).strip()
+        s = _AMENITY_MAP.get(s, s)
+
+        if s in ALLOWED_AMENITIES:
+            if s not in normalized:
+                normalized.append(s)
+        else:
+            # keep original wording for user clarity
+            if raw and raw not in unknown:
+                unknown.append(raw)
+
+    return normalized, unknown
+
+def stable_idempotency_key(*, user_id: str | None, session_id: str, intent: str, args: dict) -> str:
+    # remove volatile fields that would change between retries
+    args_clean = dict(args or {})
+    if "trace" in args_clean and isinstance(args_clean["trace"], dict):
+        args_clean["trace"] = {k: v for k, v in args_clean["trace"].items() if k not in {"timestamp", "ts"}}
+
+    canonical = {
+        "user_id": user_id or "",
+        "session_id": session_id,
+        "intent": intent,
+        "args": args_clean,
+    }
+    raw = json.dumps(canonical, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
 def norm(t: str) -> str:
     return re.sub(r"\s+", " ", (t or "").strip().lower())
 
@@ -119,7 +195,13 @@ def norm(t: str) -> str:
 #     if re.search(r"\bday\s*\d+\b", t):   # swap day 1 etc.
 #         return True
 #     return any(v in t for v in EDIT_VERBS)
-
+def booking_stub(call):  # call: ToolCall
+    return {
+        "ok": True,
+        "status": "verified",
+        "booking_id": f"BK-{call.trace_id[:8]}",
+        "message": "Booking request sent for human verification. Confirmed.",
+    }
 def has_explicit_other_intent(text: str) -> bool:
     t = norm(text)
     # if any explicit other-intent phrases exist, don't override
@@ -544,6 +626,46 @@ class OrchestratorService:
 
         # ✅ 3) A2A adapter
         self.a2a = A2AHttpAdapter()
+        # Map tool_name -> endpoint using existing intent handlers
+        tool_endpoints = {k: v.endpoint for k, v in self.handlers.items()}
+
+        # A2A provider (uses your existing AgentRegistry + HTTP adapter)
+        a2a_provider = A2AToolProvider(
+            registry=self.registry,
+            adapter=self.a2a,
+            tool_endpoints=tool_endpoints,
+        )
+
+        # Local provider (for booking stub / demo HITL)
+        local_provider = LocalToolProvider(
+            handlers={
+                "booking_stub": booking_stub,  # define this function somewhere above
+            }
+        )
+
+        # Tool router (single entry point for all tool calls)
+        self.tool_router = ToolRouter(
+            providers={
+                "a2a": a2a_provider,
+                "local": local_provider,
+                # "mcp": MCPToolProvider(mcp_client),  # add later
+            },
+            tool_to_provider={
+                "forecast_weather": "a2a",
+                "info_attraction": "a2a",
+                "info_accommodation": "a2a",
+                "info_transport": "a2a",
+                "plan_itinerary": "a2a",
+                "modify_itinerary": "a2a",
+                "booking_stub": "local",
+                "info_visa_policy": "a2a",
+                "crowd_forecast": "a2a",
+                "forecast_price": "a2a",
+                "forecast_sustainability": "a2a",
+                "recommend_pois": "a2a",
+                "recommend_restaurants": "a2a",
+            }
+        )
         # ---------------------------
     # Phase 3 — Semantic Memory trigger (PGVector)
     # ---------------------------
@@ -975,7 +1097,7 @@ class OrchestratorService:
             cleaned.append(d)
 
         return {"session_id": session_id, "events": cleaned}
-    def _execute_intent(self, intent_name, parsed_intent, req, db_prefs, session_state=None) -> Any:
+    def _execute_intent(self, intent_name, parsed_intent, req, db_prefs, session_state=None, request_trace_id: str | None = None) -> Any:
 
 
         handler = self.handlers.get(intent_name)
@@ -1004,8 +1126,39 @@ class OrchestratorService:
             q_overrides = dict(q_overrides)
 
         q_overrides = self._sanitize_query_overrides(q_overrides)
+        q_overrides = q_overrides or {}
+        q_overrides.pop("_unknown_amenities", None)
+        q_overrides.pop("_needs_amenity_clarification", None)
 
         merged_prefs, pref_source = merge_preferences(db_prefs=db_prefs, query_overrides=q_overrides)
+        ALLOWED_PREF_KEYS = {
+            "budget_level",
+            "budget_per_night_lkr",
+            "budget_flexibility",
+            "travel_style",
+            "eco_preference",
+            "avoid_crowds",
+            "activity_preference",
+            "pace_preference",
+            "adventure_level",
+            "preferred_transport",
+            "food_preferences",
+            "accessibility_needs",
+            "walking_tolerance_minutes",
+            "accommodation_type",
+            "star_preference",
+            "must_have_amenities",
+            "cancellation_preference",
+            "sun_sensitivity",
+            "rain_preference",
+            "temperature_preference",
+            "motion_sickness",
+        }
+
+        def filter_pref_overrides(q: dict) -> dict:
+            return {k: v for k, v in (q or {}).items() if k in ALLOWED_PREF_KEYS}
+
+        q_overrides = filter_pref_overrides(q_overrides)
         if req.user_id:
             self.profile_event_store.append(
                 ProfileEvent(
@@ -1126,14 +1279,48 @@ class OrchestratorService:
         print(payload)
 
         # 6) Invoke downstream agent/service
-        raw = self._invoke_capability_a2a(
-            capability=intent_name,
-            endpoint=handler.endpoint,
-            payload=payload,
-            timeout=handler.timeout,
+        is_write = intent_name in WRITE_INTENTS
+
+        idem_key = None
+        if is_write:
+            idem_key = stable_idempotency_key(
+                user_id=req.user_id,
+                session_id=req.session_id or "no_session",
+                intent=intent_name,
+                args=payload,
+            )
+
+        call = ToolCall(
+            name=intent_name,
+            args=payload,
+            timeout_ms=handler.timeout * 1000,
+            retries=1 if not is_write else 0,   # ✅ safer: no auto retry for writes
+            trace_id=request_trace_id or str(uuid4()),  # ✅ stable per request
             session_id=req.session_id or "no_session",
             user_id=req.user_id,
+            is_write=is_write,
+            idempotency_key=idem_key,
         )
+        print(
+            "[phase4] trace_id=", call.trace_id,
+            "intent=", call.name,
+            "is_write=", call.is_write,
+            "idem=", call.idempotency_key
+        )
+
+        tool_res = self.tool_router.call(call)
+
+        if not tool_res.ok:
+            return {
+                "ok": False,
+                "agent": tool_res.provider or "unknown",
+                "endpoint": handler.endpoint,
+                "status_code": 0,
+                "error": tool_res.error or "Tool failed",
+                "detail": tool_res.model_dump(),
+            }
+
+        raw = tool_res.data
        
 
         # ✅ EVENT: downstream result
@@ -1191,6 +1378,39 @@ class OrchestratorService:
     # ---------------------------
     # intent parse
     # ---------------------------
+    # def _run_intent_parser(self, req: OrchestrateRequest) -> ParsedIntent:
+    #     result = self.intent_parser.parse(req.input_text)
+
+    #     primary = result.get("primary_intent", "generic_fact_query")
+    #     secondary = result.get("secondary_intents", [])
+    #     scores = result.get("scores", {})
+    #     raw_text = result.get("raw_text", req.input_text)
+    #     entities = result.get("entities", {})
+    #     preference_overrides = result.get("preference_overrides", {})
+    #     unknown_amenities = []
+
+    #     if isinstance(preference_overrides, dict):
+    #         raw_list = preference_overrides.get("must_have_amenities") or []
+    #         normalized, unknown = normalize_amenities_with_unknown(raw_list)
+
+    #         preference_overrides["must_have_amenities"] = normalized
+    #         preference_overrides["_unknown_amenities"] = unknown
+    #     domain_category = result.get("domain_category")
+
+    #     confidence = float(scores.get(primary, 0.0))
+
+    #     return ParsedIntent(
+    #         domain_category=domain_category,
+    #         intent=primary,
+    #         confidence=confidence,
+    #         secondary_intents=secondary,
+    #         scores=scores,
+    #         entities=entities,
+    #         raw_text=raw_text,
+    #         preference_overrides=preference_overrides,
+            
+    #     )
+
     def _run_intent_parser(self, req: OrchestrateRequest) -> ParsedIntent:
         result = self.intent_parser.parse(req.input_text)
 
@@ -1199,12 +1419,20 @@ class OrchestratorService:
         scores = result.get("scores", {})
         raw_text = result.get("raw_text", req.input_text)
         entities = result.get("entities", {})
-        preference_overrides = result.get("preference_overrides", {})
+        preference_overrides = result.get("preference_overrides", {}) or {}
         domain_category = result.get("domain_category")
+
+        # ✅ normalize amenities safely (NO extra keys!)
+        if isinstance(preference_overrides, dict):
+            raw_list = preference_overrides.get("must_have_amenities") or []
+            normalized, unknown = normalize_amenities_with_unknown(raw_list)
+            preference_overrides["must_have_amenities"] = normalized
+        else:
+            unknown = []
 
         confidence = float(scores.get(primary, 0.0))
 
-        return ParsedIntent(
+        parsed = ParsedIntent(
             domain_category=domain_category,
             intent=primary,
             confidence=confidence,
@@ -1215,12 +1443,19 @@ class OrchestratorService:
             preference_overrides=preference_overrides,
         )
 
+        # ✅ return parsed AND unknown via attribute on self (simple) OR store on req/session elsewhere
+        # easiest: attach to request-scope via a private attribute
+        setattr(parsed, "_unknown_amenities", unknown)
+
+        return parsed
+
     # ---------------------------
     # main orchestrate
     # ---------------------------
     def orchestrate(self, req: OrchestrateRequest) -> OrchestrateResponse:
         user_id = (req.user_id or "").strip()
         session_id = (req.session_id or "").strip() or "no_session"
+        request_trace_id = str(uuid4())
         session_state: Optional[SessionState] = None
         trip_id: Optional[str] = None
 
@@ -1344,6 +1579,15 @@ class OrchestratorService:
                         "raw_text": parsed_intent.raw_text,   # ✅ store raw text (cleaned)
                         "confidence": parsed_intent.confidence,
                         "scores": parsed_intent.scores,
+                        "unknown_amenities": (
+                            parsed_intent.preference_overrides.get("_unknown_amenities", [])
+                            if isinstance(parsed_intent.preference_overrides, dict)
+                            else (
+                                parsed_intent.preference_overrides.model_dump().get("_unknown_amenities", [])
+                                if hasattr(parsed_intent.preference_overrides, "model_dump")
+                                else []
+                            )
+                        ),
                         "entities": (
                             parsed_intent.entities.model_dump(exclude_none=True)
                             if hasattr(parsed_intent.entities, "model_dump")
@@ -1560,6 +1804,7 @@ class OrchestratorService:
                             req,
                             db_prefs,
                             session_state,
+                            request_trace_id,
                         )
                         # Optionally write into blackboard tool_results immediately
                         # (Mapping later is okay too, but this is cleaner.)
