@@ -592,6 +592,7 @@ def _normalize_text(s: str) -> str:
     s = (s or "").lower()
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
 def _compile_priority_vocab() -> List[Tuple[str, List[str]]]:
     """
     Canonical key -> list of phrases/synonyms.
@@ -768,6 +769,8 @@ def order_districts(buckets, start_coords, is_return=False):
     # If is_return is True, sx/sy will be Kandy coords, and we move towards Colombo
     centroids.sort(key=lambda x: (x[1][0] - sx) ** 2 + (x[1][1] - sy) ** 2)
     return [d for d, _ in centroids]
+def _norm_city_key(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "")).strip().lower()
 def build_itinerary(ranked_candidates, days, per_day=2, anchor=None):
     buckets = group_by_district(ranked_candidates)
     ordered_districts = order_districts(buckets, anchor)
@@ -884,6 +887,155 @@ def _is_non_attraction_poi(c: Dict[str, Any]) -> bool:
     if any(k in blob for k in kw_kills):
         return True
     return False
+def build_itinerary_days_from_pool(
+    *,
+    pool: List[Dict[str, Any]],
+    city: str,
+    country: str,
+    start_dt: date,
+    days: int,
+    per_day: int,
+    eco_pref: float,
+    explicit_city_for_enrich: str,
+) -> List[Dict[str, Any]]:
+    simple_itinerary = build_itinerary(
+        ranked_candidates=pool,
+        days=days,
+        per_day=per_day,
+        anchor=None,
+    )
+
+    itinerary_days: List[Dict[str, Any]] = []
+    slots = ["morning", "afternoon"]
+
+    for i, day_pack in enumerate(simple_itinerary):
+        day_number = int(day_pack.get("day") or (i + 1))
+        day_date = start_dt + timedelta(days=day_number - 1)
+        day_str = day_date.isoformat()
+
+        day_items: List[Dict[str, Any]] = []
+        for idx, a in enumerate(day_pack["attractions"]):
+            item_city = a.get("city") or a.get("district") or city
+            aid = a["attraction_id"]
+
+            enrich = a.get("_enrichment") or enrich_attraction(
+                attraction_id=aid,
+                date_str=day_str,
+                eco_preference=eco_pref,
+                country=country,
+                explicit_city=explicit_city_for_enrich,  # ✅ keep same behavior
+            )
+
+            day_items.append({
+                "slot": slots[idx] if idx < len(slots) else f"slot_{idx+1}",
+                "kind": "attraction",
+                "attraction_id": aid,
+                "title": a.get("title") or a.get("name"),
+                "district": a.get("district"),
+                "city": item_city,
+                "rank_score_base": float(a.get("_score", 0.0)),
+                "rank_score_final": float(a.get("_final_score", a.get("_score", 0.0))),
+                "dynamic": a.get("_dynamic", {}),
+                "enrichment": enrich,
+                "raw": {k: v for k, v in a.items() if not str(k).startswith("_")},
+            })
+
+        itinerary_days.append({
+            "date": day_str,
+            "city": city,
+            "district": day_pack.get("district"),
+            "items": day_items
+        })
+
+    return itinerary_days
+def run_city_pipeline(city_name: str, payload: Dict[str, Any], cfg: PlannerConfig) -> Dict[str, Any]:
+    """
+    Runs: KG fetch -> TOP15 print -> rerank -> NSGA -> returns pareto_pool + debug packs
+    Same as destination logic but parameterized by city_name.
+    """
+    country = str(payload.get("country") or "Sri Lanka").strip() or "Sri Lanka"
+    eco_pref = float(payload.get("eco_preference") or 0.5)
+
+    # 1) KG fetch for this city
+    candidates, kg_dbg = fetch_city_attractions_from_kg(
+        city=city_name,
+        country=country,
+        limit=int(payload.get("max_candidates", cfg.max_candidates)),
+        timeout=20.0,
+    )
+
+    # prep candidate features (same as your destination setup)
+    for c in candidates:
+        c["_eco_hint"] = _eco_score_hint(c)
+        c["_score"] = float(c.get("_score", 0.0))
+        c["_features"] = {"eco_hint": float(c.get("_eco_hint", 0.5))}
+
+    # TOP-15 debug (same print format)
+    print(f"\n================ WAYPOINT CITY: {city_name} ================")
+    print("[TOP-15 KG IDS]")
+    for a in candidates[:15]:
+        print(a.get("attraction_id"), "|", a.get("district"), "|", a.get("title"))
+
+    print("\n--- Top KG Ranked Attractions (base _score) ---")
+    for a in candidates[:10]:
+        feat = a.get("_features", {}) or {}
+        print(
+            f"{a.get('title','?'):<25} | base={a.get('_score', 0.0):.3f} | "
+            f"eco={feat.get('eco_hint', 0.0):.2f}"
+        )
+
+    # 2) Rerank (same config)
+    reranked = enrich_and_rerank_candidates(
+        candidates=candidates,
+        payload=payload,
+        cfg=EnrichConfig(
+            w_sustainability=1.2,
+            w_crowd_avoid=0.8,
+            w_rain_avoid=0.6,
+        ),
+        day_offset=0,
+    )
+
+    print("\n--- Top Reranked Attractions (base + dynamic) ---")
+    for a in reranked[:10]:
+        dyn = a.get("_dynamic", {}) or {}
+        base = float(a.get("_score", 0.0))
+        final = float(a.get("_final_score", 0.0))
+        print(
+            f"{a.get('title','?'):<25} | final={final:.3f} | base={base:.3f} | "
+            f"sus={float(dyn.get('sustainability_0_1', 0.0)):.2f} | "
+            f"crowd={float(dyn.get('crowd_risk_0_1', 0.0)):.2f} | "
+            f"rain={float(dyn.get('rain_risk_0_1', 0.0)):.2f}"
+        )
+
+    # 3) Destination filtering for THIS city (reuse your existing matcher)
+    city_reranked = [c for c in reranked if _is_destination_candidate(c, city_name)]
+
+    # 4) NSGA (same)
+    obj_vectors = []
+    for i, cand in enumerate(city_reranked):
+        objectives, explain = build_objectives(cand, payload)
+        cand["_nsga_objectives"] = objectives
+        cand["_nsga_explain"] = explain
+        obj_vectors.append((objectives, i))
+
+    front_indices = pareto_front(obj_vectors)
+    pareto_pool = [city_reranked[i] for i in front_indices]
+
+    print("\n--- NSGA-II Pareto Front ---")
+    for c in pareto_pool[:10]:
+        e = c["_nsga_explain"]
+        print(
+            f"{c.get('title','?'):<25} | "
+            f"match={e['match_0_1']:.2f} sus={e['sustainability_0_1']:.2f} "
+            f"crowd={e['crowd_risk_0_1']:.2f} rain={e['rain_risk_0_1']:.2f}"
+        )
+
+    return {
+        "city": city_name,
+        "kg_dbg": kg_dbg,
+        "pareto_pool": pareto_pool,
+    }
 def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = PlannerConfig()) -> Dict[str, Any]:
     city = str(payload.get("city") or payload.get("destination") or "").strip() or "Colombo"
     country = str(payload.get("country") or "Sri Lanka").strip() or "Sri Lanka"
@@ -896,6 +1048,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     y, m, d = [int(x) for x in start_str.split("-")]
     start_dt = date(y, m, d)
     warnings: List[str] = []
+    waypoint_plans: List[Dict[str, Any]] = []  # ✅ ALWAYS exists (fixes corridor plan crash)
     # =========================
     # NEW: travel_mode decision
     # =========================
@@ -905,6 +1058,8 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     cities_path = _cities_json_path()
     origin_city_pf = (tm.origin_city or payload.get("origin_city") or "").strip()
     dest_city_pf   = (tm.destination_city or payload.get("destination") or payload.get("city") or "").strip()
+    waypoints = payload.get("waypoints") or []
+    stop_days_map = payload.get("stop_durations_days") or {}
     print(
         f"\n[PLAN] {payload.get('_plan_label')}  tm={tm.type} include_stops={tm.include_stops} "
         f"origin={tm.origin_city} dest={tm.destination_city}"
@@ -984,15 +1139,6 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             print(f"[CORRIDOR FILTER] attraction-focused travel_style -> removed {before-after} non-attraction POIs (kept {after})")
         # ✅ MUST happen BEFORE scoring/sorting
         attach_nearest_route_point(route_candidates, sampled_points)
-        print("\n[DEBUG] outbound nearest indices (top 20)")
-        for c in route_candidates[:20]:
-            print(
-                c.get("attraction_id"),
-                "idx=", c.get("_nearest_point_index"),
-                "km=", c.get("_nearest_point_km"),
-                "lat=", c.get("lat"),
-                "lng=", c.get("lng")
-            )
         # ✅ semantic after cleaning + snapping
         attach_semantic_scores(route_candidates, payload)
         # ✅ compute _route_score
@@ -1114,6 +1260,67 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
                 f"crowd={e['crowd_risk_0_1']:.2f} rain={e['rain_risk_0_1']:.2f}"
             )
         dest_pool = pareto_dest
+        # ==========================
+        # ✅ WAYPOINT (STOP) PIPELINE
+        # ==========================
+        waypoint_plans = []
+
+        # ==========================
+        # ✅ WAYPOINT (STOP) PIPELINE
+        # payload example:
+        #   waypoints = ["Anuradhapura"]
+        #   stop_durations_days = {"Anuradhapura": 2}
+        # ==========================
+        # ==========================
+        # ✅ WAYPOINT (STOP) FULL PLAN (DESTINATION-LIKE)
+        # ==========================
+        waypoints = payload.get("waypoints") or []
+        stop_days_map = payload.get("stop_durations_days") or {}
+
+        per_day = int(payload.get("per_day_attractions") or cfg.per_day_attractions)
+
+        # Choose where the waypoint starts on the calendar:
+        # Option A (simple): waypoint starts at trip start_date
+        wp_cursor_dt = start_dt
+
+        for wp in waypoints:
+            wp_city = str(wp or "").strip()
+            if not wp_city:
+                continue
+
+            wp_days = int(stop_days_map.get(wp_city) or 1)
+
+            # 1) waypoint pipeline (KG -> rerank -> NSGA)
+            wp_out = run_city_pipeline(wp_city, payload, cfg)
+            wp_pool = wp_out["pareto_pool"]
+
+            # 2) build FULL itinerary_days (same as destination)
+            wp_itinerary_days = build_itinerary_days_from_pool(
+                pool=wp_pool,
+                city=wp_city,
+                country=country,
+                start_dt=wp_cursor_dt,
+                days=wp_days,
+                per_day=per_day,
+                eco_pref=eco_pref,
+                explicit_city_for_enrich=wp_city,  # ✅ IMPORTANT: enrich using waypoint city
+            )
+
+            waypoint_plans.append({
+                "status": "ok",
+                "plan_type": "waypoint",
+                "waypoint_city": wp_city,
+                "start_date": wp_cursor_dt.isoformat(),
+                "days": wp_days,
+                "itinerary": wp_itinerary_days,
+                "debug": {
+                    "pareto_count": len(wp_pool),
+                    "kg_dbg": wp_out.get("kg_dbg", {}),
+                },
+            })
+
+            # move cursor forward (waypoint consumes days)
+            wp_cursor_dt = wp_cursor_dt + timedelta(days=wp_days)
     else:
         # ✅ corridor plan: NO rerank/NSGA here
         # you already computed route_candidates above
@@ -1194,6 +1401,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         },
         "warnings": warnings,
         "itinerary": itinerary_days,
+        "waypoint_plans": waypoint_plans,
         "debug": {
             "route_anchor_coords": route_start_coords,
             "kg_mode": kg_mode,
