@@ -9,9 +9,8 @@ from .events_routes import router as events_router
 from .phase2_routes import router as phase2_router
 from .semantic_routes import router as semantic_router
 from .trip_routes import router as trips_router
-
-
-
+from uuid import uuid4
+from ..orchestrator_core.trace_utils import ensure_ids
 
 app = FastAPI(
     title="GraphCeylon Orchestrator",
@@ -50,6 +49,8 @@ def root():
 
 @app.post("/orchestrate", response_model=OrchestrateResponse)
 def orchestrate(req: OrchestrateRequest):
+    req = ensure_ids(req)
+    print("[trace]", req.trace_id, req.session_id, req.turn_id)
     return orchestrator.orchestrate(req)
 
 @app.get("/trace/{session_id}")

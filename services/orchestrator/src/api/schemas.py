@@ -82,6 +82,9 @@ class OrchestrateRequest(BaseModel):
     lang: Optional[str] = "auto"      # si, ta, en, auto
     session_id: Optional[str] = None  # for multi-turn context
     entities: Optional[Dict[str, Any]] = None 
+    trace_id: Optional[str] = None          # per /orchestrate call
+    turn_id: Optional[str] = None           # per user message/turn
+    idempotency_key: Optional[str] = None 
 
 
 # what intent parser returns (after wrapping)

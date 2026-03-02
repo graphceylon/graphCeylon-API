@@ -12,6 +12,7 @@ import hashlib
 import json
 import traceback
 from typing import Awaitable
+from uuid import uuid4
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,6 +21,7 @@ from uuid import uuid4
 from .followup_resolver import resolve_followup
 import os
 import re
+from .runtime.trace_pg import PostgresTraceStore
 from pydantic import BaseModel
 from .runtime.tools.models import ToolCall
 from .runtime.tools.router import ToolRouter
@@ -170,6 +172,7 @@ def normalize_amenities_with_unknown(items):
                 unknown.append(raw)
 
     return normalized, unknown
+
 def wrap_task(fn, task_type: str, task_id: str):
     async def _wrapped(task, ctx, results):
         try:
@@ -546,10 +549,12 @@ class OrchestratorService:
         protocol_mode: str = "direct",
     ) -> None:
         self.intent_parser = intent_parser
+        TRACE_DSN = os.getenv("ORCH_DB_DSN", "").strip()
+        self.trace_pg = PostgresTraceStore(TRACE_DSN) if TRACE_DSN else None
         self.response_formatter = ResponseFormatter()
         self.task_graph_builder = task_graph_builder
         self.protocol_mode = protocol_mode
-        self.trace_store = InMemoryTraceStore(max_per_session=500)
+        # self.trace_store = InMemoryTraceStore(max_per_session=500)
         self.profile_event_store = ProfileEventStore()
         self.trip_repo = TripRepo()
         self.session_store = SessionStore(
@@ -1438,6 +1443,21 @@ class OrchestratorService:
         #     parsed_obj = raw
 
         # return parsed_obj
+        if self.trace_pg:
+            self.trace_pg.add_event(
+                trace_id=request_trace_id or call.trace_id,
+                session_id=req.session_id or "no_session",
+                user_id=req.user_id,
+                turn_id=req.turn_id if hasattr(req, "turn_id") else None,
+                event_type="tool_start",
+                status="started",
+                task_id=call.name,
+                capability=call.name,
+                provider=None,
+                endpoint=handler.endpoint,
+                request_payload=call.args,
+                idempotency_key=call.idempotency_key,
+            )
         tool_res = self.tool_router.call(call)
         tool_evidence = getattr(tool_res, "evidence", None) or []
 
@@ -1666,7 +1686,28 @@ class OrchestratorService:
     def orchestrate(self, req: OrchestrateRequest) -> OrchestrateResponse:
         user_id = (req.user_id or "").strip()
         session_id = (req.session_id or "").strip() or "no_session"
-        request_trace_id = str(uuid4())
+        request_trace_id = (req.trace_id or "").strip() or str(uuid4())
+        turn_id = (req.turn_id or "").strip() or str(uuid4()) 
+        if self.trace_pg:
+            self.trace_pg.start_run(
+                trace_id=request_trace_id,
+                user_id=user_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                request_payload=req.model_dump(mode="json") if hasattr(req, "model_dump") else dict(req),
+            )
+            self.trace_pg.add_event(
+                trace_id=request_trace_id,
+                session_id=session_id,
+                user_id=user_id,
+                turn_id=turn_id,
+                event_type="request_received",
+                status="ok",
+                request_payload={"input_text": req.input_text},
+            )
+        
+
+        print("[trace/service]", request_trace_id, session_id, turn_id)
         session_state: Optional[SessionState] = None
         trip_id: Optional[str] = None
 
@@ -1865,62 +1906,22 @@ class OrchestratorService:
                 ents["origin_city"] = raw
                 parsed_intent = parsed_intent.model_copy(update={"entities": Entities(**ents)})
 
-        # --- 2) If it’s a plan request and origin missing, ask first (gate) ---
-        # if parsed_intent.intent == "plan_itinerary" and session_state:
-        #     ents = parsed_intent.entities.model_dump(exclude_none=False)
-        #     dest = ents.get("city") or ents.get("destination")
-        #     origin = ents.get("origin_city") or ents.get("origin") or session_state.slots.get("origin_city")
-
-        #     attempts = int(session_state.slots.get("clarification_attempts", 0))
-
-        #     if dest and not origin and attempts < 2:
-        #         session_state.slots["pending_clarification"] = "origin_city"
-        #         session_state.slots["pending_destination"] = dest
-        #         session_state.slots["clarification_attempts"] = attempts + 1
-
-        #         # save session before returning (important)
-        #         if user_id and session_id != "no_session":
-        #             self.session_store.save(user_id=user_id, session_id=session_id, state=session_state.to_dict())
-
-        #         question = f"Where are you coming from (e.g., Colombo)? If you’re already in {dest} or not sure, just say “skip” and I’ll plan {dest}-only."
-
-        #         return OrchestrateResponse(
-        #             status="ok",
-        #             message="Need clarification.",
-        #             parsed_intent=parsed_intent,
-        #             tasks=[],  # no DAG run yet
-        #             protocol_mode=self.protocol_mode,
-        #             weather_result=None,
-        #             crowd_result=None,
-        #             price_result=None,
-        #             itinerary_result=None,
-        #             modify_result=None,
-        #             visa_result=None,
-        #             accommodation_result=None,
-        #             pois_result=None,
-        #             transport_result=None,
-        #             attraction_result=None,
-        #             final_message=question,
-        #             followups=[f"Starting from Colombo", f"Already in {dest}", "Skip"],
-        #             trip_id=trip_id,
-        #             errors=[],
-        #         )
-
-        # ✅ if we asked for origin previously, try to treat the new message as origin
-        # if session_state and session_state.slots.get("pending_clarification") == "origin_city":
-        #     attempts = int(session_state.slots.get("clarification_attempts", 0))
-        #     raw = (req.input_text or "").strip()
-
-        #     # If user says "don't know" etc → stop asking and continue destination-only
-        #     if raw.lower() in {"idk", "i don't know", "dont know", "not sure", "no idea"}:
-        #         session_state.slots.pop("pending_clarification", None)
-
-        #     else:
-        #         # Treat entire text as origin city (simple approach)
-        #         # (later you can add NER / place extractor)
-        #         session_state.slots["origin_city"] = raw
-        #         session_state.slots.pop("pending_clarification", None)
         tasks: List[TaskSummary] = self.task_graph_builder.build(parsed_intent)
+        if self.trace_pg:
+            self.trace_pg.update_run(
+                trace_id=request_trace_id,
+                parsed_intent=parsed_intent.model_dump(mode="json"),
+                planned_tasks={"tasks": [t.model_dump(mode="json") for t in tasks]},
+            )
+            self.trace_pg.add_event(
+                trace_id=request_trace_id,
+                session_id=session_id,
+                user_id=user_id,
+                turn_id=turn_id,
+                event_type="task_graph_planned",
+                status="ok",
+                request_payload={"tasks": [t.model_dump(mode="json") for t in tasks]},
+            )
 
         bb.tool_results = {
             "weather_result": None,
