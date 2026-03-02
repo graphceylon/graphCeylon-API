@@ -40,7 +40,8 @@ class DataIngestionService:
         source_file: str,
         chunk_id: str,
         extraction: GraphExtraction,
-        domain_name: str = "Economic & Policy"
+        domain_name: str = "Economic & Policy",
+        url: str = ""
     ) -> None:
         """Ingest a single chunk with extracted entities into the graph.
         
@@ -50,17 +51,19 @@ class DataIngestionService:
             chunk_id: Unique chunk identifier
             extraction: Extracted entities and relationships
             domain_name: Domain to link chunk to
+            url: Source URL for the chunk
         """
         try:
             # Generate embedding
             embedding = embedding_service.generate_embedding(text)
             
             with self.driver.session() as session:
-                # 1. Create Chunk node with embedding
+                # 1. Create Chunk node with embedding and URL
                 session.run("""
                     MERGE (c:Chunk {id: $chunk_id})
                     SET c.text = $text,
                         c.source = $source,
+                        c.url = $url,
                         c.embedding = $embedding,
                         c.createdAt = datetime()
                     """,
@@ -68,6 +71,7 @@ class DataIngestionService:
                         "chunk_id": chunk_id,
                         "text": text,
                         "source": source_file,
+                        "url": url,
                         "embedding": embedding
                     }
                 )
@@ -189,7 +193,8 @@ class DataIngestionService:
                     source_file=chunk["source"],
                     chunk_id=chunk["chunk_id"],
                     extraction=extraction,
-                    domain_name=domain_name
+                    domain_name=domain_name,
+                    url=chunk.get("url", "")  # Include URL from chunk
                 )
             
             result = {

@@ -150,6 +150,7 @@ class RAGQueryEngine:
                     WHERE score > 0.5
                     RETURN c.text AS text,
                            c.source AS source,
+                           c.url AS url,
                            c.chunk_id AS chunk_id,
                            score
                     ORDER BY score DESC
@@ -165,6 +166,7 @@ class RAGQueryEngine:
                     chunks.append({
                         "text": record["text"],
                         "source": record["source"],
+                        "url": record.get("url", ""),
                         "chunk_id": record["chunk_id"],
                         "relevance_score": record["score"]
                     })
@@ -187,11 +189,22 @@ class RAGQueryEngine:
             Generated answer
         """
         try:
-            # Format context
-            context_text = "\n\n---\n\n".join([
-                f"Source: {chunk['source']}\nRelevance: {chunk['relevance_score']:.2f}\n{chunk['text']}"
-                for chunk in context_chunks
-            ])
+            # Format context with URLs
+            context_parts = []
+            for chunk in context_chunks:
+                url = chunk.get('url', '')
+                source = chunk['source']
+                score = chunk['relevance_score']
+                text = chunk['text']
+                
+                context_part = f"Source: {source}\nRelevance: {score:.2f}"
+                if url:
+                    context_part += f"\nURL: {url}"
+                context_part += f"\n{text}"
+                
+                context_parts.append(context_part)
+            
+            context_text = "\n\n---\n\n".join(context_parts)
             
             # Create prompt
             from langchain_core.prompts import ChatPromptTemplate
@@ -232,6 +245,12 @@ Guidelines:
 4. Use clear, professional language
 5. Structure your answer with bullet points or numbered lists when appropriate
 6. If multiple options exist (e.g., different visa types), explain them clearly
+7. ALWAYS include relevant source URLs in your answer when they are provided in the context
+8. Format URLs as clickable links at the end of relevant information or in a "References" section
+
+When URLs are available, include them like:
+- "For more information, visit: [URL]"
+- Or include a "References:" section at the end with all relevant URLs
 
 If you're unsure or the context is insufficient, respond with:
 "Based on the available information, I cannot provide a complete answer to this question. Please consult official immigration authorities for accurate details." """
@@ -324,6 +343,7 @@ If you're unsure or the context is insufficient, respond with:
                     
                     RETURN c.text AS text,
                            c.source AS source,
+                           c.url AS url,
                            c.id AS chunk_id,
                            score,
                            entities
@@ -341,6 +361,7 @@ If you're unsure or the context is insufficient, respond with:
                     chunks.append({
                         "text": record["text"],
                         "source": record["source"],
+                        "url": record.get("url", ""),
                         "chunk_id": record["chunk_id"],
                         "relevance_score": record["score"],
                         "entities": record["entities"] or []
