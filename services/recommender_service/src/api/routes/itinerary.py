@@ -134,29 +134,10 @@ def itinerary_plan(req: Union[ItineraryPlanRequest, C3RequestEnvelope]) -> Dict[
         plans = safe.get("plans", {}) or {}
 
         _print_compact_plan(plans.get("destination_plan", {}), "DESTINATION_PLAN")
-        _print_compact_plan(plans.get("route_plan", {}), "ROUTE_PLAN")
-        _print_compact_plan(plans.get("route_return_plan", {}), "route_return_plan")
+        _print_compact_plan(plans.get("route_plan", {}), "Outbound Plan ")
+        _print_compact_plan(plans.get("route_return_plan", {}), "Return Plan")
         print(f"[REQ] city={payload.get('city')} origin={payload.get('origin_city')} days={payload.get('days')} start={payload.get('start_date')}")
 
-
-
-
-        # ✅ PRINT RESPONSE (pretty)
-        # print("\n================ C3 /itinerary/plan RESPONSE ================")
-        # # make sure it's json-serializable (handles dates, pydantic, etc.)
-        # safe = jsonable_encoder(result)
-        # print("\n================ C3 /itinerary/plan RESPONSE (TWO PLANS) ================")
-
-        # plans = safe.get("plans", {})
-        # for key in ["destination_plan", "route_plan"]:
-        #     if key in plans:
-        #         print(f"\n---------------- {key.upper()} ----------------")
-        #         print(json.dumps(plans[key], indent=2, ensure_ascii=False))
-
-        # print("\n=============================================================\n")
-
-        # print(json.dumps(safe, indent=2, ensure_ascii=False))
-        # print("=============================================================\n")
 
         return result
 
