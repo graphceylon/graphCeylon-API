@@ -1,10 +1,23 @@
 from __future__ import annotations
+from typing import Any, Dict, List, Optional, Literal
 from pydantic import BaseModel, Field
-from typing import Any, Dict, Optional, Literal
 from uuid import uuid4
 from enum import Enum
 import time
+from ...core_contract.models import EvidenceItem
 
+
+"""
+Single import surface for runtime/tools.
+
+Rule:
+- All tool contracts come from orchestrator_core/core_contract/models.py
+- No duplicates inside runtime/
+"""
+
+from ...core_contract.models import ToolCall, ToolResult
+
+__all__ = ["ToolCall", "ToolResult"]
 
 class ToolErrorCode(str, Enum):
     TIMEOUT = "timeout"
@@ -45,3 +58,6 @@ class ToolResult(BaseModel):
     provider: Optional[Literal["a2a", "mcp", "local"]] = None
     tool_name: Optional[str] = None
     trace_id: Optional[str] = None
+    evidence: List[EvidenceItem] = Field(default_factory=list)
+
+ToolResult.model_rebuild()

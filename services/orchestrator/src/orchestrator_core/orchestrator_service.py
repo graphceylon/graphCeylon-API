@@ -10,6 +10,8 @@ from .runtime.blackboard import Blackboard
 from .mappers.restaurant_mapper import map_restaurant_request
 import hashlib
 import json
+import traceback
+from typing import Awaitable
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,6 +25,7 @@ from .runtime.tools.models import ToolCall
 from .runtime.tools.router import ToolRouter
 from .runtime.tools.providers.a2a_provider import A2AToolProvider
 from .runtime.tools.providers.local_provider import LocalToolProvider
+from .core_contract import AgentResult, EvidenceItem, EvidenceSource, SafetyFlag, SafetySeverity
 # MCP optional
 # from .runtime.tools.providers.mcp_provider import MCPToolProvider
 
@@ -42,8 +45,6 @@ from .mappers.weather_mapper import map_weather_request
 from .contracts.weather import WeatherForecastResponse
 from .memory.session_store import SessionStore
 from .memory.session_state import SessionState
-import os
-
 from .mappers.crowd_mapper import map_crowd_request
 from .contracts.crowd import CrowdForecastResponse
 from ..api.schemas import AgentCallError
@@ -104,6 +105,8 @@ from .task_executor import TaskExecutor, ExecTask
 from .task_graph_builder import TaskGraphBuilder
 
 import re
+
+HandlerFn = Callable[[Any, Any, Dict[str, Any]], Awaitable[AgentResult]]
 
 EDIT_VERBS = [
     "make it", "extend", "shorten", "change", "shift", "move", "swap",
@@ -167,7 +170,69 @@ def normalize_amenities_with_unknown(items):
                 unknown.append(raw)
 
     return normalized, unknown
+def wrap_task(fn, task_type: str, task_id: str):
+    async def _wrapped(task, ctx, results):
+        try:
+            out = await fn(task, ctx, results)
 
+            # ✅ hard-enforce contract even on success path
+            if isinstance(out, AgentResult):
+                return out
+
+            # If something returns raw dict/string/etc -> convert to AgentResult failure
+            return AgentResult(
+                ok=False,
+                answer="",
+                data=None,
+                evidence=[],
+                missing_fields=[],
+                next_actions=[],
+                confidence=0.0,
+                safety_flags=[
+                    SafetyFlag(
+                        code="CONTRACT_BREACH",
+                        severity=SafetySeverity.medium,
+                        message=f"Task '{task_type}' returned {type(out)} instead of AgentResult",
+                        meta={
+                            "task_type": task_type,
+                            "task_id": task_id,
+                            "got_type": str(type(out)),
+                            "value_preview": str(out)[:500],
+                        },
+                    )
+                ],
+                meta={"task_type": task_type, "task_id": task_id},
+            )
+
+        except Exception as e:
+            tb = traceback.format_exc()
+            print(f"[DAG] TASK FAILED type={task_type} id={task_id} err={e}\n{tb}")
+
+            # ✅ Always return AgentResult (never dict)
+            return AgentResult(
+                ok=False,
+                answer="",
+                data=None,
+                evidence=[],
+                missing_fields=[],
+                next_actions=[],
+                confidence=0.0,
+                safety_flags=[
+                    SafetyFlag(
+                        code="TASK_EXCEPTION",
+                        severity=SafetySeverity.high,
+                        message=str(e),
+                        meta={
+                            "task_type": task_type,
+                            "task_id": task_id,
+                            "traceback": tb,
+                        },
+                    )
+                ],
+                meta={"task_type": task_type, "task_id": task_id},
+            )
+
+    return _wrapped
 def stable_idempotency_key(*, user_id: str | None, session_id: str, intent: str, args: dict) -> str:
     # remove volatile fields that would change between retries
     args_clean = dict(args or {})
@@ -497,7 +562,7 @@ class OrchestratorService:
         self.profile_client = ProfileClient()
 
         # ✅ trace store
-        self.trace_store = InMemoryTraceStore(max_per_session=500)
+        # self.trace_store = InMemoryTraceStore(max_per_session=500)
 
 
         # ✅ 1) capability handlers
@@ -1308,71 +1373,217 @@ class OrchestratorService:
             "idem=", call.idempotency_key
         )
 
-        tool_res = self.tool_router.call(call)
+        # tool_res = self.tool_router.call(call)
 
-        if not tool_res.ok:
-            return {
-                "ok": False,
-                "agent": tool_res.provider or "unknown",
-                "endpoint": handler.endpoint,
-                "status_code": 0,
-                "error": tool_res.error or "Tool failed",
-                "detail": tool_res.model_dump(),
-            }
+        # if not tool_res.ok:
+        #     return {
+        #         "ok": False,
+        #         "agent": tool_res.provider or "unknown",
+        #         "endpoint": handler.endpoint,
+        #         "status_code": 0,
+        #         "error": tool_res.error or "Tool failed",
+        #         "detail": tool_res.model_dump(),
+        #     }
 
-        raw = tool_res.data
+        # raw = tool_res.data
        
 
-        # ✅ EVENT: downstream result
-        if req.user_id:
-            self.profile_event_store.append(
-                ProfileEvent(
-                    user_id=req.user_id,
-                    session_id=req.session_id or "no_session",
-                    event_type="downstream_response",
-                    intent=intent_name,
-                    payload={
-                        "endpoint": handler.endpoint,
-                        "ok": raw is not None,
-                        "response": raw if raw is not None else None,
-                    },
-                )
+        # # ✅ EVENT: downstream result
+        # if req.user_id:
+        #     self.profile_event_store.append(
+        #         ProfileEvent(
+        #             user_id=req.user_id,
+        #             session_id=req.session_id or "no_session",
+        #             event_type="downstream_response",
+        #             intent=intent_name,
+        #             payload={
+        #                 "endpoint": handler.endpoint,
+        #                 "ok": raw is not None,
+        #                 "response": raw if raw is not None else None,
+        #             },
+        #         )
+        #     )
+
+        # if raw is None:
+        #     return {
+        #         "ok": False,
+        #         "agent": "unknown",
+        #         "endpoint": handler.endpoint,
+        #         "status_code": 0,
+        #         "error": "Downstream call failed (raw=None)",
+        #     }
+
+        # if isinstance(raw, dict) and raw.get("ok") is False:
+        #     return {
+        #         "ok": False,
+        #         "agent": "unknown",
+        #         "endpoint": handler.endpoint,
+        #         "status_code": int(raw.get("status_code") or 0),
+        #         "error": str(raw.get("error") or "Downstream returned ok:false"),
+        #         "detail": raw,
+        #     }
+
+
+        # # 7) Parse response ONCE (support response_model=None)
+        # parsed_obj: Any = None
+        # if handler.response_model is not None:
+        #     try:
+        #         parsed_obj = handler.response_model(**raw)
+        #     except Exception as e:
+        #         print(f"[orchestrator] Error parsing response for intent={intent_name}: {e}")
+        #         parsed_obj = None
+        # else:
+        #     print(f"[orchestrator] Raw response for {intent_name}:")
+        #     print(raw)
+        #     parsed_obj = raw
+
+        # return parsed_obj
+        tool_res = self.tool_router.call(call)
+        tool_evidence = getattr(tool_res, "evidence", None) or []
+
+        # --- TOOL FAILURE -> AgentResult ---
+        if not tool_res.ok:
+            return AgentResult(
+                ok=False,
+                answer="",
+                data=None,
+                evidence=tool_evidence,
+                missing_fields=[],
+                next_actions=[],
+                confidence=0.0,
+                safety_flags=[
+                    SafetyFlag(
+                        code="TOOL_CALL_FAILED",
+                        severity=SafetySeverity.medium,
+                        message=tool_res.error or "Tool failed",
+                        meta={
+                            "tool": call.name,
+                            "provider": tool_res.provider,
+                            "endpoint": handler.endpoint,
+                        },
+                    )
+                ],
+                meta={
+                    "tool_name": call.name,
+                    "provider": tool_res.provider,
+                    "latency_ms": tool_res.latency_ms,
+                    "endpoint": handler.endpoint,
+                },
             )
 
+        raw = tool_res.data
+
+        # --- Downstream returned None/empty -> AgentResult ---
         if raw is None:
-            return {
-                "ok": False,
-                "agent": "unknown",
-                "endpoint": handler.endpoint,
-                "status_code": 0,
-                "error": "Downstream call failed (raw=None)",
-            }
+            return AgentResult(
+                ok=False,
+                answer="",
+                data=None,
+                evidence=tool_evidence,
+                missing_fields=[],
+                next_actions=[],
+                confidence=0.0,
+                safety_flags=[
+                    SafetyFlag(
+                        code="DOWNSTREAM_EMPTY",
+                        severity=SafetySeverity.medium,
+                        message="Downstream returned empty response",
+                        meta={
+                            "tool": call.name,
+                            "provider": tool_res.provider,
+                            "endpoint": handler.endpoint,
+                        },
+                    )
+                ],
+                meta={
+                    "tool_name": call.name,
+                    "provider": tool_res.provider,
+                    "endpoint": handler.endpoint,
+                },
+            )
 
+        # --- Downstream explicitly ok:false -> AgentResult ---
         if isinstance(raw, dict) and raw.get("ok") is False:
-            return {
-                "ok": False,
-                "agent": "unknown",
-                "endpoint": handler.endpoint,
-                "status_code": int(raw.get("status_code") or 0),
-                "error": str(raw.get("error") or "Downstream returned ok:false"),
-                "detail": raw,
-            }
+            return AgentResult(
+                ok=False,
+                answer="",
+                data=raw,
+                evidence=tool_evidence,
+                missing_fields=[],
+                next_actions=[],
+                confidence=0.1,
+                safety_flags=[
+                    SafetyFlag(
+                        code="DOWNSTREAM_OK_FALSE",
+                        severity=SafetySeverity.medium,
+                        message=str(raw.get("error") or "Downstream returned ok:false"),
+                        meta={
+                            "tool": call.name,
+                            "provider": tool_res.provider,
+                            "endpoint": handler.endpoint,
+                        },
+                    )
+                ],
+                meta={
+                    "tool_name": call.name,
+                    "provider": tool_res.provider,
+                    "endpoint": handler.endpoint,
+                },
+            )
 
-
-        # 7) Parse response ONCE (support response_model=None)
+        # --- Parse response ONCE ---
         parsed_obj: Any = None
         if handler.response_model is not None:
             try:
                 parsed_obj = handler.response_model(**raw)
             except Exception as e:
-                print(f"[orchestrator] Error parsing response for intent={intent_name}: {e}")
-                parsed_obj = None
+                # Parsing failure should not crash orchestration
+                return AgentResult(
+                    ok=False,
+                    answer="",
+                    data=raw,
+                    evidence=tool_evidence,
+                    missing_fields=[],
+                    next_actions=[],
+                    confidence=0.2,
+                    safety_flags=[
+                        SafetyFlag(
+                            code="RESPONSE_PARSE_FAILED",
+                            severity=SafetySeverity.low,
+                            message=f"Response parse failed: {e}",
+                            meta={
+                                "tool": call.name,
+                                "provider": tool_res.provider,
+                                "endpoint": handler.endpoint,
+                            },
+                        )
+                    ],
+                    meta={
+                        "tool_name": call.name,
+                        "provider": tool_res.provider,
+                        "endpoint": handler.endpoint,
+                    },
+                )
         else:
-            print(f"[orchestrator] Raw response for {intent_name}:")
-            print(raw)
             parsed_obj = raw
 
-        return parsed_obj
+        # --- SUCCESS -> AgentResult ---
+        return AgentResult(
+            ok=True,
+            answer="",  # let ResponseFormatter handle user-facing text for now
+            data=parsed_obj,
+            evidence=tool_res.evidence or [],
+            missing_fields=[],
+            next_actions=[],
+            confidence=0.75,
+            safety_flags=[],
+            meta={
+                "tool_name": call.name,
+                "provider": tool_res.provider,
+                "latency_ms": tool_res.latency_ms,
+                "endpoint": handler.endpoint,
+            },
+        )
 
 
     # ---------------------------
@@ -1740,22 +1951,53 @@ class OrchestratorService:
 
                 async def _parse(task, ctx, results, pi=parsed_intent, _bb=bb):
                     _bb.intents.setdefault("raw", {})
-                    _bb.intents["raw"]["parsed_intent"] = pi.model_dump(mode="json") if hasattr(pi, "model_dump") else dict(pi)
-                    return _bb.intents["raw"]["parsed_intent"]
-                fn = _parse 
+                    data = pi.model_dump(mode="json") if hasattr(pi, "model_dump") else dict(pi)
+                    _bb.intents["raw"]["parsed_intent"] = data
+                    return AgentResult(
+                        ok=True,
+                        answer="",
+                        data=data,
+                        evidence=[],
+                        missing_fields=[],
+                        next_actions=[],
+                        confidence=1.0,
+                        safety_flags=[],
+                        meta={"task": "parse_intent"},
+                    )
+                fn = _parse
 
             elif ttype == "extract_entities":
 
                 async def _extract(task, ctx, results, pi=parsed_intent, _bb=bb):
                     ents = pi.entities
-                    ents_json = ents.model_dump(mode="json") if hasattr(ents, "model_dump") else dict(ents or {})
-                    _bb.entities = ents_json
-                    return ents_json
-                fn = _extract 
+                    data = ents.model_dump(mode="json") if hasattr(ents, "model_dump") else dict(ents or {})
+                    _bb.entities = data
+                    return AgentResult(
+                        ok=True,
+                        answer="",
+                        data=data,
+                        evidence=[],
+                        missing_fields=[],
+                        next_actions=[],
+                        confidence=1.0,
+                        safety_flags=[],
+                        meta={"task": "extract_entities"},
+                    )
+                fn = _extract
 
             elif ttype == "format_response":
                 async def _format(task, ctx, results):
-                    return {"ok": True}
+                    return AgentResult(
+                        ok=True,
+                        answer="",
+                        data={"ok": True},
+                        evidence=[],
+                        missing_fields=[],
+                        next_actions=[],
+                        confidence=1.0,
+                        safety_flags=[],
+                        meta={"task": "format_response"},
+                    )
                 fn = _format
             elif ttype == "forecast_weather":
                 async def _weather(task, ctx, results):
@@ -1790,6 +2032,7 @@ class OrchestratorService:
                         req,
                         db_prefs,
                         session_state,
+                        request_trace_id,
                     )
 
                 fn = _weather
@@ -1814,13 +2057,31 @@ class OrchestratorService:
                 fn = make_handler(ttype, bb)
 
             else:
-                async def _unknown(task, ctx, results, tt=ttype):
-                    return {"ok": False, "error": f"Unknown task type: {tt}"}
+                async def _unknown(task, ctx, results, tt=ttype, tid=t.id):
+                    return AgentResult(
+                        ok=False,
+                        answer="",
+                        data=None,
+                        evidence=[],
+                        missing_fields=[],
+                        next_actions=[],
+                        confidence=0.0,
+                        safety_flags=[
+                            SafetyFlag(
+                                code="UNKNOWN_TASK_TYPE",
+                                severity=SafetySeverity.medium,
+                                message=f"Unknown task type: {tt}",
+                                meta={"task_type": tt, "task_id": tid},
+                            )
+                        ],
+                        meta={"task_type": tt, "task_id": tid},
+                    )
                 fn = _unknown
 
             # ✅ register BOTH
-            handlers[ttype] = fn
-            handlers[t.id] = fn
+            safe_fn = wrap_task(fn, ttype, t.id)
+            handlers[ttype] = safe_fn
+            handlers[t.id] = safe_fn
 
 
         async def _runner():
@@ -1830,33 +2091,212 @@ class OrchestratorService:
         dag_results, exec_results, ctx = normalize_executor_output(out)
 
         # 🔥 Map DAG outputs into response fields
+        # for task in exec_tasks:
+        #     out = dag_results.get(task.id)
+        #     if not out:
+        #         continue
+
+        #     # If handler returned a failure dict, convert it into an AgentCallError
+        #     if isinstance(out, dict) and out.get("ok") is False:
+        #         errors.append(
+        #             AgentCallError(
+        #                 agent=str(out.get("agent") or "unknown"),
+        #                 endpoint=str(out.get("endpoint") or self.handlers.get(task.type).endpoint if task.type in self.handlers else ""),
+        #                 status_code=int(out.get("status_code") or 0),
+        #                 error=str(out.get("error") or "Downstream call failed"),
+        #                 detail=out,
+        #             )
+        #         )
+        #         continue
+
+        #     ttype = task.type
+
+        #     if ttype == "plan_itinerary":
+        #         results["itinerary_result"] = out
+
+        #         it_res = out
+        #         it_json = it_res.model_dump(mode="json") if hasattr(it_res, "model_dump") else dict(it_res)
+
+        #         # --- ADD THIS AFTER it_json IS CREATED (still inside plan_itinerary block) ---
+        #         route_plan = (it_json.get("plans") or {}).get("route_plan") or {}
+        #         needs_origin = (
+        #             isinstance(route_plan, dict)
+        #             and route_plan.get("status") == "needs_clarification"
+        #             and route_plan.get("reason") == "origin_required_for_corridor"
+        #         )
+
+        #         # current extracted entities
+        #         ents_now = (
+        #             parsed_intent.entities.model_dump(exclude_none=False)
+        #             if hasattr(parsed_intent.entities, "model_dump")
+        #             else dict(parsed_intent.entities or {})
+        #         )
+
+        #         origin_missing = not (ents_now.get("origin") or ents_now.get("origin_city"))
+
+        #         if needs_origin and origin_missing:
+        #             # ✅ Save clarification in results so formatter can add it nicely
+        #             results["route_clarification"] = {
+        #                 "type": "clarify_origin",
+        #                 "question": route_plan.get("question")
+        #                     or "Where are you starting from (e.g., Colombo), or are you already in Kandy? If you’re not sure, I can still plan just Kandy.",
+        #                 "options": route_plan.get("options") or ["Starting from Colombo", "Already in Kandy", "Other / Not sure"]
+        #             }
+
+        #             # ✅ Save in session so next message can fill it
+        #             if session_state:
+        #                 session_state.slots["pending_clarification"] = "origin_city"
+        #                 bb.pending_actions.append({
+        #                     "type": "clarification",
+        #                     "field": "origin_city",
+        #                     "reason": "origin_required_for_corridor",
+        #                 })
+        #                 session_state.slots["pending_destination"] = (it_json.get("meta") or {}).get("destination")
+        #                 session_state.slots["clarification_attempts"] = int(session_state.slots.get("clarification_attempts", 0)) + 1
+
+        #         ok = (it_json.get("status") == "ok") or (it_json.get("ok") is True)
+        #         if ok:
+        #             meta = it_json.get("meta") or {}
+        #             days = meta.get("days") or it_json.get("days")
+        #             start_date = meta.get("start_date") or it_json.get("start_date")
+
+        #             dest = meta.get("destination")
+        #             if not dest:
+        #                 plans = it_json.get("plans") or {}
+        #                 dp = plans.get("destination_plan") or {}
+        #                 dest = dp.get("city") or dp.get("destination") or meta.get("destination")
+
+        #             title = f"{dest or 'Trip'} ({days or ''} days)".strip()
+
+                    
+
+        #             active_trip_id = session_state.slots.get("active_trip_id") if session_state else None
+
+        #             # destination from response
+        #             dest = meta.get("destination") or dest  # as you already compute
+
+        #             # destination currently active in session
+        #             active_trip_id = session_state.slots.get("active_trip_id") if session_state else None
+
+        #             active_trip_dest = None
+        #             if active_trip_id and user_id:
+        #                 trip = self.trip_repo.get_trip(trip_id=active_trip_id, user_id=user_id)
+        #                 if trip:
+        #                     active_trip_dest = (trip.destination or "").strip()
+
+        #             is_new_trip = bool(dest) and bool(active_trip_dest) and dest.lower() != active_trip_dest.lower()
+
+        #             if active_trip_id and not is_new_trip:
+        #                 # UPDATE same trip only if same destination (replan same trip)
+        #                 self.trip_repo.update_trip_plan(
+        #                     trip_id=active_trip_id,
+        #                     title=title,
+        #                     destination=dest,
+        #                     start_date=start_date,
+        #                     days=int(days) if days else None,
+        #                     plan_json=it_json,
+        #                 )
+        #                 trip_id = active_trip_id
+        #             else:
+        #                 # ✅ CREATE new trip when destination changed OR no active trip
+        #                 trip_id = self.trip_repo.create_trip(
+        #                     user_id=user_id,
+        #                     title=title,
+        #                     destination=dest,
+        #                     start_date=start_date,
+        #                     travel_month=None,
+        #                     days=int(days) if days else None,
+        #                     plan_json=it_json,
+        #                 )
+
+        #             # ✅ set new active trip
+        #             if session_state and trip_id:
+        #                 session_state.slots["active_trip_id"] = trip_id
+        #                 session_state.slots["active_place"] = dest
+        #                 session_state.slots["city"] = dest
+
+        #         continue
+        #     elif ttype == "modify_itinerary":
+        #         results["modify_result"] = out
+
+        #     if ttype == "info_visa_policy":
+        #         results["visa_result"] = out
+        #     elif ttype == "info_accommodation":
+        #         results["accommodation_result"] = out
+        #     elif ttype == "info_transport":
+        #         results["transport_result"] = out
+        #     elif ttype == "info_attraction":
+        #         results["attraction_result"] = out
+
+        #     elif ttype == "forecast_weather":
+        #         results["weather_result"] = out
+        #     elif ttype == "crowd_forecast":
+        #         results["crowd_result"] = out
+        #     elif ttype == "forecast_price":
+        #         results["price_result"] = out
+        #     elif ttype == "recommend_pois":
+        #         results["pois_result"] = out
+        #     elif ttype == "recommend_restaurants":
+        #         results["restaurant_result"] = out
+
+        # 🔥 Map DAG outputs into response fields (AgentResult-aware)
         for task in exec_tasks:
-            out = dag_results.get(task.id)
-            if not out:
+            out = dag_results.get(task.id) or dag_results.get(task.type)
+            if out is None:
                 continue
 
-            # If handler returned a failure dict, convert it into an AgentCallError
-            if isinstance(out, dict) and out.get("ok") is False:
+            # ✅ STRICT: every task MUST return AgentResult
+            if not isinstance(out, AgentResult):
                 errors.append(
                     AgentCallError(
-                        agent=str(out.get("agent") or "unknown"),
-                        endpoint=str(out.get("endpoint") or self.handlers.get(task.type).endpoint if task.type in self.handlers else ""),
-                        status_code=int(out.get("status_code") or 0),
-                        error=str(out.get("error") or "Downstream call failed"),
-                        detail=out,
+                        agent="orchestrator",
+                        endpoint="",
+                        status_code=0,
+                        error=f"Contract breach: task '{task.type}' did not return AgentResult",
+                        detail={
+                            "task_id": task.id,
+                            "task_type": task.type,
+                            "got_type": str(type(out)),
+                            "value_preview": str(out)[:500],
+                        },
                     )
                 )
                 continue
 
+            # ✅ AgentResult failed
+            if out.ok is False:
+                meta = out.meta or {}
+                msg = "AgentResult ok:false"
+                if out.safety_flags:
+                    msg = out.safety_flags[0].message or msg
+                elif out.answer:
+                    msg = out.answer
+
+                errors.append(
+                    AgentCallError(
+                        agent=str(meta.get("provider", meta.get("agent", "unknown"))),
+                        endpoint=str(meta.get("endpoint", "")),
+                        status_code=int(meta.get("status_code", 0) or 0),
+                        error=msg,
+                        detail=(out.model_dump(mode="json") if hasattr(out, "model_dump") else str(out)),
+                    )
+                )
+                continue
+
+            # ✅ Success payload is ALWAYS out.data now
+            payload = out.data
             ttype = task.type
 
-            if ttype == "plan_itinerary":
-                results["itinerary_result"] = out
+            # ---------------------------
+            # Replace ALL "out" usages below with "payload"
+            # ---------------------------
 
-                it_res = out
+            if ttype == "plan_itinerary":
+                results["itinerary_result"] = payload
+
+                it_res = payload
                 it_json = it_res.model_dump(mode="json") if hasattr(it_res, "model_dump") else dict(it_res)
 
-                # --- ADD THIS AFTER it_json IS CREATED (still inside plan_itinerary block) ---
                 route_plan = (it_json.get("plans") or {}).get("route_plan") or {}
                 needs_origin = (
                     isinstance(route_plan, dict)
@@ -1864,34 +2304,30 @@ class OrchestratorService:
                     and route_plan.get("reason") == "origin_required_for_corridor"
                 )
 
-                # current extracted entities
                 ents_now = (
                     parsed_intent.entities.model_dump(exclude_none=False)
                     if hasattr(parsed_intent.entities, "model_dump")
                     else dict(parsed_intent.entities or {})
                 )
-
                 origin_missing = not (ents_now.get("origin") or ents_now.get("origin_city"))
 
                 if needs_origin and origin_missing:
-                    # ✅ Save clarification in results so formatter can add it nicely
                     results["route_clarification"] = {
                         "type": "clarify_origin",
                         "question": route_plan.get("question")
-                            or "Where are you starting from (e.g., Colombo), or are you already in Kandy? If you’re not sure, I can still plan just Kandy.",
-                        "options": route_plan.get("options") or ["Starting from Colombo", "Already in Kandy", "Other / Not sure"]
+                        or "Where are you starting from (e.g., Colombo), or are you already in Kandy? If you’re not sure, I can still plan just Kandy.",
+                        "options": route_plan.get("options") or ["Starting from Colombo", "Already in Kandy", "Other / Not sure"],
                     }
 
-                    # ✅ Save in session so next message can fill it
                     if session_state:
                         session_state.slots["pending_clarification"] = "origin_city"
-                        bb.pending_actions.append({
-                            "type": "clarification",
-                            "field": "origin_city",
-                            "reason": "origin_required_for_corridor",
-                        })
+                        bb.pending_actions.append(
+                            {"type": "clarification", "field": "origin_city", "reason": "origin_required_for_corridor"}
+                        )
                         session_state.slots["pending_destination"] = (it_json.get("meta") or {}).get("destination")
-                        session_state.slots["clarification_attempts"] = int(session_state.slots.get("clarification_attempts", 0)) + 1
+                        session_state.slots["clarification_attempts"] = int(
+                            session_state.slots.get("clarification_attempts", 0)
+                        ) + 1
 
                 ok = (it_json.get("status") == "ok") or (it_json.get("ok") is True)
                 if ok:
@@ -1907,14 +2343,6 @@ class OrchestratorService:
 
                     title = f"{dest or 'Trip'} ({days or ''} days)".strip()
 
-                    
-
-                    active_trip_id = session_state.slots.get("active_trip_id") if session_state else None
-
-                    # destination from response
-                    dest = meta.get("destination") or dest  # as you already compute
-
-                    # destination currently active in session
                     active_trip_id = session_state.slots.get("active_trip_id") if session_state else None
 
                     active_trip_dest = None
@@ -1926,7 +2354,6 @@ class OrchestratorService:
                     is_new_trip = bool(dest) and bool(active_trip_dest) and dest.lower() != active_trip_dest.lower()
 
                     if active_trip_id and not is_new_trip:
-                        # UPDATE same trip only if same destination (replan same trip)
                         self.trip_repo.update_trip_plan(
                             trip_id=active_trip_id,
                             title=title,
@@ -1937,7 +2364,6 @@ class OrchestratorService:
                         )
                         trip_id = active_trip_id
                     else:
-                        # ✅ CREATE new trip when destination changed OR no active trip
                         trip_id = self.trip_repo.create_trip(
                             user_id=user_id,
                             title=title,
@@ -1948,35 +2374,42 @@ class OrchestratorService:
                             plan_json=it_json,
                         )
 
-                    # ✅ set new active trip
                     if session_state and trip_id:
                         session_state.slots["active_trip_id"] = trip_id
                         session_state.slots["active_place"] = dest
                         session_state.slots["city"] = dest
 
                 continue
-            elif ttype == "modify_itinerary":
-                results["modify_result"] = out
 
-            if ttype == "info_visa_policy":
-                results["visa_result"] = out
+            elif ttype == "modify_itinerary":
+                results["modify_result"] = payload
+
+            elif ttype == "info_visa_policy":
+                results["visa_result"] = payload
+
             elif ttype == "info_accommodation":
-                results["accommodation_result"] = out
+                results["accommodation_result"] = payload
+
             elif ttype == "info_transport":
-                results["transport_result"] = out
+                results["transport_result"] = payload
+
             elif ttype == "info_attraction":
-                results["attraction_result"] = out
+                results["attraction_result"] = payload
 
             elif ttype == "forecast_weather":
-                results["weather_result"] = out
+                results["weather_result"] = payload
+
             elif ttype == "crowd_forecast":
-                results["crowd_result"] = out
+                results["crowd_result"] = payload
+
             elif ttype == "forecast_price":
-                results["price_result"] = out
+                results["price_result"] = payload
+
             elif ttype == "recommend_pois":
-                results["pois_result"] = out
+                results["pois_result"] = payload
+
             elif ttype == "recommend_restaurants":
-                results["restaurant_result"] = out
+                results["restaurant_result"] = payload
 
             
         # ✅ After DAG mapping: apply modify update to active trip
@@ -2018,7 +2451,7 @@ class OrchestratorService:
         # 🔥 Update task status based on DAG execution
         task_status_by_id: Dict[str, str] = {}
         for task in exec_tasks:
-            out = dag_results.get(task.id, None)
+            out = dag_results.get(task.id) or dag_results.get(task.type)
             task_status_by_id[task.id] = "completed" if out not in (None, {"ok": False}) else "failed"
 
 

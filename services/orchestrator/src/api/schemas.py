@@ -122,7 +122,7 @@ class OrchestrateResponse(BaseModel):
     tasks: list[TaskSummary]
     protocol_mode: str
 
-    weather_result: Optional[WeatherForecastResponse] = None
+    weather_result: Optional[Any] = None
     crowd_result: Optional[CrowdForecastResponse] = None
     price_result: Optional[PriceForecastResponse] = None
     itinerary_result: Optional[ItineraryPlanResponse] = None
