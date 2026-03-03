@@ -1635,63 +1635,51 @@ class OrchestratorService:
         db_prefs = self._extract_db_preferences(profile_json)
         bb.preferences = dict(db_prefs or {})
 
-        # -------------------------------------------------------
-        # FOLLOW-UP MODE: if we asked a follow-up last turn,
-        # treat this message ONLY as slot filling and resume intent
-        # -------------------------------------------------------
-        pending_fields = session_state.slots.get("pending_fields") if session_state else None
-        pending_intent = session_state.slots.get("pending_intent") if session_state else None
-        pending_domain = session_state.slots.get("pending_domain") if session_state else None
+        # -----------------------------
+        # FOLLOWUP ANSWER CONSUMPTION (LLM slot fill)
+        # -----------------------------
+        pending_fields = (session_state.slots.get("pending_fields") if session_state else None)
 
-        if session_state and pending_fields and pending_intent:
-            # 1) Slot fill using Groq (your resolver)
+        if session_state and pending_fields:
+            # Treat this user turn as a follow-up answer (could be "Kandy", "Next week", etc.)
             filled = resolve_followup(
                 user_text=req.input_text or "",
                 missing_fields=list(pending_fields),
-                current_entities=dict(session_state.slots),
-                current_prefs={},  # optional
+                current_entities=session_state.slots,  # use slots as current memory
+                current_prefs={},  # optional: you can pass db_prefs later if you want
             )
 
-            ents_filled = (filled or {}).get("entities") or {}
-            any_filled = False
+            # Merge into session slots (only if non-empty)
+            if isinstance(filled, dict):
+                ents_new = filled.get("entities") or {}
+                prefs_new = filled.get("preference_overrides") or {}
 
-            # 2) Write into session slots
-            for k, v in ents_filled.items():
-                if v in (None, "", [], {}, "unknown"):
-                    continue
-                session_state.slots[k] = v
-                any_filled = True
+                any_filled = False
 
-            # 3) Build a ParsedIntent WITHOUT re-classifying the user message
-            # (this prevents info_transport/book_hotel hijack)
-            ents = {}
-            # start with whatever you have saved so far
-            for k, v in session_state.slots.items():
-                ents[k] = v
+                for k, v in (ents_new or {}).items():
+                    if v in (None, "", [], {}, "unknown"):
+                        continue
+                    session_state.slots[k] = v
+                    any_filled = True
 
-            # ensure country at least
-            ents.setdefault("country", "Sri Lanka")
+                # Optional: merge preference overrides too
+                if prefs_new and isinstance(prefs_new, dict):
+                    # store under a single slot key so it doesn't pollute entity slots
+                    existing_po = session_state.slots.get("pref_overrides") or {}
+                    if not isinstance(existing_po, dict):
+                        existing_po = {}
+                    for k, v in prefs_new.items():
+                        if v in (None, "", [], {}, "unknown"):
+                            continue
+                        existing_po[k] = v
+                        any_filled = True
+                    session_state.slots["pref_overrides"] = existing_po
 
-            parsed_intent = ParsedIntent(
-                domain_category=pending_domain or "itinerary",
-                intent=pending_intent,          # ✅ locked
-                confidence=0.99,
-                secondary_intents=[],           # ✅ prevent book_hotel etc.
-                scores={pending_intent: 0.99},  # ✅ keep stable
-                entities=Entities(**ents),
-                raw_text=req.input_text or "",
-                preference_overrides={},        # you can merge later if needed
-            )
-
-            # 4) If we filled something, optionally clear pending (or keep until gate passes)
-            if any_filled:
-                # don't clear here if you want multi-step followup; safer:
-                # leave pending_fields until validate_required_fields sees no missing fields
-                pass
-
-        else:
-            # normal path
-            parsed_intent: ParsedIntent = self._run_intent_parser(req)
+                # Clear pending follow-up only if we actually filled something
+                if any_filled:
+                    session_state.slots.pop("pending_fields", None)
+    
+        parsed_intent: ParsedIntent = self._run_intent_parser(req)
         resolved = resolve_context(
             parsed_intent=parsed_intent,
             req=req,
@@ -2000,20 +1988,7 @@ class OrchestratorService:
                         # ✅ If gate said missing fields, skip calling downstream planner/modifier
                         # ✅ Gate: if missing fields, skip downstream plan/modify
                         mf = []
-                        gate_out = None
-
-                        # Prefer reading outputs from deps (most reliable)
-                        for dep_id in (task.depends_on or []):
-                            maybe = results.get(dep_id)
-                            if isinstance(maybe, AgentResult) and (maybe.meta or {}).get("task") == "validate_required_fields":
-                                gate_out = maybe
-                                break
-
-                        # Fallback: common keys if executor stores by type
-                        if gate_out is None:
-                            maybe = results.get("validate_required_fields")
-                            if isinstance(maybe, AgentResult):
-                                gate_out = maybe
+                        gate_out = results.get("validate_required_fields") or results.get("T3")
 
                         if isinstance(gate_out, AgentResult) and isinstance(gate_out.data, dict):
                             mf = gate_out.data.get("missing_fields") or []
@@ -2021,7 +1996,6 @@ class OrchestratorService:
                         # Optional debug
                         ok_to_plan = (len(mf) == 0)
 
-                        mf = results.get("missing_fields") or []
                         if _intent in {"plan_itinerary", "modify_itinerary"} and mf:
                             return AgentResult(
                                 ok=True,
@@ -2030,7 +2004,7 @@ class OrchestratorService:
                                     "skipped": True,
                                     "reason": "missing_fields",
                                     "missing_fields": mf,
-                                    "ok_to_plan": False,
+                                    "ok_to_plan": ok_to_plan,
                                 },
                                 evidence=[],
                                 missing_fields=mf,
@@ -2124,13 +2098,6 @@ class OrchestratorService:
                         "question": followup_question,
                         "options": followup_options,
                     } if missing else None
-                    # ✅ clear followup lock when gate passes
-                    if session_state:
-                        mf = results.get("missing_fields") or []
-                        if not mf:
-                            session_state.slots.pop("pending_fields", None)
-                            session_state.slots.pop("pending_intent", None)
-                            session_state.slots.pop("pending_domain", None)
 
                     # persist pending clarification (optional but good)
                     if session_state and missing:
@@ -2163,26 +2130,7 @@ class OrchestratorService:
 
             elif ttype == "ask_followup":
                 async def _ask(task, ctx, results):
-                    gate_out = results.get("validate_required_fields")
-                    missing = []
-
-                    # validate_required_fields should return AgentResult
-                    if gate_out and hasattr(gate_out, "missing_fields"):
-                        missing = list(gate_out.missing_fields or [])
-
-                    # ✅ If missing fields exist, DO NOT call plan/modify tools
-                    if task.type in {"plan_itinerary", "modify_itinerary"} and missing:
-                        return AgentResult(
-                            ok=False,
-                            answer="",
-                            data={"skipped": True, "reason": "missing_required_fields", "missing_fields": missing},
-                            evidence=[],
-                            missing_fields=missing,
-                            next_actions=["ask_followup"],
-                            confidence=0.0,
-                            safety_flags=[],
-                            meta={"task_type": task.type, "skipped": True},
-                        )
+                    gate_out = results.get("validate_required_fields") or results.get("T3")
 
                     mf = []
                     fu = {}
