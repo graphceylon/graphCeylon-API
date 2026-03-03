@@ -43,9 +43,9 @@ CREATE INDEX poi_group_name_idx IF NOT EXISTS FOR (g:POIGroup) ON (g.name);
 // Using cosine similarity for normalized embeddings
 // Dimension 768 matches sentence-transformers/all-mpnet-base-v2
 CALL db.index.vector.createNodeIndex(
-    'sub_attraction_embeddings',
-    'SubAttraction',
-    'embedding',
-    768,
-    'cosine'
+'sub_attraction_embeddings',
+'SubAttraction',
+'embedding',
+768,
+'cosine'
 );
