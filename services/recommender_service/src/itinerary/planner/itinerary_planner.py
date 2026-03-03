@@ -1036,6 +1036,141 @@ def run_city_pipeline(city_name: str, payload: Dict[str, Any], cfg: PlannerConfi
         "kg_dbg": kg_dbg,
         "pareto_pool": pareto_pool,
     }
+def build_wayout_stop_plans_from_route_candidates(
+    *,
+    route_candidates: List[Dict[str, Any]],
+    waypoints: List[str],
+    stop_days_map: Dict[str, int],
+    start_dt: date,
+    country: str,
+    per_day: int,
+    eco_pref: float,
+) -> List[Dict[str, Any]]:
+    """
+    Builds separate destination-like plans for each waypoint stop
+    using the *already filtered/scored/sorted* corridor route candidates.
+
+    - Filters route_candidates by waypoint area (district/city match)
+    - Takes top (days * per_day) items for that stop
+    - Builds itinerary_days like destination plan
+    - Advances date cursor after each stop
+    """
+    out: List[Dict[str, Any]] = []
+    wp_cursor_dt = start_dt
+
+    # safety: normalize waypoints
+    waypoints = [str(w or "").strip() for w in (waypoints or []) if str(w or "").strip()]
+
+    for wp_city in waypoints:
+        wp_days = int(stop_days_map.get(wp_city) or 1)
+
+        # 1) Filter: only POIs belonging to this waypoint area
+        # 2) Cap to what we can schedule
+        cap = max(1, wp_days * per_day)
+        wp_pool = [c for c in route_candidates if _is_destination_area(c, wp_city)]
+        wp_pool.sort(key=lambda x: x.get("_route_score", x.get("_final_score", 0.0)), reverse=True)
+        wp_pool = wp_pool[:cap]
+
+        # 3) Build itinerary_days (destination-like)
+        wp_itinerary_days = build_itinerary_days_from_pool(
+            pool=wp_pool,
+            city=wp_city,
+            country=country,
+            start_dt=wp_cursor_dt,
+            days=wp_days,
+            per_day=per_day,
+            eco_pref=eco_pref,
+            explicit_city_for_enrich=wp_city,  # ✅ IMPORTANT: enrich using waypoint city
+        )
+
+        out.append({
+            "status": "ok",
+            "plan_type": "wayout_stop",
+            "waypoint_city": wp_city,
+            "start_date": wp_cursor_dt.isoformat(),
+            "days": wp_days,
+            "itinerary": wp_itinerary_days,
+            "debug": {
+                "matched_candidates": len(wp_pool),
+                "source": "corridor_candidates_final",
+            },
+        })
+
+        # 4) Advance cursor
+        wp_cursor_dt = wp_cursor_dt + timedelta(days=wp_days)
+
+    return out
+def build_itinerary_days_simple_chunk(
+    *,
+    pool: List[Dict[str, Any]],
+    city: str,
+    country: str,
+    start_dt: date,
+    days: int,
+    per_day: int,
+    eco_pref: float,
+    explicit_city_for_enrich: str,
+) -> List[Dict[str, Any]]:
+    days = max(1, int(days or 1))
+    per_day = max(1, int(per_day or 1))
+
+    # ✅ DO NOT CAP — we want ALL items
+    pool = pool or []
+
+    itinerary_days: List[Dict[str, Any]] = []
+    base_slots = ["morning", "afternoon"]
+
+    idx = 0
+    for d in range(days):
+        day_date = start_dt + timedelta(days=d)
+        day_str = day_date.isoformat()
+
+        day_items: List[Dict[str, Any]] = []
+        for j in range(per_day):
+            if idx >= len(pool):
+                break
+
+            a = pool[idx]
+            idx += 1
+
+            aid = a.get("attraction_id")
+            if not aid:
+                continue
+
+            slot = base_slots[j] if j < len(base_slots) else f"slot_{j+1}"
+            item_city = a.get("city") or a.get("district") or city
+
+            enrich = a.get("_enrichment") or enrich_attraction(
+                attraction_id=aid,
+                date_str=day_str,
+                eco_preference=eco_pref,
+                country=country,
+                explicit_city=explicit_city_for_enrich,  # ✅ waypoint city
+            )
+
+            day_items.append({
+                "slot": slot,
+                "kind": "attraction",
+                "attraction_id": aid,
+                "title": a.get("title") or a.get("name"),
+                "district": a.get("district"),
+                "city": item_city,
+                "rank_score_base": float(a.get("_score", 0.0)),
+                "rank_score_final": float(a.get("_final_score", a.get("_score", 0.0))),
+                "dynamic": a.get("_dynamic", {}),
+                "enrichment": enrich,
+                "raw": {k: v for k, v in a.items() if not str(k).startswith("_")},
+            })
+
+        itinerary_days.append({
+            "date": day_str,
+            "city": city,
+            "district": None,
+            "items": day_items
+        })
+
+    return itinerary_days
+
 def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = PlannerConfig()) -> Dict[str, Any]:
     city = str(payload.get("city") or payload.get("destination") or "").strip() or "Colombo"
     country = str(payload.get("country") or "Sri Lanka").strip() or "Sri Lanka"
@@ -1076,6 +1211,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     time_ms = None
     graphhopper_dbg = {"skipped": True, "reason": "missing coords or precomputed not triggered"}
     corridor_candidates = []
+    route_candidates: List[Dict[str, Any]] = []
     kg_corridor_dbg = {"skipped": True, "reason": "not corridor mode"}
     route_direction = str(payload.get("route_direction") or "").strip().lower()
     precomputed = payload.get("_precomputed_route")
@@ -1154,6 +1290,24 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         # if return trip, just reverse the exact same ordered list
         if route_direction == "return":
             route_candidates.reverse()
+        way_out_stop_plans = []
+        waypoints = payload.get("waypoints") or []
+        stop_days_map = payload.get("stop_durations_days") or {}
+        per_day = int(payload.get("per_day_attractions") or cfg.per_day_attractions)
+
+        # Only build if user provided stop durations / waypoints
+        if waypoints and stop_days_map:
+            way_out_stop_plans = build_wayout_stop_plans_from_route_candidates(
+                route_candidates=route_candidates,
+                waypoints=waypoints,
+                stop_days_map=stop_days_map,
+                start_dt=start_dt,          # uses same trip start; or change if you want after destination
+                country=country,
+                per_day=per_day,
+                eco_pref=eco_pref,
+            )
+        # store into payload so it returns in response
+        payload["_way_out_stop_plans"] = way_out_stop_plans
         res = CandidatesResult(candidates=route_candidates, debug=kg_corridor_dbg)
     else:
         # ✅ city mode: fetch from KG service
@@ -1168,6 +1322,8 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             c["_eco_hint"] = _eco_score_hint(c)
             c["_score"] = float(c.get("_score", 0.0))
             c["_features"] = {"eco_hint": float(c.get("_eco_hint", 0.5))}
+        # ✅ Build "way-out stop" plans from final corridor candidates
+        
         res = CandidatesResult(candidates=candidates, debug=kg_dbg)
         dbg = kg_dbg
         sampled_points = []
@@ -1292,18 +1448,21 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
 
             # 1) waypoint pipeline (KG -> rerank -> NSGA)
             wp_out = run_city_pipeline(wp_city, payload, cfg)
-            wp_pool = wp_out["pareto_pool"]
+            wp_pool = wp_out["pareto_pool"] or []
 
-            # 2) build FULL itinerary_days (same as destination)
-            wp_itinerary_days = build_itinerary_days_from_pool(
-                pool=wp_pool,
+            # ✅ NEW: distribute ALL NSGA items across wp_days
+            wp_days = max(1, int(stop_days_map.get(wp_city) or 1))
+            per_day_wp = max(1, math.ceil(len(wp_pool) / wp_days))  # ✅ THIS is the key fix
+
+            wp_itinerary_days = build_itinerary_days_simple_chunk(
+                pool=wp_pool,                 # ✅ all NSGA items
                 city=wp_city,
                 country=country,
                 start_dt=wp_cursor_dt,
                 days=wp_days,
-                per_day=per_day,
+                per_day=per_day_wp,           # ✅ computed from NSGA count
                 eco_pref=eco_pref,
-                explicit_city_for_enrich=wp_city,  # ✅ IMPORTANT: enrich using waypoint city
+                explicit_city_for_enrich=wp_city,
             )
 
             waypoint_plans.append({
@@ -1315,11 +1474,12 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
                 "itinerary": wp_itinerary_days,
                 "debug": {
                     "pareto_count": len(wp_pool),
+                    "per_day_waypoint": per_day_wp,
                     "kg_dbg": wp_out.get("kg_dbg", {}),
+                    "allocation": "all_nsga_divided_by_stop_days",
                 },
             })
 
-            # move cursor forward (waypoint consumes days)
             wp_cursor_dt = wp_cursor_dt + timedelta(days=wp_days)
     else:
         # ✅ corridor plan: NO rerank/NSGA here
@@ -1402,6 +1562,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         "warnings": warnings,
         "itinerary": itinerary_days,
         "waypoint_plans": waypoint_plans,
+        "way_out_stop_plans": payload.get("_way_out_stop_plans") or [],
         "debug": {
             "route_anchor_coords": route_start_coords,
             "kg_mode": kg_mode,

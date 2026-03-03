@@ -93,6 +93,17 @@ def _print_compact_plan(plan: Dict[str, Any], label: str) -> None:
             )
     print("=" * 90)
 
+def _print_waypoint_plans(waypoint_plans: List[Dict[str, Any]]) -> None:
+    print("\n========== WAYPOINT_PLANS ==========")
+    if not waypoint_plans:
+        print("<none>")
+        print("=" * 40)
+        return
+
+    for i, wp in enumerate(waypoint_plans, start=1):
+        wp_city = wp.get("waypoint_city") or f"wp_{i}"
+        _print_compact_plan(wp, f"WAYPOINT_{i}: {wp_city}")
+    print("=" * 40)
 
 @router.post("/plan")
 def itinerary_plan(req: Union[ItineraryPlanRequest, C3RequestEnvelope]) -> Dict[str, Any]:
@@ -132,10 +143,13 @@ def itinerary_plan(req: Union[ItineraryPlanRequest, C3RequestEnvelope]) -> Dict[
         result = build_two_plans_from_payload(payload, cfg=cfg)
         safe = jsonable_encoder(result)
         plans = safe.get("plans", {}) or {}
+        dest_plan = plans.get("destination_plan", {}) or {}
 
         _print_compact_plan(plans.get("destination_plan", {}), "DESTINATION_PLAN")
+        _print_waypoint_plans(dest_plan.get("waypoint_plans") or [])
         _print_compact_plan(plans.get("route_plan", {}), "Outbound Plan ")
         _print_compact_plan(plans.get("route_return_plan", {}), "Return Plan")
+        
         print(f"[REQ] city={payload.get('city')} origin={payload.get('origin_city')} days={payload.get('days')} start={payload.get('start_date')}")
 
 
