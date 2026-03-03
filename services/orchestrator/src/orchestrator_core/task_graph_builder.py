@@ -68,6 +68,44 @@ class TaskGraphBuilder:
         self.add_verification_for_visa = add_verification_for_visa
         self._nodes: Dict[str, TaskNode] = {}
 
+    @staticmethod
+    def _itinerary_missing_fields(parsed: ParsedIntent) -> List[str]:
+        ents = parsed.entities
+        if hasattr(ents, "model_dump"):
+            ents = ents.model_dump(exclude_none=False)
+        else:
+            ents = dict(ents or {})
+
+        missing: List[str] = []
+
+        # Dates: require either start_date OR travel_month
+        if not ents.get("start_date") and not ents.get("travel_month"):
+            missing.append("start_date")
+
+        # Destination city must be a real city, not "Sri Lanka"
+        city = (ents.get("city") or "").strip() if isinstance(ents.get("city"), str) else ents.get("city")
+        dest = (ents.get("destination") or "").strip() if isinstance(ents.get("destination"), str) else ents.get("destination")
+        country = (ents.get("country") or "").strip().lower() if isinstance(ents.get("country"), str) else ""
+
+        city_l = (city or "").lower().strip()
+        city_is_country = city_l in {"sri lanka", "srilanka"}
+
+        if ((not city or city_is_country) and not dest) and country in {"sri lanka"}:
+            missing.append("destination_city")
+
+        # Origin required for plan_itinerary (your demo rule)
+        intent = (parsed.intent or "").strip()
+        origin_city = (ents.get("origin_city") or "").strip() if isinstance(ents.get("origin_city"), str) else ents.get("origin_city")
+
+        include_stops = bool(ents.get("include_stops"))
+        route_direction = (ents.get("route_direction") or "").strip()
+
+        if intent == "plan_itinerary" and include_stops and not origin_city:
+            missing.append("origin_city")
+
+        return missing
+          
+
     def build(self, parsed: ParsedIntent) -> List[TaskSummary]:
         """
         Build the DAG, validate it, and return TaskSummary list in topological order
@@ -100,12 +138,13 @@ class TaskGraphBuilder:
         # ---- T2: extract_entities (LLM + rules) ----
         # This is the step that enriches parsed_intent.entities reliably.
         # It becomes the single dependency for downstream tasks.
+        # ---- T2: extract_entities (LLM + rules) ----
         anchor_dep = t1.id
         if self.enable_entity_extraction and self._needs_entity_extraction(parsed):
             t2 = TaskNode(
                 id=new_id(),
                 type="extract_entities",
-                assigned_agent="IntentParserAgent",  # or EntityExtractorAgent if you have one
+                assigned_agent="IntentParserAgent",
                 depends_on=[t1.id],
                 timeout_ms=12000,
                 max_retries=1,
@@ -115,9 +154,81 @@ class TaskGraphBuilder:
             self._add(t2)
             anchor_dep = t2.id  # downstream depends on entity extraction instead of just parse_intent
 
-        # ---- T3: primary intent task ----
+        # ✅ ---- (NEW) Gate before itinerary planning/modifying ----
+        gate_id: Optional[str] = None
+        followup_id: Optional[str] = None
+
+        # will_plan = True
+
+        # if parsed.intent in {"plan_itinerary", "modify_itinerary"}:
+        #     # ✅ compute missing at BUILD time
+        #     missing_now = self._itinerary_missing_fields(parsed)
+        #     will_plan = (len(missing_now) == 0)
+
+        #     t_gate = TaskNode(
+        #         id=new_id(),
+        #         type="validate_required_fields",
+        #         assigned_agent="OrchestratorAgent",
+        #         depends_on=[anchor_dep],
+        #         timeout_ms=4000,
+        #         max_retries=0,
+        #         critical=True,
+        #     )
+        #     self._add(t_gate)
+        #     gate_id = t_gate.id
+
+        #     t_follow = TaskNode(
+        #         id=new_id(),
+        #         type="ask_followup",
+        #         assigned_agent="OrchestratorAgent",
+        #         depends_on=[gate_id],
+        #         timeout_ms=4000,
+        #         max_retries=0,
+        #         critical=False,
+        #     )
+        #     self._add(t_follow)
+        #     followup_id = t_follow.id
+
+        #     anchor_dep = gate_id  # downstream depends on gate
+
+        # # ---- Primary task ----
+        # primary_intent = parsed.intent
+        # primary_agent = INTENT_TO_AGENT.get(primary_intent, "OrchestratorAgent")
+
+        # t_primary: Optional[TaskNode] = None
+
+        gate_id: Optional[str] = None
+        followup_id: Optional[str] = None
+
+        if parsed.intent in {"plan_itinerary", "modify_itinerary"}:
+            t_gate = TaskNode(
+                id=new_id(),
+                type="validate_required_fields",
+                assigned_agent="OrchestratorAgent",
+                depends_on=[anchor_dep],
+                timeout_ms=4000,
+                max_retries=0,
+                critical=True,
+            )
+            self._add(t_gate)
+            gate_id = t_gate.id
+
+            t_follow = TaskNode(
+                id=new_id(),
+                type="ask_followup",
+                assigned_agent="OrchestratorAgent",
+                depends_on=[gate_id],
+                timeout_ms=4000,
+                max_retries=0,
+                critical=False,
+            )
+            self._add(t_follow)
+            followup_id = t_follow.id
+
+            anchor_dep = gate_id  # primary should depend on gate
+
+        # ✅ Only add planner/modifier if we are allowed to plan now
         primary_intent = parsed.intent
-        # primary_action = INTENT_TO_ACTION.get(primary_intent, f"handle_{primary_intent}")
         primary_agent = INTENT_TO_AGENT.get(primary_intent, "OrchestratorAgent")
 
         t_primary = TaskNode(
@@ -131,29 +242,36 @@ class TaskGraphBuilder:
             critical=True,
         )
         self._add(t_primary)
+        
 
         # ---- Secondary tasks fan-out (parallel) ----
         secondary_ids: List[str] = []
-        for sec_intent in (parsed.secondary_intents or []):
-            # sec_action = INTENT_TO_ACTION.get(sec_intent, f"handle_{sec_intent}")
-            sec_agent = INTENT_TO_AGENT.get(sec_intent, "OrchestratorAgent")
+        SUPPORTED = {
+            "forecast_weather", "crowd_forecast", "forecast_price",
+            "recommend_pois", "info_transport", "info_accommodation",
+            "info_attraction", "info_visa_policy", "recommend_restaurants",
+            # add more as you implement
+        }
 
+        for sec_intent in (parsed.secondary_intents or []):
+            if sec_intent not in SUPPORTED:
+                continue
+
+            sec_agent = INTENT_TO_AGENT.get(sec_intent, "OrchestratorAgent")
             t_sec = TaskNode(
                 id=new_id(),
                 type=sec_intent,
                 assigned_agent=sec_agent,
-                depends_on=[anchor_dep],   # run in parallel after entities exist
+                depends_on=[anchor_dep],
                 timeout_ms=self._default_timeout_for_intent(sec_intent),
                 max_retries=self._default_retries_for_intent(sec_intent),
                 retry_backoff_ms=400,
-                critical=False,  # secondary tasks are usually "nice-to-have"
+                critical=False,
             )
-            self._add(t_sec)
-            secondary_ids.append(t_sec.id)
 
         # ---- Optional: verification task for visa (adds research-grade trust layer) ----
         verification_id: Optional[str] = None
-        if self.add_verification_for_visa and self._is_visa_like(parsed):
+        if self.add_verification_for_visa and self._is_visa_like(parsed) and t_primary:
             t_verify = TaskNode(
                 id=new_id(),
                 type="verify_policy_evidence",
@@ -161,15 +279,28 @@ class TaskGraphBuilder:
                 depends_on=[t_primary.id],
                 timeout_ms=8000,
                 max_retries=0,
-                critical=False,  # if verifier fails, still answer but warn
+                critical=False,
             )
             self._add(t_verify)
             verification_id = t_verify.id
 
+
         # ---- Final: format_response fan-in (wait for all tasks) ----
-        deps = [t_primary.id] + secondary_ids
+        deps: List[str] = []
+
+        if t_primary:
+            deps.append(t_primary.id)
+
+        deps += secondary_ids
+
         if verification_id:
             deps.append(verification_id)
+
+        if followup_id:
+            deps.append(followup_id)
+
+        if gate_id:
+            deps.append(gate_id)  # optional, but useful for trace/UI
 
         t_fmt = TaskNode(
             id=new_id(),

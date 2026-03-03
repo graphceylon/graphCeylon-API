@@ -1046,6 +1046,41 @@ def _override_time_of_day(data: Dict[str, Any], text: str) -> None:
     if tod is not None:
         entities["time_of_day"] = tod
 
+def _mentions_location(text: str, loc: Optional[str]) -> bool:
+    if not loc or not isinstance(loc, str):
+        return False
+    t = text.lower()
+    # normalize small punctuation/spacing
+    needle = re.sub(r"\s+", " ", loc.strip().lower())
+    return needle in re.sub(r"\s+", " ", t)
+
+DATE_SIGNAL_PATTERN = re.compile(
+    r"(\b20\d{2}\b|\b\d{4}-\d{2}-\d{2}\b|"
+    r"\btoday\b|\btomorrow\b|\bnext week\b|\bthis weekend\b|\bnext weekend\b|"
+    r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\b)",
+    re.IGNORECASE
+)
+
+def _strip_unmentioned_city_destination_and_dates(data: Dict[str, Any], text: str) -> None:
+    entities = data.setdefault("entities", {})
+    t = text.strip()
+
+    # --- 1) City/Destination hallucination guard ---
+    # If LLM picked a city/destination that the user never typed, drop it.
+    for key in ("city", "destination", "origin_city", "origin", "region"):
+        v = entities.get(key)
+        if isinstance(v, str) and v.strip() and not _mentions_location(t, v):
+            entities[key] = None
+
+    # --- 2) Date hallucination guard ---
+    # If the user text has ZERO date signals, don't keep LLM-proposed start/end.
+    if not DATE_SIGNAL_PATTERN.search(t):
+        entities["start_date"] = None
+        entities["end_date"] = None
+        entities["travel_month"] = None
+
+    data["entities"] = entities
+
 
 # ---- 4. Public entrypoint used by IntentParserAgent ----
 
@@ -1104,6 +1139,7 @@ def extract_entities_and_prefs(
     _override_route_direction(data, text) 
     _sanitize_route_direction(data)
     _override_stop_durations(data, text)
+    _strip_unmentioned_city_destination_and_dates(data, text)
 
     # If user asked for N days and we have a start_date but end_date is missing/same, compute it
     try:

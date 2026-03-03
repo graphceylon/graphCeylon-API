@@ -13,6 +13,7 @@ import json
 import traceback
 from typing import Awaitable
 from uuid import uuid4
+from .agentic.loop import AgenticLoop
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -254,15 +255,6 @@ def stable_idempotency_key(*, user_id: str | None, session_id: str, intent: str,
 def norm(t: str) -> str:
     return re.sub(r"\s+", " ", (t or "").strip().lower())
 
-# def has_edit_signal(text: str, entities) -> bool:
-#     t = norm(text)
-#     if getattr(entities, "days", None):
-#         return True
-#     if getattr(entities, "start_date", None):
-#         return True
-#     if re.search(r"\bday\s*\d+\b", t):   # swap day 1 etc.
-#         return True
-#     return any(v in t for v in EDIT_VERBS)
 def booking_stub(call):  # call: ToolCall
     return {
         "ok": True,
@@ -397,10 +389,6 @@ def apply_domain_overrides(parsed_intent: ParsedIntent) -> ParsedIntent:
                 "scores": scores,
                 "secondary_intents": [],
             })
-
-        # (Optional: you can add other domains later)
-        # if dc == "attraction": ... map to info_attraction
-        # if dc == "hotel": ... map to info_accommodation
 
     return parsed_intent
 def resolve_intent(parsed_intent, req_text: str, active_trip: bool):
@@ -553,6 +541,7 @@ class OrchestratorService:
         self.trace_pg = PostgresTraceStore(TRACE_DSN) if TRACE_DSN else None
         self.response_formatter = ResponseFormatter()
         self.task_graph_builder = task_graph_builder
+        self.agentic_loop = AgenticLoop()
         self.protocol_mode = protocol_mode
         # self.trace_store = InMemoryTraceStore(max_per_session=500)
         self.profile_event_store = ProfileEventStore()
@@ -1378,69 +1367,6 @@ class OrchestratorService:
             "idem=", call.idempotency_key
         )
 
-        # tool_res = self.tool_router.call(call)
-
-        # if not tool_res.ok:
-        #     return {
-        #         "ok": False,
-        #         "agent": tool_res.provider or "unknown",
-        #         "endpoint": handler.endpoint,
-        #         "status_code": 0,
-        #         "error": tool_res.error or "Tool failed",
-        #         "detail": tool_res.model_dump(),
-        #     }
-
-        # raw = tool_res.data
-       
-
-        # # ✅ EVENT: downstream result
-        # if req.user_id:
-        #     self.profile_event_store.append(
-        #         ProfileEvent(
-        #             user_id=req.user_id,
-        #             session_id=req.session_id or "no_session",
-        #             event_type="downstream_response",
-        #             intent=intent_name,
-        #             payload={
-        #                 "endpoint": handler.endpoint,
-        #                 "ok": raw is not None,
-        #                 "response": raw if raw is not None else None,
-        #             },
-        #         )
-        #     )
-
-        # if raw is None:
-        #     return {
-        #         "ok": False,
-        #         "agent": "unknown",
-        #         "endpoint": handler.endpoint,
-        #         "status_code": 0,
-        #         "error": "Downstream call failed (raw=None)",
-        #     }
-
-        # if isinstance(raw, dict) and raw.get("ok") is False:
-        #     return {
-        #         "ok": False,
-        #         "agent": "unknown",
-        #         "endpoint": handler.endpoint,
-        #         "status_code": int(raw.get("status_code") or 0),
-        #         "error": str(raw.get("error") or "Downstream returned ok:false"),
-        #         "detail": raw,
-        #     }
-
-
-        # # 7) Parse response ONCE (support response_model=None)
-        # parsed_obj: Any = None
-        # if handler.response_model is not None:
-        #     try:
-        #         parsed_obj = handler.response_model(**raw)
-        #     except Exception as e:
-        #         print(f"[orchestrator] Error parsing response for intent={intent_name}: {e}")
-        #         parsed_obj = None
-        # else:
-        #     print(f"[orchestrator] Raw response for {intent_name}:")
-        #     print(raw)
-        #     parsed_obj = raw
 
         # return parsed_obj
         if self.trace_pg:
@@ -1605,43 +1531,6 @@ class OrchestratorService:
             },
         )
 
-
-    # ---------------------------
-    # intent parse
-    # ---------------------------
-    # def _run_intent_parser(self, req: OrchestrateRequest) -> ParsedIntent:
-    #     result = self.intent_parser.parse(req.input_text)
-
-    #     primary = result.get("primary_intent", "generic_fact_query")
-    #     secondary = result.get("secondary_intents", [])
-    #     scores = result.get("scores", {})
-    #     raw_text = result.get("raw_text", req.input_text)
-    #     entities = result.get("entities", {})
-    #     preference_overrides = result.get("preference_overrides", {})
-    #     unknown_amenities = []
-
-    #     if isinstance(preference_overrides, dict):
-    #         raw_list = preference_overrides.get("must_have_amenities") or []
-    #         normalized, unknown = normalize_amenities_with_unknown(raw_list)
-
-    #         preference_overrides["must_have_amenities"] = normalized
-    #         preference_overrides["_unknown_amenities"] = unknown
-    #     domain_category = result.get("domain_category")
-
-    #     confidence = float(scores.get(primary, 0.0))
-
-    #     return ParsedIntent(
-    #         domain_category=domain_category,
-    #         intent=primary,
-    #         confidence=confidence,
-    #         secondary_intents=secondary,
-    #         scores=scores,
-    #         entities=entities,
-    #         raw_text=raw_text,
-    #         preference_overrides=preference_overrides,
-            
-    #     )
-
     def _run_intent_parser(self, req: OrchestrateRequest) -> ParsedIntent:
         result = self.intent_parser.parse(req.input_text)
 
@@ -1680,9 +1569,6 @@ class OrchestratorService:
 
         return parsed
 
-    # ---------------------------
-    # main orchestrate
-    # ---------------------------
     def orchestrate(self, req: OrchestrateRequest) -> OrchestrateResponse:
         user_id = (req.user_id or "").strip()
         session_id = (req.session_id or "").strip() or "no_session"
@@ -1748,8 +1634,64 @@ class OrchestratorService:
         # ✅ extract db prefs from columns + preference_overrides
         db_prefs = self._extract_db_preferences(profile_json)
         bb.preferences = dict(db_prefs or {})
-    
-        parsed_intent: ParsedIntent = self._run_intent_parser(req)
+
+        # -------------------------------------------------------
+        # FOLLOW-UP MODE: if we asked a follow-up last turn,
+        # treat this message ONLY as slot filling and resume intent
+        # -------------------------------------------------------
+        pending_fields = session_state.slots.get("pending_fields") if session_state else None
+        pending_intent = session_state.slots.get("pending_intent") if session_state else None
+        pending_domain = session_state.slots.get("pending_domain") if session_state else None
+
+        if session_state and pending_fields and pending_intent:
+            # 1) Slot fill using Groq (your resolver)
+            filled = resolve_followup(
+                user_text=req.input_text or "",
+                missing_fields=list(pending_fields),
+                current_entities=dict(session_state.slots),
+                current_prefs={},  # optional
+            )
+
+            ents_filled = (filled or {}).get("entities") or {}
+            any_filled = False
+
+            # 2) Write into session slots
+            for k, v in ents_filled.items():
+                if v in (None, "", [], {}, "unknown"):
+                    continue
+                session_state.slots[k] = v
+                any_filled = True
+
+            # 3) Build a ParsedIntent WITHOUT re-classifying the user message
+            # (this prevents info_transport/book_hotel hijack)
+            ents = {}
+            # start with whatever you have saved so far
+            for k, v in session_state.slots.items():
+                ents[k] = v
+
+            # ensure country at least
+            ents.setdefault("country", "Sri Lanka")
+
+            parsed_intent = ParsedIntent(
+                domain_category=pending_domain or "itinerary",
+                intent=pending_intent,          # ✅ locked
+                confidence=0.99,
+                secondary_intents=[],           # ✅ prevent book_hotel etc.
+                scores={pending_intent: 0.99},  # ✅ keep stable
+                entities=Entities(**ents),
+                raw_text=req.input_text or "",
+                preference_overrides={},        # you can merge later if needed
+            )
+
+            # 4) If we filled something, optionally clear pending (or keep until gate passes)
+            if any_filled:
+                # don't clear here if you want multi-step followup; safer:
+                # leave pending_fields until validate_required_fields sees no missing fields
+                pass
+
+        else:
+            # normal path
+            parsed_intent: ParsedIntent = self._run_intent_parser(req)
         resolved = resolve_context(
             parsed_intent=parsed_intent,
             req=req,
@@ -1783,6 +1725,11 @@ class OrchestratorService:
             ents["origin"] = session_state.slots.get("origin")
 
         # also handle "tomorrow" already extracted - fine
+        oc = ents.get("origin_city")
+        if isinstance(oc, str):
+            oc2 = oc.strip()
+            if len(oc2) > 25 or "trip" in oc2.lower() or "." in oc2:
+                ents["origin_city"] = None
 
         parsed_intent = parsed_intent.model_copy(update={"entities": Entities(**ents)})
 
@@ -1877,17 +1824,22 @@ class OrchestratorService:
         # keep slots snapshot fresh (optional but nice)
         bb.slots = dict(session_state.slots) if session_state else bb.slots
 
-        # parsed_intent = resolve_followup(
-        #     user_text=req.input_text,
-        #     parsed_intent=parsed_intent,
-        #     session_state=session_state,
-        # )
-
-        # after: parsed_intent = apply_intent_policy(...)
-
         def _is_unknown_origin(text: str) -> bool:
             t = (text or "").strip().lower()
             return t in {"idk", "i don't know", "dont know", "not sure", "no idea", "skip", "ignore"}
+
+        def _looks_like_city(s: str) -> bool:
+            t = (s or "").strip().lower()
+            if not t:
+                return False
+            # reject obvious full prompts / non-answers
+            if any(x in t for x in ["plan", "trip", "itinerary"]):
+                return False
+            if "." in t:          # sentences like "Plan a 4 day trip..."
+                return False
+            if len(t) > 35:       # too long to be a city label
+                return False
+            return True
 
         if session_state and session_state.slots.get("pending_clarification") == "origin_city":
             raw = (req.input_text or "").strip()
@@ -1895,13 +1847,13 @@ class OrchestratorService:
             # Clear pending flag no matter what (prevents double-consumption)
             session_state.slots.pop("pending_clarification", None)
 
-            if _is_unknown_origin(raw):
-                # user refused/doesn't know → don't store origin
-                session_state.slots.pop("origin_city", None)  # optional: keep old if you want
+            if _is_unknown_origin(raw) or not _looks_like_city(raw):
+                # don't store junk
+                session_state.slots.pop("origin_city", None)
             else:
                 session_state.slots["origin_city"] = raw
 
-                # patch entities so current request can proceed as if origin was provided
+                # patch entities so current request can proceed
                 ents = parsed_intent.entities.model_dump(exclude_none=False)
                 ents["origin_city"] = raw
                 parsed_intent = parsed_intent.model_copy(update={"entities": Entities(**ents)})
@@ -1936,6 +1888,9 @@ class OrchestratorService:
             "restaurant_result": None,
             "pois_result": None,
             "route_clarification": None,
+            "missing_fields": None,
+            "followup": None,
+            
         }
         results = bb.tool_results 
         errors: List[AgentCallError] = []
@@ -2041,6 +1996,50 @@ class OrchestratorService:
             elif ttype in self.handlers:
                 def make_handler(intent_name: str, _bb: Blackboard):
                     async def _run(task, ctx, results, _intent=intent_name):
+
+                        # ✅ If gate said missing fields, skip calling downstream planner/modifier
+                        # ✅ Gate: if missing fields, skip downstream plan/modify
+                        mf = []
+                        gate_out = None
+
+                        # Prefer reading outputs from deps (most reliable)
+                        for dep_id in (task.depends_on or []):
+                            maybe = results.get(dep_id)
+                            if isinstance(maybe, AgentResult) and (maybe.meta or {}).get("task") == "validate_required_fields":
+                                gate_out = maybe
+                                break
+
+                        # Fallback: common keys if executor stores by type
+                        if gate_out is None:
+                            maybe = results.get("validate_required_fields")
+                            if isinstance(maybe, AgentResult):
+                                gate_out = maybe
+
+                        if isinstance(gate_out, AgentResult) and isinstance(gate_out.data, dict):
+                            mf = gate_out.data.get("missing_fields") or []
+
+                        # Optional debug
+                        ok_to_plan = (len(mf) == 0)
+
+                        mf = results.get("missing_fields") or []
+                        if _intent in {"plan_itinerary", "modify_itinerary"} and mf:
+                            return AgentResult(
+                                ok=True,
+                                answer="",
+                                data={
+                                    "skipped": True,
+                                    "reason": "missing_fields",
+                                    "missing_fields": mf,
+                                    "ok_to_plan": False,
+                                },
+                                evidence=[],
+                                missing_fields=mf,
+                                next_actions=[],
+                                confidence=1.0,
+                                safety_flags=[],
+                                meta={"task": _intent, "skipped": True},
+                            )
+
                         out = await anyio.to_thread.run_sync(
                             self._execute_intent,
                             _intent,
@@ -2050,12 +2049,193 @@ class OrchestratorService:
                             session_state,
                             request_trace_id,
                         )
-                        # Optionally write into blackboard tool_results immediately
-                        # (Mapping later is okay too, but this is cleaner.)
                         return out
                     return _run
 
                 fn = make_handler(ttype, bb)
+
+                
+            elif ttype == "validate_required_fields":
+                async def _validate(task, ctx, results, pi=parsed_intent, _bb=bb):
+                    intent = (pi.intent or "").strip()
+
+                    ents = (
+                        pi.entities.model_dump(exclude_none=False)
+                        if hasattr(pi.entities, "model_dump")
+                        else dict(pi.entities or {})
+                    )
+
+                    # ---- REQUIRED FIELDS (demo-safe strict) ----
+                    missing: List[str] = []
+
+                    # Dates: require either start_date OR travel_month
+                    start_date = ents.get("start_date")
+                    travel_month = ents.get("travel_month")
+
+                    if not start_date and not travel_month:
+                        missing.append("start_date")  # simplest label for demo
+
+                    # Destination/city: if only country-level ("Sri Lanka") and no city/destination
+                    city = (ents.get("city") or "").strip() if isinstance(ents.get("city"), str) else ents.get("city")
+                    dest = (ents.get("destination") or "").strip() if isinstance(ents.get("destination"), str) else ents.get("destination")
+                    country = (ents.get("country") or "").strip().lower() if isinstance(ents.get("country"), str) else ""
+
+                    city_l = (city or "").lower().strip()
+                    dest_l = (dest or "").lower().strip()
+
+                    # ✅ If city is basically the country name, treat it as missing destination
+                    city_is_country = city_l in {"sri lanka", "srilanka"}
+
+                    if ((not city or city_is_country) and not dest) and country in {"sri lanka"}:
+                        missing.append("destination_city")
+
+                    # Origin (only if corridor routing / include_stops / route_mode wants it)
+                    # For demo: require origin_city for plan_itinerary
+                    # origin_city = (ents.get("origin_city") or "").strip() if isinstance(ents.get("origin_city"), str) else ents.get("origin_city")
+                    # if intent == "plan_itinerary" and not origin_city:
+                    #     missing.append("origin_city")
+
+                    followup_question = None
+                    followup_options: List[str] = []
+
+                    if missing:
+                        # Build a single friendly follow-up question
+                        parts = []
+                        if "start_date" in missing:
+                            parts.append("What are your travel dates? (start date + end date, or just the month)")
+                        if "origin_city" in missing:
+                            parts.append("Where are you starting from? (e.g., Colombo / Airport / Negombo)")
+                        if "destination_city" in missing:
+                            parts.append("Which area/city in Sri Lanka do you want for nature? (e.g., Kandy, Ella, Nuwara Eliya, Sigiriya)")
+
+                        followup_question = "Got it 🌿 Nature trip in Sri Lanka.\n" + "\n".join(f"- {p}" for p in parts)
+
+                        # Nice clickable options (you can tune)
+                        if "destination_city" in missing:
+                            followup_options += ["Kandy", "Ella", "Nuwara Eliya", "Sigiriya"]
+                        if "origin_city" in missing:
+                            followup_options += ["Colombo", "Bandaranaike Airport", "Negombo"]
+                        if "start_date" in missing:
+                            followup_options += ["This weekend", "Next week", "April 2026"]
+
+                    # write into results so other tasks can see it
+                    results["missing_fields"] = missing
+                    results["followup"] = {
+                        "question": followup_question,
+                        "options": followup_options,
+                    } if missing else None
+                    # ✅ clear followup lock when gate passes
+                    if session_state:
+                        mf = results.get("missing_fields") or []
+                        if not mf:
+                            session_state.slots.pop("pending_fields", None)
+                            session_state.slots.pop("pending_intent", None)
+                            session_state.slots.pop("pending_domain", None)
+
+                    # persist pending clarification (optional but good)
+                    if session_state and missing:
+                        session_state.slots["pending_fields"] = missing
+                        session_state.slots["pending_intent"] = pi.intent          # ✅ lock intent
+                        session_state.slots["pending_domain"] = pi.domain_category # ✅ optional
+                        # if you want single-field gating:
+                        # if "origin_city" in missing:
+                        #     session_state.slots["pending_clarification"] = "origin_city"
+
+                    return AgentResult(
+                        ok=True,
+                        answer="",
+                        data={
+                            "missing_fields": missing,
+                            "followup": {
+                                "question": followup_question,
+                                "options": followup_options,
+                            } if missing else None,
+                        },
+                        evidence=[],
+                        missing_fields=missing,
+                        next_actions=[],
+                        confidence=1.0,
+                        safety_flags=[],
+                        meta={"task": "validate_required_fields"},
+                    )
+                fn = _validate
+
+
+            elif ttype == "ask_followup":
+                async def _ask(task, ctx, results):
+                    gate_out = results.get("validate_required_fields")
+                    missing = []
+
+                    # validate_required_fields should return AgentResult
+                    if gate_out and hasattr(gate_out, "missing_fields"):
+                        missing = list(gate_out.missing_fields or [])
+
+                    # ✅ If missing fields exist, DO NOT call plan/modify tools
+                    if task.type in {"plan_itinerary", "modify_itinerary"} and missing:
+                        return AgentResult(
+                            ok=False,
+                            answer="",
+                            data={"skipped": True, "reason": "missing_required_fields", "missing_fields": missing},
+                            evidence=[],
+                            missing_fields=missing,
+                            next_actions=["ask_followup"],
+                            confidence=0.0,
+                            safety_flags=[],
+                            meta={"task_type": task.type, "skipped": True},
+                        )
+
+                    mf = []
+                    fu = {}
+
+                    if isinstance(gate_out, AgentResult) and isinstance(gate_out.data, dict):
+                        mf = gate_out.data.get("missing_fields") or []
+                        fu = gate_out.data.get("followup") or {}
+                    else:
+                        # fallback: if you kept writing directly into results
+                        mf = results.get("missing_fields") or []
+                        fu = results.get("followup") or {}
+
+                    if not mf:
+                        return AgentResult(
+                            ok=True,
+                            answer="",
+                            data={"asked": False},
+                            evidence=[],
+                            missing_fields=[],
+                            next_actions=[],
+                            confidence=1.0,
+                            safety_flags=[],
+                            meta={"task": "ask_followup"},
+                        )
+
+                    question = fu.get("question") or "I need a bit more info to plan your trip."
+                    options = fu.get("options") or []
+
+                    return AgentResult(
+                        ok=True,
+                        answer="",
+                        data={
+                            "asked": True,
+                            "question": question,
+                            "options": options,
+                            "missing_fields": mf,
+                        },
+                        evidence=[],
+                        missing_fields=mf,
+                        next_actions=[
+                            {
+                                "action_type": "ask_followup",   # ✅ FIXED
+                                "fields": mf,
+                                "question": question,
+                                "options": options,
+                            }
+                        ],
+                        confidence=1.0,
+                        safety_flags=[],
+                        meta={"task": "ask_followup"},
+                    )
+                fn = _ask
+
 
             else:
                 async def _unknown(task, ctx, results, tt=ttype, tid=t.id):
@@ -2091,156 +2271,6 @@ class OrchestratorService:
         out = anyio.run(_runner)
         dag_results, exec_results, ctx = normalize_executor_output(out)
 
-        # 🔥 Map DAG outputs into response fields
-        # for task in exec_tasks:
-        #     out = dag_results.get(task.id)
-        #     if not out:
-        #         continue
-
-        #     # If handler returned a failure dict, convert it into an AgentCallError
-        #     if isinstance(out, dict) and out.get("ok") is False:
-        #         errors.append(
-        #             AgentCallError(
-        #                 agent=str(out.get("agent") or "unknown"),
-        #                 endpoint=str(out.get("endpoint") or self.handlers.get(task.type).endpoint if task.type in self.handlers else ""),
-        #                 status_code=int(out.get("status_code") or 0),
-        #                 error=str(out.get("error") or "Downstream call failed"),
-        #                 detail=out,
-        #             )
-        #         )
-        #         continue
-
-        #     ttype = task.type
-
-        #     if ttype == "plan_itinerary":
-        #         results["itinerary_result"] = out
-
-        #         it_res = out
-        #         it_json = it_res.model_dump(mode="json") if hasattr(it_res, "model_dump") else dict(it_res)
-
-        #         # --- ADD THIS AFTER it_json IS CREATED (still inside plan_itinerary block) ---
-        #         route_plan = (it_json.get("plans") or {}).get("route_plan") or {}
-        #         needs_origin = (
-        #             isinstance(route_plan, dict)
-        #             and route_plan.get("status") == "needs_clarification"
-        #             and route_plan.get("reason") == "origin_required_for_corridor"
-        #         )
-
-        #         # current extracted entities
-        #         ents_now = (
-        #             parsed_intent.entities.model_dump(exclude_none=False)
-        #             if hasattr(parsed_intent.entities, "model_dump")
-        #             else dict(parsed_intent.entities or {})
-        #         )
-
-        #         origin_missing = not (ents_now.get("origin") or ents_now.get("origin_city"))
-
-        #         if needs_origin and origin_missing:
-        #             # ✅ Save clarification in results so formatter can add it nicely
-        #             results["route_clarification"] = {
-        #                 "type": "clarify_origin",
-        #                 "question": route_plan.get("question")
-        #                     or "Where are you starting from (e.g., Colombo), or are you already in Kandy? If you’re not sure, I can still plan just Kandy.",
-        #                 "options": route_plan.get("options") or ["Starting from Colombo", "Already in Kandy", "Other / Not sure"]
-        #             }
-
-        #             # ✅ Save in session so next message can fill it
-        #             if session_state:
-        #                 session_state.slots["pending_clarification"] = "origin_city"
-        #                 bb.pending_actions.append({
-        #                     "type": "clarification",
-        #                     "field": "origin_city",
-        #                     "reason": "origin_required_for_corridor",
-        #                 })
-        #                 session_state.slots["pending_destination"] = (it_json.get("meta") or {}).get("destination")
-        #                 session_state.slots["clarification_attempts"] = int(session_state.slots.get("clarification_attempts", 0)) + 1
-
-        #         ok = (it_json.get("status") == "ok") or (it_json.get("ok") is True)
-        #         if ok:
-        #             meta = it_json.get("meta") or {}
-        #             days = meta.get("days") or it_json.get("days")
-        #             start_date = meta.get("start_date") or it_json.get("start_date")
-
-        #             dest = meta.get("destination")
-        #             if not dest:
-        #                 plans = it_json.get("plans") or {}
-        #                 dp = plans.get("destination_plan") or {}
-        #                 dest = dp.get("city") or dp.get("destination") or meta.get("destination")
-
-        #             title = f"{dest or 'Trip'} ({days or ''} days)".strip()
-
-                    
-
-        #             active_trip_id = session_state.slots.get("active_trip_id") if session_state else None
-
-        #             # destination from response
-        #             dest = meta.get("destination") or dest  # as you already compute
-
-        #             # destination currently active in session
-        #             active_trip_id = session_state.slots.get("active_trip_id") if session_state else None
-
-        #             active_trip_dest = None
-        #             if active_trip_id and user_id:
-        #                 trip = self.trip_repo.get_trip(trip_id=active_trip_id, user_id=user_id)
-        #                 if trip:
-        #                     active_trip_dest = (trip.destination or "").strip()
-
-        #             is_new_trip = bool(dest) and bool(active_trip_dest) and dest.lower() != active_trip_dest.lower()
-
-        #             if active_trip_id and not is_new_trip:
-        #                 # UPDATE same trip only if same destination (replan same trip)
-        #                 self.trip_repo.update_trip_plan(
-        #                     trip_id=active_trip_id,
-        #                     title=title,
-        #                     destination=dest,
-        #                     start_date=start_date,
-        #                     days=int(days) if days else None,
-        #                     plan_json=it_json,
-        #                 )
-        #                 trip_id = active_trip_id
-        #             else:
-        #                 # ✅ CREATE new trip when destination changed OR no active trip
-        #                 trip_id = self.trip_repo.create_trip(
-        #                     user_id=user_id,
-        #                     title=title,
-        #                     destination=dest,
-        #                     start_date=start_date,
-        #                     travel_month=None,
-        #                     days=int(days) if days else None,
-        #                     plan_json=it_json,
-        #                 )
-
-        #             # ✅ set new active trip
-        #             if session_state and trip_id:
-        #                 session_state.slots["active_trip_id"] = trip_id
-        #                 session_state.slots["active_place"] = dest
-        #                 session_state.slots["city"] = dest
-
-        #         continue
-        #     elif ttype == "modify_itinerary":
-        #         results["modify_result"] = out
-
-        #     if ttype == "info_visa_policy":
-        #         results["visa_result"] = out
-        #     elif ttype == "info_accommodation":
-        #         results["accommodation_result"] = out
-        #     elif ttype == "info_transport":
-        #         results["transport_result"] = out
-        #     elif ttype == "info_attraction":
-        #         results["attraction_result"] = out
-
-        #     elif ttype == "forecast_weather":
-        #         results["weather_result"] = out
-        #     elif ttype == "crowd_forecast":
-        #         results["crowd_result"] = out
-        #     elif ttype == "forecast_price":
-        #         results["price_result"] = out
-        #     elif ttype == "recommend_pois":
-        #         results["pois_result"] = out
-        #     elif ttype == "recommend_restaurants":
-        #         results["restaurant_result"] = out
-
-        # 🔥 Map DAG outputs into response fields (AgentResult-aware)
         for task in exec_tasks:
             out = dag_results.get(task.id) or dag_results.get(task.type)
             if out is None:
@@ -2287,6 +2317,21 @@ class OrchestratorService:
             # ✅ Success payload is ALWAYS out.data now
             payload = out.data
             ttype = task.type
+
+            # ✅ expose gate outputs to formatter
+            if ttype == "validate_required_fields":
+                if isinstance(payload, dict):
+                    results["missing_fields"] = payload.get("missing_fields") or []
+                    # payload["followup"] is expected shape: {"question": "...", "options": [...]}
+                    results["followup"] = payload.get("followup") or None
+
+            elif ttype == "ask_followup":
+                if isinstance(payload, dict) and payload.get("asked"):
+                    results["followup"] = {
+                        "question": payload.get("question"),
+                        "options": payload.get("options") or [],
+                    }
+                    results["missing_fields"] = payload.get("missing_fields") or results.get("missing_fields") or []
 
             # ---------------------------
             # Replace ALL "out" usages below with "payload"
@@ -2441,24 +2486,13 @@ class OrchestratorService:
                         plan_json=new_plan,
                     )
 
-
-
-        
-
-
-        # 6) OPTIONAL but recommended: update TaskSummary statuses from exec_results
-        #    If your TaskExecutor returns ExecResult objects with fields like id/status.
-        #    Otherwise, mark as completed if output exists.
-        # 🔥 Update task status based on DAG execution
         task_status_by_id: Dict[str, str] = {}
         for task in exec_tasks:
             out = dag_results.get(task.id) or dag_results.get(task.type)
             task_status_by_id[task.id] = "completed" if out not in (None, {"ok": False}) else "failed"
-
-
             
+         
         print("[orchestrator] dag_results keys =", list(dag_results.keys()))
-
 
         # If exec_results has richer status, use it:
         for r in (exec_results or []):
@@ -2487,6 +2521,49 @@ class OrchestratorService:
             results=results,
             tasks=[t.model_dump(mode="json") for t in tasks],
         )
+        # -------------------------
+        # ✅ AGENTIC CLOSED LOOP: observe -> verify -> repair -> decide
+        # -------------------------
+        try:
+            loop_out = self.agentic_loop.run(
+                svc=self,
+                parsed_intent=parsed_intent,
+                req=req,
+                db_prefs=db_prefs,
+                session_state=session_state,
+                request_trace_id=request_trace_id,
+                results=results,
+                max_repairs=int(os.getenv("AGENTIC_MAX_REPAIRS", "1")),
+            )
+
+            # Inject "what changed & why" + confidence into results so formatter can render it
+            results["agentic_meta"] = {
+                "confidence": loop_out.confidence,
+                "quality_score": loop_out.verify_report.quality_score if loop_out.verify_report else None,
+                "issues": [
+                    {"code": i.code, "severity": i.severity, "message": i.message, "meta": i.meta}
+                    for i in (loop_out.verify_report.issues if loop_out.verify_report else [])
+                ],
+                "repairs": [
+                    {"name": r.name, "reason": r.reason, "meta": r.meta}
+                    for r in loop_out.repairs_applied
+                ],
+                "changed_summary": loop_out.changed_summary,
+            }
+
+            if self.trace_pg:
+                self.trace_pg.add_event(
+                    trace_id=request_trace_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                    turn_id=turn_id,
+                    event_type="agentic_loop",
+                    status="ok",
+                    request_payload={"agentic_meta": results["agentic_meta"]},
+                )
+
+        except Exception as e:
+            print("[agentic] loop failed:", e)
         
 
         # ✅ If planner asked for origin clarification, append it to final message
