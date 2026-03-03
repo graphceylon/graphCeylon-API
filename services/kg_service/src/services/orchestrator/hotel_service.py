@@ -22,9 +22,30 @@ class OrchestratorHotelService:
 
     # Currency conversion rate (approximate)
     USD_TO_LKR_RATE = 300.0
+    
+    # Amenity aliases mapping from user input to database values
+    AMENITY_ALIASES = {
+        'wifi': ['wi-fi', 'wifi', 'internet', 'wireless internet'],
+        'ac': ['air conditioning', 'ac', 'air conditioner'],
+        'pool': ['pool', 'outdoor pool', 'indoor pool', 'swimming pool'],
+        'breakfast': ['breakfast', 'breakfast buffet', 'continental breakfast'],
+        'parking': ['parking', 'free parking', 'valet parking', 'self parking'],
+        'gym': ['fitness center', 'gym', 'fitness room', 'exercise room'],
+        'spa': ['spa', 'massage', 'wellness center'],
+        'family_rooms': ['kid-friendly', 'family rooms', 'family-friendly'],
+    }
 
     def __init__(self, driver: Driver):
         self.driver = driver
+    
+    @staticmethod
+    def normalize_amenity(user_amenity: str) -> List[str]:
+        """Convert user amenity input to list of database amenity values."""
+        normalized = user_amenity.lower().strip().replace(' ', '_')
+        return OrchestratorHotelService.AMENITY_ALIASES.get(
+            normalized, 
+            [user_amenity.lower()]  # If no alias, use original
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -89,21 +110,27 @@ class OrchestratorHotelService:
 
         if request.city:
             # Match on the hotel's own city field first (exact match).
-            # Fall back to exact district / province name only when the
-            # hotel has no explicit city.  We use equality (not CONTAINS)
-            # to avoid false positives such as "Kegalle" matching "Galle".
+            # Fall back to district property, district node, or province
+            # when hotel has no explicit city or has empty string.
             where_clauses.append(
                 "("
                 "toLower(h.city) = toLower($city) "
-                "OR (h.city IS NULL AND toLower(h.district) = toLower($city)) "
-                "OR (h.city IS NULL AND toLower(d.name) = toLower($city)) "
-                "OR (h.city IS NULL AND toLower(p.name) = toLower($city))"
+                "OR (COALESCE(h.city, '') = '' AND toLower(h.district) = toLower($city)) "
+                "OR (COALESCE(h.city, '') = '' AND toLower(d.name) = toLower($city)) "
+                "OR (COALESCE(h.city, '') = '' AND toLower(h.province) = toLower($city)) "
+                "OR (COALESCE(h.city, '') = '' AND toLower(p.name) = toLower($city))"
                 ")"
             )
             params["city"] = request.city
 
-        if request.country and request.country.lower() == "sri lanka":
-            where_clauses.append("p IS NOT NULL")
+        # Fixed: Check h.country property instead of requiring Province relationship
+        if request.country:
+            if request.country.lower() == "sri lanka":
+                # Check if hotel has country property set
+                where_clauses.append("(toLower(h.country) = 'sri lanka' OR p IS NOT NULL)")
+            else:
+                where_clauses.append("toLower(h.country) = toLower($country)")
+                params["country"] = request.country
 
         # Map hotel star tiers to Google review score thresholds:
         # 5-star → 4.5+,  4-star → 4.0+,  3-star → 3.5+,  2-star → 3.0+,  1-star → 0+
@@ -127,15 +154,21 @@ class OrchestratorHotelService:
             cypher_query += "WHERE " + " AND ".join(where_clauses) + "\n"
 
         if request.must_have_amenities:
+            # Expand each user amenity to its database aliases
+            all_required_amenities = []
+            for user_amenity in request.must_have_amenities:
+                all_required_amenities.extend(self.normalize_amenity(user_amenity))
+            
             cypher_query += """
             WITH h, d, p
             MATCH (h)-[:OFFERS_AMENITY]->(am:Amenity)
             WHERE toLower(am.name) IN $required_amenities
             WITH h, d, p, count(DISTINCT am) as amenity_match_count
-            WHERE amenity_match_count = $required_amenity_count
+            WHERE amenity_match_count >= $min_amenity_count
             """
-            params["required_amenities"] = [a.lower() for a in request.must_have_amenities]
-            params["required_amenity_count"] = len(request.must_have_amenities)
+            params["required_amenities"] = list(set(all_required_amenities))  # Remove duplicates
+            # Require at least as many matches as user requested (since aliases expand options)
+            params["min_amenity_count"] = len(request.must_have_amenities)
         else:
             cypher_query += "WITH h, d, p\n"
 
