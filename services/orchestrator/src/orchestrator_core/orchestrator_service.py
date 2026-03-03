@@ -2040,28 +2040,32 @@ class OrchestratorService:
                     )
 
                     # ---- REQUIRED FIELDS (demo-safe strict) ----
+                    # ---- REQUIRED FIELDS (demo-safe strict) ----
                     missing: List[str] = []
 
-                    # Dates: require either start_date OR travel_month
-                    start_date = ents.get("start_date")
-                    travel_month = ents.get("travel_month")
+                    # ✅ Only enforce these requirements for plan_itinerary
+                    if intent == "plan_itinerary":
+                        # Dates: require either start_date OR travel_month
+                        start_date = ents.get("start_date")
+                        travel_month = ents.get("travel_month")
 
-                    if not start_date and not travel_month:
-                        missing.append("start_date")  # simplest label for demo
+                        if not start_date and not travel_month:
+                            missing.append("start_date")  # simplest label for demo
 
-                    # Destination/city: if only country-level ("Sri Lanka") and no city/destination
-                    city = (ents.get("city") or "").strip() if isinstance(ents.get("city"), str) else ents.get("city")
-                    dest = (ents.get("destination") or "").strip() if isinstance(ents.get("destination"), str) else ents.get("destination")
-                    country = (ents.get("country") or "").strip().lower() if isinstance(ents.get("country"), str) else ""
+                        # Destination/city: if only country-level ("Sri Lanka") and no city/destination
+                        city = (ents.get("city") or "").strip() if isinstance(ents.get("city"), str) else ents.get("city")
+                        dest = (ents.get("destination") or "").strip() if isinstance(ents.get("destination"), str) else ents.get("destination")
+                        country = (ents.get("country") or "").strip().lower() if isinstance(ents.get("country"), str) else ""
 
-                    city_l = (city or "").lower().strip()
-                    dest_l = (dest or "").lower().strip()
+                        city_l = (city or "").lower().strip()
+                        city_is_country = city_l in {"sri lanka", "srilanka"}
 
-                    # ✅ If city is basically the country name, treat it as missing destination
-                    city_is_country = city_l in {"sri lanka", "srilanka"}
+                        if ((not city or city_is_country) and not dest) and country in {"sri lanka"}:
+                            missing.append("destination_city")
 
-                    if ((not city or city_is_country) and not dest) and country in {"sri lanka"}:
-                        missing.append("destination_city")
+                    # ✅ For modify, do not block on dates/destination (it should use active_trip_id / stored plan)
+                    elif intent == "modify_itinerary":
+                        missing = []
 
                     # Origin (only if corridor routing / include_stops / route_mode wants it)
                     # For demo: require origin_city for plan_itinerary
