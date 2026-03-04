@@ -22,6 +22,7 @@ class VerifyReport:
     ok: bool
     quality_score: float   # 0..1
     issues: List[VerifyIssue] = field(default_factory=list)
+    meta: Dict[str, Any] = field(default_factory=dict) 
 
 @dataclass
 class RepairAction:

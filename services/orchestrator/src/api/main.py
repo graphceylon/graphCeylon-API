@@ -5,12 +5,15 @@ from ..orchestrator_core.orchestrator_service import OrchestratorService
 from ..orchestrator_core.intent_parser.agent import IntentParserAgent
 from ..orchestrator_core.task_graph_builder import TaskGraphBuilder
 from .events_routes import router as events_router
+from .booking_routes import router as booking_router
 
 from .phase2_routes import router as phase2_router
 from .semantic_routes import router as semantic_router
 from .trip_routes import router as trips_router
 from uuid import uuid4
 from ..orchestrator_core.trace_utils import ensure_ids
+from dotenv import load_dotenv
+load_dotenv()
 
 app = FastAPI(
     title="GraphCeylon Orchestrator",
@@ -22,6 +25,7 @@ app.include_router(events_router)
 app.include_router(phase2_router)
 app.include_router(semantic_router)
 app.include_router(trips_router)
+app.include_router(booking_router)
 
 intent_parser_agent = IntentParserAgent(
 

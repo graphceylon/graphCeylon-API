@@ -38,7 +38,8 @@ class AgenticLoop:
     ) -> LoopResult:
 
         obs = self.observe(results=results)
-        report = self.verifier.verify(results=results, prefs=db_prefs)
+        # loop.py
+        report = self.verifier.verify(results=results, prefs=db_prefs, parsed_intent=parsed_intent)         
 
         repairs_applied = []
         changed_summary = []

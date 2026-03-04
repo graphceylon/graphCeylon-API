@@ -140,6 +140,7 @@ class OrchestrateResponse(BaseModel):
     transport_result: Optional[Any] = None
     attraction_result: Optional[Any] = None
     restaurant_result:Optional[Any] = None
+    booking_result:Optional[Any] = None
 
     final_message: Optional[str] = None
 
@@ -153,3 +154,4 @@ class OrchestrateResponse(BaseModel):
     session_state_patch: Optional[Dict[str, Any]] = None
 
     trip_id: Optional[str] = None
+    agentic_meta: Optional[Dict[str, Any]] = None

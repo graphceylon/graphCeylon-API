@@ -8,12 +8,17 @@ from .context_resolver import resolve_context
 from ..api.schemas import Entities 
 from .runtime.blackboard import Blackboard
 from .mappers.restaurant_mapper import map_restaurant_request
+from .mappers.book_hotel_mapper import map_book_hotel_request
+from .contracts.book_hotel import BookHotelResponse
 import hashlib
 import json
 import traceback
 from typing import Awaitable
 from uuid import uuid4
 from .agentic.loop import AgenticLoop
+from .verifier.verifier_agent import VerifierAgent
+from .agentic.nli_wrapper import DebertaNLIWrapper as NLIWrapper
+from .tools.hotel_booking_tool import book_hotel_flow
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -139,6 +144,39 @@ _AMENITY_MAP = {
     "family room": "family_rooms",
 }
 
+MULTI_INTENT_ALLOW = {
+    "forecast_weather": {"info_attraction", "recommend_pois", "recommend_restaurants"},
+    "info_attraction": {"forecast_weather", "recommend_pois"},
+    "recommend_pois": {"forecast_weather", "info_attraction"},
+}
+
+DISALLOW_SECONDARY = {"plan_itinerary", "modify_itinerary"} | WRITE_INTENTS
+
+def pick_secondary_intents(parsed_intent, handlers: set[str], max_n: int = 2, min_score: float = 0.80) -> list[str]:
+    primary = (parsed_intent.intent or "").strip()
+    allowed = MULTI_INTENT_ALLOW.get(primary, set())
+
+    scores = parsed_intent.scores or {}
+    secs = parsed_intent.secondary_intents or []
+
+    candidates = []
+    for s in secs:
+        s = (s or "").strip()
+        if not s or s == primary:
+            continue
+        if s in DISALLOW_SECONDARY:
+            continue
+        if s not in handlers:
+            continue
+        if allowed and s not in allowed:
+            continue
+
+        if float(scores.get(s, 0.0)) >= min_score:
+            candidates.append(s)
+
+    candidates.sort(key=lambda x: float(scores.get(x, 0.0)), reverse=True)
+    return candidates[:max_n]
+
 def normalize_amenities_with_unknown(items):
     """
     Returns:
@@ -261,6 +299,45 @@ def booking_stub(call):  # call: ToolCall
         "status": "verified",
         "booking_id": f"BK-{call.trace_id[:8]}",
         "message": "Booking request sent for human verification. Confirmed.",
+    }
+def book_hotel_flow_stub(call: ToolCall):
+    """
+    Demo hotel booking flow stub.
+    Simulates the multi-step booking API pipeline.
+    """
+
+    args = call.args or {}
+
+    city = args.get("city")
+    check_in = args.get("check_in")
+    check_out = args.get("check_out")
+    guests = args.get("guests", 2)
+
+    # simulate response structure your UI can render
+    return {
+        "ok": True,
+        "status": "booking_options_ready",
+        "city": city,
+        "check_in": check_in,
+        "check_out": check_out,
+        "guests": guests,
+        "available_hotels": [
+            {
+                "hotel_id": "HTL001",
+                "name": "Sigiriya Eco Resort",
+                "room_type": "Deluxe Room",
+                "price_lkr": 22000,
+                "meal_plan": "Breakfast Included",
+            },
+            {
+                "hotel_id": "HTL002",
+                "name": "Kandy Lake View Hotel",
+                "room_type": "Superior Room",
+                "price_lkr": 18000,
+                "meal_plan": "Half Board",
+            },
+        ],
+        "message": "Select a hotel to proceed with booking.",
     }
 def has_explicit_other_intent(text: str) -> bool:
     t = norm(text)
@@ -543,6 +620,14 @@ class OrchestratorService:
         self.task_graph_builder = task_graph_builder
         self.agentic_loop = AgenticLoop()
         self.protocol_mode = protocol_mode
+        MODEL_DIR = (
+            Path(__file__).resolve()
+            .parents[4]  # adjust if needed (explained below)
+            / "models" / "orchestrator" / "NLI" / "nli_deberta" / "finalrob"
+        )
+
+        self.nli = NLIWrapper(model_dir=str(MODEL_DIR))
+        self.verifier = VerifierAgent(nli=self.nli)
         # self.trace_store = InMemoryTraceStore(max_per_session=500)
         self.profile_event_store = ProfileEventStore()
         self.trip_repo = TripRepo()
@@ -582,7 +667,14 @@ class OrchestratorService:
                 timeout=20,
                 result_field="attraction_result",
             ),
-             "info_accommodation": IntentHandler(
+            "book_hotel": IntentHandler(
+                endpoint="/hotel/booking/flow",   # placeholder if you route to a service OR keep local for now
+                mapper=map_book_hotel_request,    # you will create this
+                response_model=None,              # keep None for now
+                timeout=30,
+                result_field="booking_result",
+            ),
+                        "info_accommodation": IntentHandler(
                 endpoint="/hotels/orchestrator/call/hotels/search",
                 mapper=map_accommodation_request,
                 response_model= AccommodationSearchResponse,
@@ -699,6 +791,7 @@ class OrchestratorService:
         local_provider = LocalToolProvider(
             handlers={
                 "booking_stub": booking_stub,  # define this function somewhere above
+                "book_hotel": book_hotel_flow,
             }
         )
 
@@ -723,6 +816,7 @@ class OrchestratorService:
                 "forecast_sustainability": "a2a",
                 "recommend_pois": "a2a",
                 "recommend_restaurants": "a2a",
+                "book_hotel": "local",  # for demo, or "a2a" if a service handles it
             }
         )
         # ---------------------------
@@ -1878,6 +1972,7 @@ class OrchestratorService:
             "route_clarification": None,
             "missing_fields": None,
             "followup": None,
+            "booking_result": None,
             
         }
         results = bb.tool_results 
@@ -2408,6 +2503,8 @@ class OrchestratorService:
 
             elif ttype == "recommend_restaurants":
                 results["restaurant_result"] = payload
+            elif ttype == "book_hotel":
+                results["booking_result"] = payload
 
             
         # ✅ After DAG mapping: apply modify update to active trip
@@ -2501,6 +2598,7 @@ class OrchestratorService:
                     for r in loop_out.repairs_applied
                 ],
                 "changed_summary": loop_out.changed_summary,
+                "verifier_meta": (loop_out.verify_report.meta if loop_out.verify_report else None),
             }
 
             if self.trace_pg:
@@ -2563,10 +2661,12 @@ class OrchestratorService:
             # "restaurant_result": None,
             pois_result = results["pois_result"],
             transport_result=results["transport_result"],
+            booking_result=results["booking_result"],
             attraction_result=results["attraction_result"],
             final_message=formatted.get("text"),
             followups=formatted.get("followups"),
             trip_id=trip_id,
             errors=errors,
             trace=trace,
+            agentic_meta=results.get("agentic_meta"),
         )

@@ -67,7 +67,54 @@ class TaskGraphBuilder:
         self.enable_entity_extraction = enable_entity_extraction
         self.add_verification_for_visa = add_verification_for_visa
         self._nodes: Dict[str, TaskNode] = {}
+    @staticmethod
+    def _supported_intents() -> set[str]:
+        return {
+            "forecast_weather", "crowd_forecast", "forecast_price",
+            "recommend_pois", "info_transport", "info_accommodation",
+            "info_attraction", "info_visa_policy", "recommend_restaurants",
+        }
 
+    @staticmethod
+    def _disallow_secondary() -> set[str]:
+        # keep this aligned with orchestrator WRITE_INTENTS
+        return {"plan_itinerary", "modify_itinerary", "booking_create", "booking_confirm", "cancel_booking", "modify_booking"}
+
+    @staticmethod
+    def _multi_intent_allow() -> dict[str, set[str]]:
+        return {
+            "forecast_weather": {"info_attraction", "recommend_pois", "recommend_restaurants"},
+            "info_attraction": {"forecast_weather", "recommend_pois"},
+            "recommend_pois": {"forecast_weather", "info_attraction"},
+        }
+
+    def _pick_secondary_intents(self, parsed: ParsedIntent, *, max_n: int = 2, min_score: float = 0.80) -> List[str]:
+        primary = (parsed.intent or "").strip()
+        scores = parsed.scores or {}
+        secs = parsed.secondary_intents or []
+
+        supported = self._supported_intents()
+        disallow = self._disallow_secondary()
+        allow_map = self._multi_intent_allow()
+        allowed_set = allow_map.get(primary, set())
+
+        candidates: List[str] = []
+        for s in secs:
+            s = (s or "").strip()
+            if not s or s == primary:
+                continue
+            if s in disallow:
+                continue
+            if s not in supported:
+                continue
+            # if allow set exists, enforce it (keeps demo deterministic)
+            if allowed_set and s not in allowed_set:
+                continue
+            if float(scores.get(s, 0.0)) >= min_score:
+                candidates.append(s)
+
+        candidates.sort(key=lambda x: float(scores.get(x, 0.0)), reverse=True)
+        return candidates[:max_n]
     @staticmethod
     def _itinerary_missing_fields(parsed: ParsedIntent) -> List[str]:
         ents = parsed.entities
@@ -245,19 +292,14 @@ class TaskGraphBuilder:
         
 
         # ---- Secondary tasks fan-out (parallel) ----
+                # ---- Secondary tasks fan-out (parallel) ----
         secondary_ids: List[str] = []
-        SUPPORTED = {
-            "forecast_weather", "crowd_forecast", "forecast_price",
-            "recommend_pois", "info_transport", "info_accommodation",
-            "info_attraction", "info_visa_policy", "recommend_restaurants",
-            # add more as you implement
-        }
 
-        for sec_intent in (parsed.secondary_intents or []):
-            if sec_intent not in SUPPORTED:
-                continue
+        picked_secondaries = self._pick_secondary_intents(parsed, max_n=2, min_score=0.80)
 
+        for sec_intent in picked_secondaries:
             sec_agent = INTENT_TO_AGENT.get(sec_intent, "OrchestratorAgent")
+
             t_sec = TaskNode(
                 id=new_id(),
                 type=sec_intent,
@@ -268,6 +310,12 @@ class TaskGraphBuilder:
                 retry_backoff_ms=400,
                 critical=False,
             )
+
+            # ✅ IMPORTANT: actually add it to the DAG
+            self._add(t_sec)
+
+            # ✅ IMPORTANT: track it so format_response waits for it
+            secondary_ids.append(t_sec.id)
 
         # ---- Optional: verification task for visa (adds research-grade trust layer) ----
         verification_id: Optional[str] = None
