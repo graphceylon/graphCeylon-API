@@ -6,6 +6,11 @@ Provides intelligent search across sub-attractions within parent locations.
 
 The request/response contract mirrors OrchestratorAttractionService so the
 orchestrator can call both endpoints uniformly.
+
+**2026 UPGRADE: Vector Search Integration**
+- Hybrid search combining semantic vectors with traditional filters
+- Uses state-of-the-art sentence transformers for embedding generation
+- Falls back to traditional search if embeddings unavailable
 """
 
 import json
@@ -76,10 +81,26 @@ class OrchestratorSubAttractionService:
     Mirrors the contract of ``OrchestratorAttractionService`` so the
     orchestrator can call ``/orchestrator/call/sub-attractions`` with the
     same payload shape used for ``/orchestrator/call/attractions``.
+    
+    **2026 Enhancement: Hybrid Search**
+    - Primary: Vector similarity search for semantic understanding
+    - Fallback: Traditional Cypher-based filtering
+    - Combines both for optimal precision and recall
     """
 
-    def __init__(self, driver: Driver):
+    def __init__(self, driver: Driver, enable_vector_search: bool = True):
         self.driver = driver
+        self.enable_vector_search = enable_vector_search
+        self._embedding_service = None
+        
+        if enable_vector_search:
+            try:
+                from services.vector_embeddings import SubAttractionEmbeddingService
+                self._embedding_service = SubAttractionEmbeddingService(driver)
+                logger.info("Vector search enabled for sub-attractions")
+            except Exception as e:
+                logger.warning(f"Could not initialize vector search: {e}. Falling back to traditional search.")
+                self.enable_vector_search = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -90,30 +111,58 @@ class OrchestratorSubAttractionService:
         request: SubAttractionSearchRequest,
         rejected_categories: Optional[List[str]] = None,
     ) -> SubAttractionSearchResponse:
-        """Search sub-attractions using the same strategy pattern as attractions.
+        """Search sub-attractions using hybrid strategy (vector + traditional).
 
-        1. City only (no preferred_poi_category): Direct city-based search
-        2. City + preferred_poi_category: Filtered by parent location + category
-        3. preferred_poi_category only: Search across all cities
-        4. poi_name: Filter by specific POI name
-        5. rejected_categories: Excluded before applying any other category filter
+        **Search Strategies (2026 Hybrid Approach):**
+        1. **Vector Search (Primary)**: When query is provided, use semantic search
+        2. **Traditional Filters (Secondary)**: Apply location and category filters
+        3. **Hybrid Reranking**: Combine vector similarity with filter relevance
+        
+        Search modes:
+        1. City only (no preferred_poi_category): All POIs in that location
+        2. City + preferred_poi_category: POIs filtered by location and preferred type
+        3. preferred_poi_category only: POIs of that type across all locations
+        4. POI name: Specific POI name search
+        5. Natural language query: Vector similarity search
         """
         try:
             city = ""
             if request.city:
                 city = normalize_location_name(request.city, CITY_ALIASES)
 
-            results = self._get_sub_attractions(
-                city=city,
-                country=request.country,
-                poi_name=request.poi_name,
-                preferred_poi_category=request.preferred_poi_category,
-                rejected_categories=rejected_categories or [],
-                tags=request.tags,
-                limit=10,
+            # Determine search strategy
+            use_vector = (
+                self.enable_vector_search 
+                and self._embedding_service 
+                and request.query 
+                and len(request.query.strip()) > 10  # Meaningful query
             )
+            
+            if use_vector:
+                logger.info(f"Using HYBRID search for query: '{request.query}'")
+                results = self._hybrid_search(
+                    query=request.query,
+                    city=city,
+                    country=request.country,
+                    poi_name=request.poi_name,
+                    preferred_poi_category=request.preferred_poi_category,
+                    rejected_categories=rejected_categories or [],
+                    tags=request.tags,
+                    limit=20,  # Get more for reranking
+                )
+            else:
+                logger.info(f"Using TRADITIONAL search for: city={city or 'all'}")
+                results = self._get_sub_attractions(
+                    city=city,
+                    country=request.country,
+                    poi_name=request.poi_name,
+                    preferred_poi_category=request.preferred_poi_category,
+                    rejected_categories=rejected_categories or [],
+                    tags=request.tags,
+                    limit=10,
+                )
 
-            items = [self._map_to_item(r) for r in results]
+            items = [self._map_to_item(r) for r in results[:10]]  # Return top 10
 
             summary = self._generate_summary(
                 items=items,
@@ -140,10 +189,197 @@ class OrchestratorSubAttractionService:
                 error="search_failed",
                 details=str(e),
             )
-
     # ------------------------------------------------------------------
     # Neo4j query
     # ------------------------------------------------------------------
+    
+    def _hybrid_search(
+        self,
+        query: str,
+        city: str = "",
+        country: str = "Sri Lanka",
+        poi_name: Optional[str] = None,
+        preferred_poi_category: Optional[str] = None,
+        rejected_categories: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """
+        Hybrid search combining vector similarity with traditional filters.
+        
+        **Algorithm:**
+        1. Generate query embedding from natural language
+        2. Perform vector similarity search using Neo4j vector index
+        3. Apply location and category filters
+        4. Rerank results by combining similarity score with filter match
+        5. Return top-k results
+        
+        Args:
+            query: Natural language search query
+            city: Optional city filter
+            country: Country filter
+            poi_name: Optional specific POI name
+            preferred_poi_category: Optional preferred category
+            rejected_categories: Categories to exclude
+            tags: Optional tag filters
+            limit: Maximum results
+            
+        Returns:
+            List of matching sub-attractions with hybrid scoring
+        """
+        
+        try:
+            # Generate query embedding
+            query_embedding = self._embedding_service.generate_query_embedding(query)
+            
+            # Build filter conditions
+            _CATEGORY_FIELDS = (
+                "s.groups", "s.amenityType", "s.shopType", "s.tourismType",
+                "s.naturalType", "s.historicType", "s.primaryType",
+                "s.placeTypes", "s.religion",
+            )
+            
+            filter_clauses: List[str] = []
+            params: Dict[str, Any] = {
+                "queryEmbedding": query_embedding.tolist(),
+                "limit": limit * 2,  # Fetch more for filtering
+                "threshold": 0.65,  # Lower threshold for broader recall
+            }
+            
+            # City filter
+            if city:
+                filter_clauses.append(
+                    "(toLower(s.city) = toLower($city) "
+                    "OR toLower(s.parentLocation) = toLower($city) "
+                    "OR toLower(s.district) = toLower($city) "
+                    "OR toLower(s.province) = toLower($city))"
+                )
+                params["city"] = city
+            
+            # POI name filter
+            if poi_name:
+                filter_clauses.append("toLower(s.name) CONTAINS toLower($poiName)")
+                params["poiName"] = poi_name
+            
+            # Rejection filters
+            for idx, rejected in enumerate(rejected_categories or []):
+                reject_param = f"rejected{idx}"
+                reject_conditions = " OR ".join(
+                    f"toLower({f}) CONTAINS toLower(${reject_param})"
+                    for f in _CATEGORY_FIELDS
+                )
+                filter_clauses.append(f"NOT ({reject_conditions})")
+                params[reject_param] = rejected
+            
+            # Preferred category filter
+            if preferred_poi_category and preferred_poi_category.strip():
+                prefer_conditions = " OR ".join(
+                    f"toLower({f}) CONTAINS toLower($preferredPoiCategory)"
+                    for f in _CATEGORY_FIELDS
+                )
+                filter_clauses.append(f"({prefer_conditions})")
+                params["preferredPoiCategory"] = preferred_poi_category.strip()
+            
+            # Tags filter
+            if tags:
+                tag_clauses = []
+                for i, tag in enumerate(tags):
+                    tag_param = f"tag{i}"
+                    tag_clauses.append(
+                        f"(toLower(s.groups) CONTAINS toLower(${tag_param}) "
+                        f"OR toLower(s.placeTypes) CONTAINS toLower(${tag_param}) "
+                        f"OR toLower(s.religion) CONTAINS toLower(${tag_param}))"
+                    )
+                    params[tag_param] = tag
+                if tag_clauses:
+                    filter_clauses.append(f"({' OR '.join(tag_clauses)})")
+            
+            # Exclude closed businesses
+            filter_clauses.append(
+                "(s.businessStatus IS NULL OR s.businessStatus = '' "
+                "OR s.businessStatus = 'OPERATIONAL')"
+            )
+            
+            where_clause = " AND ".join(filter_clauses) if filter_clauses else "true"
+            
+            # Hybrid Cypher query using vector index + filters
+            cypher = f"""
+            CALL db.index.vector.queryNodes(
+                'sub_attraction_embeddings',
+                $limit,
+                $queryEmbedding
+            ) YIELD node AS s, score
+            WHERE score >= $threshold
+            OPTIONAL MATCH (s)-[:SUB_ATTRACTION_OF]->(a:Attraction)
+            WITH s, a, score
+            WHERE {where_clause}
+            OPTIONAL MATCH (s)-[:LOCATED_IN]->(d:District)
+            OPTIONAL MATCH (d)-[:IN_PROVINCE]->(p:Province)
+            OPTIONAL MATCH (s)-[:BELONGS_TO_GROUP]->(grp:POIGroup)
+            WITH s, a, d, p, score,
+                 collect(DISTINCT grp.name) AS poiGroups,
+                 // Compute hybrid score: 70% vector similarity + 30% rating quality
+                 (score * 0.7 + coalesce(s.rating, 0) / 5.0 * 0.3) AS hybridScore
+            RETURN s.name AS name,
+                   s.parentLocation AS parentLocation,
+                   a.title AS parentAttraction,
+                   s.latitude AS latitude,
+                   s.longitude AS longitude,
+                   s.amenityType AS amenityType,
+                   s.shopType AS shopType,
+                   s.tourismType AS tourismType,
+                   s.naturalType AS naturalType,
+                   s.historicType AS historicType,
+                   s.primaryType AS primaryType,
+                   s.religion AS religion,
+                   s.cuisine AS cuisine,
+                   s.brand AS brand,
+                   s.rating AS rating,
+                   s.userRatingsTotal AS userRatingsTotal,
+                   s.priceLevel AS priceLevel,
+                   s.formattedAddress AS formattedAddress,
+                   s.vicinity AS vicinity,
+                   s.website AS website,
+                   s.phone AS phone,
+                   s.internationalPhone AS internationalPhone,
+                   s.editorialSummary AS editorialSummary,
+                   s.placeTypes AS placeTypes,
+                   s.weekdayText AS weekdayText,
+                   s.openingHours AS openingHours,
+                   s.googleMapsUrl AS googleMapsUrl,
+                   s.businessStatus AS businessStatus,
+                   d.name AS district,
+                   p.name AS province,
+                   s.city AS city,
+                   poiGroups,
+                   score AS vectorSimilarity,
+                   hybridScore
+            ORDER BY hybridScore DESC, coalesce(s.rating, 0) DESC
+            LIMIT $limit
+            """
+            
+            with self.driver.session() as session:
+                result = session.run(cypher, params)
+                results = [record.data() for record in result]
+            
+            logger.info(
+                f"Hybrid search returned {len(results)} results "
+                f"(vector similarity + filters)"
+            )
+            return results
+            
+        except Exception as e:
+            logger.warning(f"Hybrid search failed, falling back to traditional: {e}")
+            # Fallback to traditional search
+            return self._get_sub_attractions(
+                city=city,
+                country=country,
+                poi_name=poi_name,
+                preferred_poi_category=preferred_poi_category,
+                rejected_categories=rejected_categories,
+                tags=tags,
+                limit=limit,
+            )
 
     def _get_sub_attractions(
         self,

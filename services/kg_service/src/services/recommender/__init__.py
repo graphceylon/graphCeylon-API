@@ -37,13 +37,18 @@ class RouteAttractionService:
     # ------------------------------------------------------------------
 
     def find_attractions_on_route(
-        self, request: AttractionsOnRouteRequest
+        self, 
+        request: AttractionsOnRouteRequest, 
+        rejected_categories: List[str] = None,
+        preferred_categories: List[str] = None
     ) -> AttractionsOnRouteResponse:
         """Return sub-attractions within *corridor_km* of the sampled route,
         grouped by each route waypoint."""
         start = time.time()
 
         corridor_m = request.corridor_km * 1000  # Neo4j point.distance → metres
+        rejected_categories = rejected_categories or []
+        preferred_categories = preferred_categories or []
 
         # Track which POIs have already been assigned so each appears only once
         # (assigned to the first/closest waypoint that discovers it).
@@ -55,7 +60,10 @@ class RouteAttractionService:
         with self.driver.session() as session:
             for idx, point in enumerate(request.sampled_route_points):
                 lat, lon = point[0], point[1]
-                records = self._query_nearby(session, lat, lon, corridor_m, request.limit)
+                records = self._query_nearby(
+                    session, lat, lon, corridor_m, request.limit, 
+                    rejected_categories, preferred_categories
+                )
 
                 point_items: List[RouteSubAttractionItem] = []
                 for rec in records:
@@ -97,18 +105,70 @@ class RouteAttractionService:
 
     @staticmethod
     def _query_nearby(
-        session, lat: float, lon: float, radius_m: float, limit: int
+        session, 
+        lat: float, 
+        lon: float, 
+        radius_m: float, 
+        limit: int, 
+        rejected_categories: List[str] = None,
+        preferred_categories: List[str] = None
     ) -> List[Dict[str, Any]]:
         """Run a spatial proximity query for one waypoint."""
-        cypher = """
+        
+        # Category fields to check for filtering (same as sub_attraction_service)
+        _CATEGORY_FIELDS = (
+            "s.groups", "s.amenityType", "s.shopType", "s.tourismType",
+            "s.naturalType", "s.historicType", "s.primaryType",
+            "s.placeTypes", "s.religion",
+        )
+        
+        rejected_categories = rejected_categories or []
+        preferred_categories = preferred_categories or []
+        where_clauses = ["dist <= $radius"]
+        params = {"lat": lat, "lon": lon, "radius": radius_m, "limit": limit}
+        
+        # Build rejection filter for each rejected category
+        for idx, rejected in enumerate(rejected_categories):
+            reject_param = f"rejected{idx}"
+            reject_conditions = " OR ".join(
+                f"toLower({f}) CONTAINS toLower(${reject_param})"
+                for f in _CATEGORY_FIELDS
+            )
+            where_clauses.append(f"NOT ({reject_conditions})")
+            params[reject_param] = rejected
+        
+        # Build preferred category filter (include only these)
+        if preferred_categories:
+            preferred_clauses = []
+            for idx, preferred in enumerate(preferred_categories):
+                prefer_param = f"preferred{idx}"
+                prefer_conditions = " OR ".join(
+                    f"toLower({f}) CONTAINS toLower(${prefer_param})"
+                    for f in _CATEGORY_FIELDS
+                )
+                preferred_clauses.append(f"({prefer_conditions})")
+                params[prefer_param] = preferred
+            
+            # At least one preferred category must match
+            where_clauses.append(f"({' OR '.join(preferred_clauses)})")
+        
+        # Exclude closed businesses
+        where_clauses.append(
+            "(s.businessStatus IS NULL OR s.businessStatus = '' "
+            "OR s.businessStatus = 'OPERATIONAL')"
+        )
+        
+        where_clause = " AND ".join(where_clauses)
+        
+        cypher = f"""
         MATCH (s:SubAttraction)
         WHERE s.latitude IS NOT NULL AND s.longitude IS NOT NULL
         WITH s,
              point.distance(
-                 point({latitude: s.latitude, longitude: s.longitude}),
-                 point({latitude: $lat, longitude: $lon})
+                 point({{latitude: s.latitude, longitude: s.longitude}}),
+                 point({{latitude: $lat, longitude: $lon}})
              ) AS dist
-        WHERE dist <= $radius
+        WHERE {where_clause}
         OPTIONAL MATCH (s)-[:SUB_ATTRACTION_OF]->(a:Attraction)
         OPTIONAL MATCH (s)-[:LOCATED_IN]->(d:District)
         OPTIONAL MATCH (d)-[:IN_PROVINCE]->(p:Province)
@@ -122,6 +182,9 @@ class RouteAttractionService:
                s.amenityType      AS amenityType,
                s.shopType         AS shopType,
                s.tourismType      AS tourismType,
+               s.naturalType      AS naturalType,
+               s.historicType     AS historicType,
+               s.placeTypes       AS placeTypes,
                s.groups           AS groups,
                s.rating           AS rating,
                s.userRatingsTotal AS userRatingsTotal,
@@ -145,7 +208,7 @@ class RouteAttractionService:
         ORDER BY dist ASC
         LIMIT $limit
         """
-        result = session.run(cypher, lat=lat, lon=lon, radius=radius_m, limit=limit)
+        result = session.run(cypher, **params)
         return [dict(r) for r in result]
 
     @staticmethod
