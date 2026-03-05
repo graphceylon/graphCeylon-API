@@ -152,6 +152,7 @@ def build_route_by_district(route_candidates: List[Dict[str, Any]], *, per_distr
         if picked:
             out.append({"district": dist, "attractions": picked})
     return out
+
 def _build_one_plan(payload: Dict[str, Any], cfg: PlannerConfig, mode: PlanMode) -> Dict[str, Any]:
     payload = deepcopy(payload)
     payload["_plan_label"] = mode
@@ -177,22 +178,155 @@ def _build_one_plan(payload: Dict[str, Any], cfg: PlannerConfig, mode: PlanMode)
         payload["city"] = origin or dest
         payload["destination"] = origin or dest
     return build_itinerary_from_payload(payload, cfg=cfg)
+
+# ============================================================
+# PATCH: Add this function BEFORE build_two_plans_from_payload
+# in your itinerary_planner.py
+# ============================================================
+
+def _build_structured_itinerary(
+    destination_plan: Dict[str, Any],
+    hotels: List[Dict[str, Any]],
+    shop_dine: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Merges attractions + hotel options + restaurants into a clean
+    day-by-day structure that is easy for the frontend to render.
+
+    - attractions : morning / afternoon slots with weather + crowd data
+    - restaurants : evenly distributed across days (cafe, restaurant, fast_food, bakery only)
+    - hotel_options: top-3 hotels shown on every day (user is staying there)
+    """
+    raw_days = destination_plan.get("itinerary") or []
+    days = len(raw_days)
+    if days == 0:
+        return []
+
+    # ------------------------------------------------------------------
+    # 1. Filter to real dining places only
+    # ------------------------------------------------------------------
+    RESTAURANT_CATS = {"restaurant", "cafe", "fast_food", "bakery"}
+    restaurants = [
+        p for p in (shop_dine or [])
+        if (p.get("category") or "").strip().lower() in RESTAURANT_CATS
+    ]
+
+    # ------------------------------------------------------------------
+    # 2. Distribute restaurants evenly across days
+    # ------------------------------------------------------------------
+    def _chunk(lst: list, n: int):
+        if n <= 0:
+            return
+        k, r = divmod(len(lst), n)
+        i = 0
+        for d in range(n):
+            size = k + (1 if d < r else 0)
+            yield lst[i: i + size]
+            i += size
+
+    restaurant_chunks = (
+        list(_chunk(restaurants, days)) if restaurants else [[] for _ in range(days)]
+    )
+
+    # ------------------------------------------------------------------
+    # 3. Top-3 hotel options (same for every day — user stays there)
+    # ------------------------------------------------------------------
+    top_hotels = (hotels or [])[:3]
+
+    # ------------------------------------------------------------------
+    # 4. Build day-by-day structure
+    # ------------------------------------------------------------------
+    structured = []
+    for i, day in enumerate(raw_days):
+        attractions = []
+        for item in (day.get("items") or []):
+            enrichment  = item.get("enrichment") or {}
+            weather_raw = enrichment.get("weather") or {}
+            weather_pt  = weather_raw.get("weather_point") or {}
+            sustain     = enrichment.get("sustainability") or {}
+            dynamic     = item.get("dynamic") or {}
+            raw         = item.get("raw") or {}
+
+            attractions.append({
+                "slot":               item.get("slot"),
+                "title":              item.get("title"),
+                "attraction_id":      item.get("attraction_id"),
+                "category":           raw.get("category"),
+                "description":        raw.get("description"),
+                "rating":             raw.get("rating"),
+                "city":               item.get("city"),
+                "district":           item.get("district"),
+                "weather": {
+                    "condition":  weather_pt.get("condition"),
+                    "temp_c":     weather_pt.get("temp_c"),
+                    "min_c":      weather_pt.get("min_c"),
+                    "max_c":      weather_pt.get("max_c"),
+                    "rain_risk":  weather_raw.get("rain_risk"),
+                    "mean_mm":    weather_pt.get("mean_mm"),
+                },
+                "crowd_risk":         dynamic.get("crowd_risk_0_1"),
+                "sustainability_score": sustain.get("score_0_1"),
+                "sustainability_label": sustain.get("label"),
+            })
+
+        day_restaurants = []
+        for r in restaurant_chunks[i]:
+            day_restaurants.append({
+                "title":       r.get("title"),
+                "category":    r.get("category"),
+                "rating":      r.get("rating"),
+                "city":        r.get("city"),
+                "district":    r.get("district"),
+                "distance_km": r.get("distance_km"),
+            })
+
+        hotel_options = []
+        for h in top_hotels:
+            # price_range may come as "6210.0-7590.0" string or dict
+            price = h.get("price_range") or h.get("price_range_lkr")
+            hotel_options.append({
+                "name":           h.get("name") or h.get("title"),
+                "stars":          h.get("stars"),
+                "price_range_lkr": price,
+                "amenities":      h.get("amenities") or [],
+                "city":           h.get("city"),
+                "kg_id":          h.get("kg_id"),
+            })
+
+        structured.append({
+            "date":         day.get("date"),
+            "day_number":   i + 1,
+            "city":         day.get("city"),
+            "district":     day.get("district"),
+            "attractions":  attractions,
+            "restaurants":  day_restaurants,
+            "hotel_options": hotel_options,
+        })
+
+    return structured
+
+
+
 def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) -> Dict[str, Any]:
     """
     Returns plans in a single response.
     If 'origin_city' is None or empty, it ONLY generates the destination_plan.
+
+    Top-level response now includes a clean `itinerary` array with
+    attractions + restaurants + hotel_options merged per day.
     """
     origin = str(payload.get("origin_city") or "").strip()
-    dest = str(payload.get("city") or payload.get("destination") or "").strip()
+    dest   = str(payload.get("city") or payload.get("destination") or "").strip()
+
     # =========================================================
-    # ✅ PRECOMPUTE GRAPHHOPPER & KG CORRIDOR ONCE
+    # PRECOMPUTE GRAPHHOPPER & KG CORRIDOR ONCE
     # =========================================================
     if origin and dest and origin.lower() != dest.lower():
-        cities_path = _cities_json_path()
+        cities_path  = _cities_json_path()
         origin_coords = resolve_city_coords(origin, cities_json_path=cities_path)
-        dest_coords = resolve_city_coords(dest, cities_json_path=cities_path)
+        dest_coords   = resolve_city_coords(dest,   cities_json_path=cities_path)
+
         if origin_coords and dest_coords:
-            # 1. Fetch GraphHopper Route
             route = fetch_route_sampled_points(
                 origin=origin_coords,
                 dest=dest_coords,
@@ -200,18 +334,17 @@ def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) ->
                 downsample_step_km=10.0,
             )
             graphhopper_dbg = {
-                "distance_m": route.distance_m,
-                "time_ms": route.time_ms,
-                "route_points_count": route.route_points_count,
+                "distance_m":          route.distance_m,
+                "time_ms":             route.time_ms,
+                "route_points_count":  route.route_points_count,
                 "sampled_points_count": route.sampled_points_count,
-                "downsample_step_km": 10.0,
+                "downsample_step_km":  10.0,
             }
-            # Print ONLY ONCE at the beginning
             print("\n--- GRAPHHOPPER PREFLIGHT (PRECOMPUTED) ---")
             print(f"origin: {origin} {origin_coords}")
             print(f"dest  : {dest} {dest_coords}")
             print(f"dbg   : {graphhopper_dbg}")
-            # 2. Fetch KG Attractions on Route
+
             corridor_candidates, kg_corridor_dbg = fetch_corridor_attractions_from_kg(
                 origin_city=origin,
                 destination_city=dest,
@@ -221,37 +354,83 @@ def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) ->
                 limit=int(payload.get("max_candidates") or cfg.max_candidates),
                 payload=payload,
             )
-            # Inject into payload for the builders to use
+
             payload["_precomputed_route"] = {
-                "origin_coords": origin_coords,
-                "dest_coords": dest_coords,
-                "sampled_points": route.sampled_points,
-                "distance_m": route.distance_m,
-                "time_ms": route.time_ms,
-                "graphhopper_dbg": graphhopper_dbg,
+                "origin_coords":      origin_coords,
+                "dest_coords":        dest_coords,
+                "sampled_points":     route.sampled_points,
+                "distance_m":         route.distance_m,
+                "time_ms":            route.time_ms,
+                "graphhopper_dbg":    graphhopper_dbg,
                 "corridor_candidates": corridor_candidates,
-                "kg_corridor_dbg": kg_corridor_dbg
+                "kg_corridor_dbg":    kg_corridor_dbg,
             }
+
     # =========================================================
     # 1. Always build the destination (city) plan
+    # =========================================================
     destination_plan = _build_one_plan(payload, cfg, mode="city")
-    # 2. Initialize the plans dictionary
-    plans = {
+
+    plans: Dict[str, Any] = {
         "destination_plan": destination_plan,
     }
-    # 3. Only build route plans if an origin is provided AND it's not the same as the destination
+
+    # =========================================================
+    # 2. Build route plans only when origin differs from dest
+    # =========================================================
     if origin and origin.lower() != dest.lower():
-        plans["route_plan"] = _build_one_plan(payload, cfg, mode="corridor_outbound")
+        plans["route_plan"]        = _build_one_plan(payload, cfg, mode="corridor_outbound")
         plans["route_return_plan"] = _build_one_plan(payload, cfg, mode="corridor_return")
+
+    # =========================================================
+    # 3. Collect hotels from destination plan
+    # =========================================================
+    hotels = destination_plan.get("hotels", {}).get("items") or []
+
+    # =========================================================
+    # 4. Collect shop/dine from whichever plan has items
+    #    Priority: corridor outbound -> return -> destination
+    # =========================================================
+    shop_dine_items: List[Dict[str, Any]] = []
+    for plan_key in ("route_plan", "route_return_plan", "destination_plan"):
+        plan  = plans.get(plan_key) or {}
+        items = plan.get("shopping_dining_on_route", {}).get("items") or []
+        if items:
+            shop_dine_items = items
+            break
+
+    # =========================================================
+    # 5. Build the clean structured itinerary
+    # =========================================================
+    structured_itinerary = _build_structured_itinerary(
+        destination_plan=destination_plan,
+        hotels=hotels,
+        shop_dine=shop_dine_items,
+    )
+
+    # =========================================================
+    # 6. Return full response
+    # =========================================================
     return {
         "status": "ok",
         "meta": {
-            "destination": payload.get("city") or payload.get("destination"),
-            "origin_city": payload.get("origin_city"),
-            "days": payload.get("days"),
-            "start_date": payload.get("start_date"),
+            "destination":  payload.get("city") or payload.get("destination"),
+            "origin_city":  payload.get("origin_city"),
+            "days":         payload.get("days"),
+            "start_date":   payload.get("start_date"),
         },
-        "plans": plans
+
+        # ✅ Clean day-by-day itinerary (attractions + restaurants + hotels)
+        "itinerary": structured_itinerary,
+
+        # Raw plans kept for debugging / route display on map
+        "plans": plans,
+
+        # Top-level raw hotel + shop/dine for any consumer that wants raw data
+        "hotels": destination_plan.get("hotels") or {},
+        "shopping_dining_on_route": {
+            "items": shop_dine_items,
+        },
     }
 def _load_attractions() -> List[Dict[str, Any]]:
     repo_root = _find_repo_root()

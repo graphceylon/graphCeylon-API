@@ -71,7 +71,16 @@ class Entities(BaseModel):
     max_price_lkr: int | None = None
     currency: str | None = "LKR"
     legal_service: Optional[str] = None        # "visa" | "citizenship" | None
-    citizenship_type: Optional[str] = None     
+    citizenship_type: Optional[str] = None  
+    arrival: Optional[str] = None
+    departure: Optional[str] = None
+    adults: Optional[int] = None
+    room_category_id: Optional[int] = None
+    room_type_id: Optional[int] = None
+    meal_plan_id: Optional[int] = None
+    rate_code_id: Optional[int] = None
+    property_id: Optional[int] = None
+    property_code: Optional[str] = None   
 
 
 # what user sends
