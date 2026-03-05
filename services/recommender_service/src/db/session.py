@@ -13,9 +13,13 @@ if env_path.exists():
     load_dotenv(env_path)
 
 # Example: COMP3_DB_URL=postgresql+psycopg2://user:pass@localhost:5432/tourgraph
+# DATABASE_URL = os.getenv(
+#     "COMP3_DB_URL",
+#     "postgresql+psycopg2://postgres:postgres@localhost:5432/tourgraph",  # change for your env
+# )
 DATABASE_URL = os.getenv(
     "COMP3_DB_URL",
-    "postgresql+psycopg2://postgres:postgres@localhost:5432/tourgraph",  # change for your env
+    "postgresql+psycopg2://postgres:postgres@localhost:5433/tourgraph",  # change for your env
 )
 
 engine = create_engine(
