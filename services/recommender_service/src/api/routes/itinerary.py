@@ -366,6 +366,7 @@ def itinerary_modify(req: ItineraryModifyRequest) -> Dict[str, Any]:
 
         diff = {
             "days": {"before": orig_meta.get("days"), "after": mod_meta.get("days")},
+            "start_date": {"before": orig_meta.get("start_date"), "after": mod_meta.get("start_date")},
             "destination_plan_days": {"before": len(orig_itin), "after": len(mod_itin)},
             "total_attractions": {
                 "before": sum(len(d.get("items", []) or d.get("attractions", [])) for d in orig_itin),

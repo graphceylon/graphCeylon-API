@@ -37,6 +37,10 @@ def modify_itinerary(
         if op_type == "set_days":
             target_days = int(operation["days"])
             result = _apply_set_days(result, target_days)
+        elif op_type == "set_start_date":
+            new_start = operation.get("start_date")
+            if new_start:
+                result = _apply_set_start_date(result, new_start)
         # Future ops go here:
         # elif op_type == "prefer_tags":
         #     ...
@@ -153,11 +157,40 @@ def _resize_day_list(
     return new_days
 
 
+def _apply_set_start_date(itinerary: Dict[str, Any], new_start: str) -> Dict[str, Any]:
+    """
+    Change the trip start date and re-date all itinerary days accordingly.
+    """
+    try:
+        start_dt = datetime.strptime(new_start, "%Y-%m-%d").date()
+    except ValueError:
+        raise ValueError(f"Invalid start_date format: {new_start!r}  (expected YYYY-MM-DD)")
+
+    meta = itinerary.get("meta", {})
+    days = meta.get("days", 1)
+
+    # Update meta dates
+    meta["start_date"] = start_dt.isoformat()
+    end_dt = start_dt + timedelta(days=max(days, 1) - 1)
+    meta["end_date"] = end_dt.isoformat()
+
+    # Re-date destination_plan itinerary
+    plans = itinerary.get("plans", {})
+    dest_plan = plans.get("destination_plan")
+    if dest_plan and isinstance(dest_plan, dict):
+        dest_plan["start_date"] = start_dt.isoformat()
+        itin_days = dest_plan.get("itinerary", [])
+        if isinstance(itin_days, list):
+            _redate_days(itin_days, start_dt)
+
+    return itinerary
+
+
 def _redate_days(
     day_list: List[Dict[str, Any]], start_dt: date
 ) -> None:
     """Re-assign date strings to each day based on start_dt."""
-    for day_dict in day_list:
-        day_num = day_dict.get("day", 1)
+    for i, day_dict in enumerate(day_list):
+        day_num = day_dict.get("day") or (i + 1)
         day_date = start_dt + timedelta(days=day_num - 1)
         day_dict["date"] = day_date.isoformat()
