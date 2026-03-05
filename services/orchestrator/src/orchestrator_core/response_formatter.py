@@ -7,6 +7,7 @@ import requests
 import re
 
 from ..utils.smalltalk_detector import SmalltalkSubtypeDetector
+from .agentic.output_patch import patch_agentic_text
 
 
 class ResponseFormatter:
@@ -47,7 +48,90 @@ class ResponseFormatter:
             print("[ResponseFormatter:init] groq_key_set =", bool(self.groq_key))
             print("[ResponseFormatter:init] groq_model =", self.groq_model)
             print("[ResponseFormatter:init] llm_intents =", sorted(list(self.llm_intents)) if self.llm_intents else "(all non-smalltalk)")
+    def _derive_activity_label(self, parsed_intent: Dict[str, Any]) -> str:
+        ents = parsed_intent.get("entities") or {}
+        activity = ents.get("activity_type") or ents.get("activity_preference")
+        if isinstance(activity, str) and activity.strip():
+            return activity.strip().lower()
+        tags = ents.get("tags") or []
+        for t in tags:
+            if isinstance(t, str) and t.strip():
+                return t.strip().lower()
+        return "trip"
+    def _format_followup_with_groq(
+        self,
+        *,
+        user_text: str,
+        parsed_intent: Dict[str, Any],
+        followup: Dict[str, Any],
+        missing_fields: List[str],
+    ) -> Dict[str, Any]:
+        system = (
+            "You are a RESPONSE FORMATTER for a Sri Lanka travel assistant.\n"
+            "You MUST NOT invent facts.\n"
+            "You ONLY rewrite the follow-up question to sound natural.\n\n"
+            "You MAY adapt the trip type word using activity_label (e.g., outdoor/nature/culture),\n"
+            "but you MUST ask ONLY for the missing_fields provided.\n"
+            "Do NOT add new questions beyond missing_fields.\n"
+            "Do NOT add new options beyond the provided options list.\n\n"
+            "OUTPUT FORMAT (strict): JSON with EXACT keys: text, followups.\n"
+            "- text: one friendly message (max 60 words)\n"
+            "- followups: use the given options ONLY (max 8)\n"
+        )
 
+        label = self._derive_activity_label(parsed_intent)
+        ents = parsed_intent.get("entities") or {}
+        prefs = parsed_intent.get("preference_overrides") or {}
+
+        payload = {
+            "user_text": user_text,
+            "intent": (parsed_intent.get("intent") or ""),
+            "missing_fields": missing_fields,
+
+            # NEW context:
+            "activity_label": label,
+            "tags": ents.get("tags") or [],
+            "days": ents.get("days"),
+            "preferences": {
+                "activity_preference": prefs.get("activity_preference"),
+                "travel_style": prefs.get("travel_style"),
+                "budget_level": prefs.get("budget_level"),
+                "adventure_level": prefs.get("adventure_level"),
+                "pace_preference": prefs.get("pace_preference"),
+            },
+
+            # existing:
+            "question": followup.get("question") or "",
+            "options": followup.get("options") or [],
+        }
+
+        prompt = f"{system}\nJSON:\n{json.dumps(payload, ensure_ascii=False)}\nReturn ONLY the JSON object."
+
+        try:
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.groq_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.groq_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.2,
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"].strip()
+
+            out = json.loads(content)  # strict
+            return {"text": out.get("text", ""), "followups": out.get("followups", [])}
+        except Exception:
+            # fallback safely
+            return {
+                "text": (followup.get("question") or "I need a bit more info to plan this.").strip(),
+                "followups": followup.get("options") or [],
+            }
     def format(
         self,
         *,
@@ -58,14 +142,54 @@ class ResponseFormatter:
     ) -> Dict[str, Any]:
         """
         Returns:
-          {
+        {
             "text": "...final answer for UI...",
             "followups": [...optional questions...],
-            "debug": {...optional...}   # not used here, but you can add if needed
-          }
+            "debug": {...optional...}
+        }
         """
         intent = self._pick_effective_intent_with_results(parsed_intent, results)
         present_keys = self._collect_present_result_keys(results)
+
+        # ✅ NEW: Follow-up short-circuit (MUST be early)
+        followup = (results or {}).get("followup")
+        missing_fields = (results or {}).get("missing_fields") or []
+        if followup and missing_fields:
+            # If Groq enabled, use it to rewrite/beautify the followup (NO hallucinations)
+            use_llm = (self.provider == "groq" and bool(self.groq_key))
+            if self.llm_intents:
+                # allow followup formatting when plan_itinerary is enabled
+                intent0 = (parsed_intent.get("intent") or "").strip().lower()
+                use_llm = use_llm and (intent0 in self.llm_intents)
+
+            if use_llm:
+                out = self._format_followup_with_groq(
+                    user_text=user_text,
+                    parsed_intent=parsed_intent,
+                    followup=followup,
+                    missing_fields=missing_fields,
+                )
+                out = self._sanitize_output(out)
+                section = "pois" if intent == "recommend_pois" else intent
+                out = self._append_why_to_text(out, results, section=section)
+                out = patch_agentic_text(out, results)
+                ui = self._format_explainability_ui_with_groq(results, effective_intent=intent)
+                if not ui:
+                    ui = self._build_explainability_ui(results, effective_intent=intent)
+                out["explainability_ui"] = ui
+                return out
+
+            out = {
+                "text": followup.get("question") or "I need a bit more info to plan this.",
+                "followups": followup.get("options") or [],
+            }
+            out = self._sanitize_output(out)
+            out = patch_agentic_text(out, results)
+            ui = self._format_explainability_ui_with_groq(results, effective_intent=intent)
+            if not ui:
+                ui = self._build_explainability_ui(results, effective_intent=intent)
+            out["explainability_ui"] = ui
+            return out
 
         # If nothing to format (no *_result), use LLM general answer for fact/out_of_scope
         has_any_result = any(
@@ -74,69 +198,55 @@ class ResponseFormatter:
         )
 
         if not has_any_result and intent in {"out_of_scope", "generic_fact_query"}:
-            # if groq enabled, answer directly (general knowledge)
             if self.provider == "groq" and self.groq_key:
                 return self._answer_general_with_groq(user_text, parsed_intent)
-            # else template fallback
             return {
                 "text": "I can help with Sri Lanka travel planning (places, routes, hotels, visa). What do you want to do?",
                 "followups": ["Plan an itinerary", "Recommend places", "Transport info", "Visa info"],
             }
-
-
-        if self.debug:
-            print(f"[ResponseFormatter:format] effective_intent={intent!r}")
-
-        # Only keep smalltalk local if it is STILL smalltalk after override
-        # if intent == "smalltalk":
-        #     return self._format_with_templates(user_text, parsed_intent, results, tasks)
-
-
-        # if self.debug:
-        #     print(f"[ResponseFormatter:format] intent={intent!r}")
-
-        # # Always keep smalltalk local
-        # if intent == "smalltalk":
-        #     if self.debug:
-        #         print("[ResponseFormatter:format] path=templates (reason=smalltalk)")
-        #     return self._format_with_templates(user_text, parsed_intent, results, tasks)
 
         if self.debug:
             print(f"[ResponseFormatter:format] effective_intent={intent!r}")
 
         # Always keep smalltalk local
         if intent == "smalltalk":
-            if self.debug:
-                print("[ResponseFormatter:format] path=templates (reason=smalltalk)")
-            return self._sanitize_output(
-                self._format_with_templates(user_text, parsed_intent, results, tasks)
-            )
+            out = self._format_with_templates(user_text, parsed_intent, results, tasks)
+            out = self._sanitize_output(out)
+            section = "pois" if intent == "recommend_pois" else intent
+            out = self._append_why_to_text(out, results, section=section)
 
-        # Determine whether to use LLM
+            out = patch_agentic_text(out, results)
+            ui = self._format_explainability_ui_with_groq(results, effective_intent=intent)
+            if not ui:
+                ui = self._build_explainability_ui(results, effective_intent=intent)
+            out["explainability_ui"] = ui
+            return out
+            # return patch_agentic_text(out, results)
+
         use_llm = (self.provider == "groq" and bool(self.groq_key))
-
-        # If RESPONSE_LLM_INTENTS is set, restrict to those intents.
-        # If it's empty, Groq applies to ALL non-smalltalk intents.
         if self.llm_intents:
             use_llm = use_llm and (intent in self.llm_intents)
 
-        if self.debug:
-            print(f"[ResponseFormatter:format] provider={self.provider} groq_key_set={bool(self.groq_key)} use_llm={use_llm}")
-
         if use_llm:
             out = self._format_with_groq(user_text, parsed_intent, results, tasks, effective_intent=intent)
+            out = self._sanitize_output(out)
+            if out.get("text", "").strip():
+                out = patch_agentic_text(out, results)
+                ui = self._format_explainability_ui_with_groq(results, effective_intent=intent)
+                if not ui:
+                    ui = self._build_explainability_ui(results, effective_intent=intent)
+                out["explainability_ui"] = ui
+                return out
 
-            # If Groq failed and returned empty, fallback to templates
-            if out and out.get("text"):
-                if self.debug:
-                    print("[ResponseFormatter:format] path=groq (success)")
-                return self._sanitize_output(out)
-            if self.debug:
-                print("[ResponseFormatter:format] path=groq (empty/failed) -> fallback templates")
-
-        if self.debug:
-            print("[ResponseFormatter:format] path=templates (default/fallback)")
-        return self._format_with_templates(user_text, parsed_intent, results, tasks)
+        out = self._format_with_templates(user_text, parsed_intent, results, tasks)
+        out = self._sanitize_output(out)
+        out = patch_agentic_text(out, results)
+        ui = self._format_explainability_ui_with_groq(results, effective_intent=intent)
+        if not ui:
+            ui = self._build_explainability_ui(results, effective_intent=intent)
+        out["explainability_ui"] = ui
+        return out
+    
     def _collect_present_result_keys(self, results: Dict[str, Any]) -> List[str]:
         """Return result keys that are present and meaningful."""
         order = [
@@ -294,7 +404,153 @@ class ResponseFormatter:
                     return s
 
         return intent
-    
+    def _build_explainability_ui(self, results: Dict[str, Any], *, effective_intent: str) -> Optional[str]:
+        ctx = self._explainability_relevant_context(results, effective_intent=effective_intent)
+        if not ctx:
+            return None
+
+        prefs = ctx.get("relevant_prefs") or {}
+        city = (ctx.get("context") or {}).get("city") or "this area"
+
+        # Now use prefs (already filtered by intent)
+        ts = prefs.get("travel_style") or []
+        tags = ", ".join(ts[:2]) if ts else None
+
+        avoid = prefs.get("avoid_crowds")
+        food = (prefs.get("food_preferences") or [])
+        budget = prefs.get("budget_per_night_lkr")
+
+        parts = []
+        if tags:
+            parts.append(f"your interests in {tags}")
+        if food:
+            parts.append(f"your {food[0]} preference")
+        if avoid is True:
+            parts.append("your preference to avoid crowds")
+        if isinstance(budget, (int, float)) and budget > 0:
+            parts.append(f"your budget (~LKR {int(budget)}/night)")
+
+        if parts:
+            return f"Picked these for {city} based on " + ", ".join(parts) + "."
+        return f"Picked these for {city} using your saved profile preferences."
+    def _explainability_relevant_context(self, results: Dict[str, Any], *, effective_intent: str) -> Dict[str, Any]:
+        xp = (results or {}).get("explainability")
+        if not isinstance(xp, dict) or not xp:
+            return {}
+
+        prefs = xp.get("effective_prefs") or {}
+        ents = xp.get("entities") or {}
+
+        city = ents.get("city")
+        country = ents.get("country")
+
+        # Define relevance per intent (you can tweak anytime)
+        if effective_intent in {"recommend_pois", "info_attraction", "plan_itinerary", "modify_itinerary"}:
+            relevant_prefs = {
+                "travel_style": prefs.get("travel_style") or [],
+                "activity_preference": prefs.get("activity_preference"),
+                "pace_preference": prefs.get("pace_preference"),
+                "adventure_level": prefs.get("adventure_level"),
+                "avoid_crowds": prefs.get("avoid_crowds"),
+                "preferred_transport": prefs.get("preferred_transport") or [],
+                "rain_preference": prefs.get("rain_preference"),
+                "temperature_preference": prefs.get("temperature_preference"),
+            }
+
+        elif effective_intent in {"recommend_restaurants"}:
+            relevant_prefs = {
+                "food_preferences": prefs.get("food_preferences") or [],
+                # "budget_level": prefs.get("budget_level"),
+                # "avoid_crowds": prefs.get("avoid_crowds"),
+                # "preferred_transport": prefs.get("preferred_transport") or [],
+            }
+
+        elif effective_intent in {"book_hotel", "info_accommodation", "check_availability"}:
+            relevant_prefs = {
+                "budget_per_night_lkr": prefs.get("budget_per_night_lkr"),
+                "budget_level": prefs.get("budget_level"),
+                "must_have_amenities": prefs.get("must_have_amenities") or [],
+                # "preferred_transport": prefs.get("preferred_transport") or [],
+                # "avoid_crowds": prefs.get("avoid_crowds"),
+            }
+
+        # elif effective_intent in {"forecast_weather"}:
+        #     relevant_prefs = {
+        #         "rain_preference": prefs.get("rain_preference"),
+        #         "temperature_preference": prefs.get("temperature_preference"),
+        #     }
+
+        else:
+            # generic safe fallback
+            relevant_prefs = {
+                "travel_style": prefs.get("travel_style") or [],
+                "food_preferences": prefs.get("food_preferences") or [],
+                "avoid_crowds": prefs.get("avoid_crowds"),
+            }
+
+        # remove empty values
+        cleaned = {}
+        for k, v in relevant_prefs.items():
+            if v is None:
+                continue
+            if isinstance(v, list) and not v:
+                continue
+            if isinstance(v, str) and not v.strip():
+                continue
+            cleaned[k] = v
+
+        return {
+            "intent": xp.get("intent"),
+            "domain": xp.get("domain"),
+            "summary": xp.get("summary"),
+            "context": {"city": city, "country": country},
+            "relevant_prefs": cleaned,
+        }
+
+
+    def _format_explainability_ui_with_groq(self, results: Dict[str, Any], *, effective_intent: str) -> Optional[str]:
+        if not (self.provider == "groq" and self.groq_key):
+            return None
+
+        ctx = self._explainability_relevant_context(results, effective_intent=effective_intent)
+        if not ctx:
+            return None
+
+        system = (
+            "You are generating ONE short explainability sentence for a travel assistant UI.\n"
+            "RULES:\n"
+            "- Output MUST be a single sentence (no bullet points).\n"
+            "- Use ONLY the provided JSON fields.\n"
+            "- Do NOT invent facts.\n"
+            "- Mention the city if present.\n"
+            "- If relevant_prefs is empty, paraphrase summary.\n"
+            "Return ONLY plain text (no JSON).\n"
+        )
+
+        prompt = f"{system}\nJSON:\n{json.dumps(ctx, ensure_ascii=False)}\n"
+
+        try:
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.groq_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.groq_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.2,
+                },
+                timeout=12,
+            )
+            resp.raise_for_status()
+            s = resp.json()["choices"][0]["message"]["content"].strip()
+
+            # keep it strictly one line / one sentence-ish
+            s = re.sub(r"\s+", " ", s).strip()
+            return s if s else None
+        except Exception:
+            return None
     def _sanitize_output(self, out: Any) -> Dict[str, Any]:
         """
         Guarantee formatter output shape:
@@ -332,6 +588,54 @@ class ResponseFormatter:
         followups = [str(x) for x in followups if isinstance(x, (str, int, float))]
 
         return {"text": text.strip(), "followups": followups}
+    def _render_why_block(self, results: Dict[str, Any], *, section: str) -> str:
+        """
+        section: "pois" | "attraction" | "itinerary" | ...
+        Returns a small explanation block using results["explainability"] ONLY.
+        """
+        xp = (results or {}).get("explainability") or {}
+        if not isinstance(xp, dict) or not xp:
+            return ""
+
+        summary = (xp.get("summary") or "").strip()
+        prefs = xp.get("effective_prefs") or {}
+        ents = xp.get("entities") or {}
+
+        lines = []
+        if summary:
+            lines.append(summary)
+
+        # small preference highlights (keep short)
+        highlights = []
+        ts = prefs.get("travel_style") or []
+        if ts:
+            highlights.append(f"interests: {', '.join(ts[:3])}")
+        if prefs.get("avoid_crowds") is not None:
+            highlights.append(f"avoid crowds: {prefs.get('avoid_crowds')}")
+        if prefs.get("budget_per_night_lkr"):
+            highlights.append(f"budget/night: LKR {prefs.get('budget_per_night_lkr')}")
+        fp = prefs.get("food_preferences") or []
+        if fp:
+            highlights.append(f"food: {', '.join(fp[:3])}")
+
+        if highlights:
+            lines.append("Based on: " + " • ".join(highlights))
+
+        # light context
+        if ents.get("city"):
+            lines.append(f"Context: city = {ents.get('city')}")
+
+        if not lines:
+            return ""
+
+        return "\n\nWhy these recommendations:\n- " + "\n- ".join(lines)
+
+    def _append_why_to_text(self, out: Dict[str, Any], results: Dict[str, Any], *, section: str) -> Dict[str, Any]:
+        why = self._render_why_block(results, section=section)
+        if not why:
+            return out
+        out["text"] = (out.get("text") or "").rstrip() + why
+        return out
     def _pick_effective_intent_with_results(self, parsed_intent: Dict[str, Any], results: Dict[str, Any]) -> str:
         """
         Pick an intent that matches available results.
@@ -532,7 +836,8 @@ class ResponseFormatter:
         if not self.groq_key:
             if self.debug:
                 print("[ResponseFormatter:groq] groq_key missing -> templates")
-            return self._format_with_templates(user_text, parsed_intent, results, tasks)
+            out = self._format_with_templates(user_text, parsed_intent, results, tasks)
+            return self._sanitize_output(out)
 
         intent = effective_intent
 
@@ -694,17 +999,12 @@ class ResponseFormatter:
             # Try to extract the first JSON object from the text
             m = re.search(r"\{.*\}", content, re.DOTALL)
             if not m:
-                return self._sanitize_output({
-                    "text": str(out.get("text", "")).strip(),
-                    "followups": out.get("followups", []) or [],
-                })
+                return self._sanitize_output({"text": content.strip(), "followups": []})
+                
             try:
                 out = json.loads(m.group(0))
             except Exception:
-                return self._sanitize_output({
-                    "text": str(out.get("text", "")).strip(),
-                    "followups": out.get("followups", []) or [],
-                })
+                return self._sanitize_output({"text": content.strip(), "followups": []})
 
         if isinstance(out, dict) and "text" in out:
             return {

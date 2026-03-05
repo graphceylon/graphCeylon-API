@@ -122,5 +122,6 @@ class TaskExecutor:
             for t in ready:
                 completed.add(t.id)
                 remaining.pop(t.id, None)
+        print(f"[TASK EXECUTE] id={t.id} type={t.type}")
 
         return results, task_results, ctx

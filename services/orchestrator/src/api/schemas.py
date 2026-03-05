@@ -82,6 +82,10 @@ class OrchestrateRequest(BaseModel):
     lang: Optional[str] = "auto"      # si, ta, en, auto
     session_id: Optional[str] = None  # for multi-turn context
     entities: Optional[Dict[str, Any]] = None 
+    trace_id: Optional[str] = None          # per /orchestrate call
+    turn_id: Optional[str] = None           # per user message/turn
+    idempotency_key: Optional[str] = None 
+    context: Optional[Dict[str, Any]] = None
 
 
 # what intent parser returns (after wrapping)
@@ -122,7 +126,7 @@ class OrchestrateResponse(BaseModel):
     tasks: list[TaskSummary]
     protocol_mode: str
 
-    weather_result: Optional[WeatherForecastResponse] = None
+    weather_result: Optional[Any] = None
     crowd_result: Optional[CrowdForecastResponse] = None
     price_result: Optional[PriceForecastResponse] = None
     itinerary_result: Optional[ItineraryPlanResponse] = None
@@ -137,6 +141,7 @@ class OrchestrateResponse(BaseModel):
     transport_result: Optional[Any] = None
     attraction_result: Optional[Any] = None
     restaurant_result:Optional[Any] = None
+    booking_result:Optional[Any] = None
 
     final_message: Optional[str] = None
 
@@ -150,3 +155,6 @@ class OrchestrateResponse(BaseModel):
     session_state_patch: Optional[Dict[str, Any]] = None
 
     trip_id: Optional[str] = None
+    agentic_meta: Optional[Dict[str, Any]] = None
+    explainability: Optional[Dict[str, Any]] = None
+    explainability_ui: Optional[str] = None
