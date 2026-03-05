@@ -155,3 +155,5 @@ class OrchestrateResponse(BaseModel):
 
     trip_id: Optional[str] = None
     agentic_meta: Optional[Dict[str, Any]] = None
+    explainability: Optional[Dict[str, Any]] = None
+    explainability_ui: Optional[str] = None

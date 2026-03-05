@@ -19,6 +19,8 @@ from .agentic.loop import AgenticLoop
 from .verifier.verifier_agent import VerifierAgent
 from .agentic.nli_wrapper import DebertaNLIWrapper as NLIWrapper
 from .tools.hotel_booking_tool import book_hotel_flow
+from .explainability import ExplainPacket
+from .explainability import merge_explain
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -1257,6 +1259,8 @@ class OrchestratorService:
         if not handler:
             print(f"[orchestrator] No handler registered for intent={intent_name}")
             return
+        recall_ok: bool = False
+        recall_snips: list[str] = []
 
         # 1) Patch intent + confidence so mapper sees the right intent
         patched_intent = parsed_intent.model_copy(
@@ -1307,7 +1311,39 @@ class OrchestratorService:
             "temperature_preference",
             "motion_sickness",
         }
+        # right before creating ToolCall (after payload ready)
 
+        ents_for_explain = (
+            patched_intent.entities.model_dump(exclude_none=True)
+            if hasattr(patched_intent.entities, "model_dump")
+            else dict(patched_intent.entities or {})
+        )
+
+        # recall snippets (if attached)
+        # recall_snips = []
+        # recall_ok = False
+        # try:
+        #     sc = None
+        #     if "trace" in payload and isinstance(payload["trace"], dict):
+        #         sc = payload["trace"].get("semantic_context")
+        #     else:
+        #         sc = payload.get("semantic_context")
+
+        #     if isinstance(sc, dict):
+        #         recall_ok = bool(sc.get("recall_ok"))
+        #         recall_snips = [r.get("snippet") for r in (sc.get("recall") or [])[:3] if isinstance(r, dict)]
+        # except Exception:
+        #     pass
+
+        # explain = ExplainPacket(
+        #     intent=intent_name,
+        #     domain=str(patched_intent.domain_category or ""),
+        #     entities=ents_for_explain,
+        #     effective_prefs=dict(merged_prefs or {}),
+        #     preference_sources=dict(pref_source or {}),
+        #     recall_used=recall_ok,
+        #     recall_snippets=recall_snips,
+        # )
         def filter_pref_overrides(q: dict) -> dict:
             return {k: v for k, v in (q or {}).items() if k in ALLOWED_PREF_KEYS}
 
@@ -1383,7 +1419,31 @@ class OrchestratorService:
         print("==================================================\n")
 
         payload = contract_obj.model_dump(mode="json", exclude_none=True)
-        # ✅ Weather location resolver (prevents 500 when city is missing)
+        recall_snips = []
+        recall_ok = False
+        try:
+            sc = None
+            if "trace" in payload and isinstance(payload["trace"], dict):
+                sc = payload["trace"].get("semantic_context")
+            else:
+                sc = payload.get("semantic_context")
+
+            if isinstance(sc, dict):
+                recall_ok = bool(sc.get("recall_ok"))
+                recall_snips = [r.get("snippet") for r in (sc.get("recall") or [])[:3] if isinstance(r, dict)]
+        except Exception:
+            pass
+
+        explain = ExplainPacket(
+            intent=intent_name,
+            domain=str(patched_intent.domain_category or ""),
+            entities=ents_for_explain,
+            effective_prefs=dict(merged_prefs or {}),
+            preference_sources=dict(pref_source or {}),
+            recall_used=recall_ok,
+            recall_snippets=recall_snips,
+        )
+     
         if intent_name == "forecast_weather":
             # entities could be a Pydantic model or dict
             ents = (
@@ -1479,6 +1539,27 @@ class OrchestratorService:
                 idempotency_key=call.idempotency_key,
             )
         tool_res = self.tool_router.call(call)
+        # after tool_router.call(call)
+        explain.tool = {
+            "intent": call.name,
+            "provider": tool_res.provider,
+            "endpoint": handler.endpoint,
+            "latency_ms": tool_res.latency_ms,
+            "is_write": call.is_write,
+        }
+        # generic summary (works for all types)
+        srcs = pref_source or {}
+        used_db = any(v == "db" for v in srcs.values())
+        used_query = any(v == "query" for v in srcs.values())
+
+        bits = []
+        if used_db and not used_query:
+            bits.append("Used saved preferences from your profile.")
+        elif used_query:
+            bits.append("Used preferences mentioned in your message.")
+        if recall_ok:
+            bits.append("Used recent session memory to stay consistent with your past requests.")
+        explain.summary = " ".join(bits).strip()
         tool_evidence = getattr(tool_res, "evidence", None) or []
 
         # --- TOOL FAILURE -> AgentResult ---
@@ -1532,6 +1613,7 @@ class OrchestratorService:
                             "tool": call.name,
                             "provider": tool_res.provider,
                             "endpoint": handler.endpoint,
+                            "explainability": explain.__dict__,
                         },
                     )
                 ],
@@ -1561,6 +1643,7 @@ class OrchestratorService:
                             "tool": call.name,
                             "provider": tool_res.provider,
                             "endpoint": handler.endpoint,
+                            "explainability": explain.__dict__,
                         },
                     )
                 ],
@@ -1568,6 +1651,7 @@ class OrchestratorService:
                     "tool_name": call.name,
                     "provider": tool_res.provider,
                     "endpoint": handler.endpoint,
+                    "explainability": explain.__dict__,
                 },
             )
 
@@ -1622,6 +1706,7 @@ class OrchestratorService:
                 "provider": tool_res.provider,
                 "latency_ms": tool_res.latency_ms,
                 "endpoint": handler.endpoint,
+                "explainability": explain.__dict__,
             },
         )
 
@@ -1772,8 +1857,39 @@ class OrchestratorService:
                 # Clear pending follow-up only if we actually filled something
                 if any_filled:
                     session_state.slots.pop("pending_fields", None)
+                    session_state.slots.pop("pending_intent", None)
+                    session_state.slots.pop("pending_domain", None)
     
         parsed_intent: ParsedIntent = self._run_intent_parser(req)
+        # ✅ INTENT LOCK: if we are waiting for follow-up fields, keep same intent/domain
+        if session_state and session_state.slots.get("pending_fields"):
+            locked_intent = session_state.slots.get("pending_intent")
+            locked_domain  = session_state.slots.get("pending_domain")
+
+            if locked_intent:
+                parsed_intent = parsed_intent.model_copy(update={
+                    "intent": locked_intent,
+                    "domain_category": locked_domain or parsed_intent.domain_category,
+                    # keep classifier scores if you want; confidence can be boosted a bit
+                    "confidence": max(float(parsed_intent.confidence or 0.0), 0.95),
+                    "secondary_intents": [],
+                })
+
+                # ✅ also merge session slots into entities so the newly provided dates are used
+                ents = (
+                    parsed_intent.entities.model_dump(exclude_none=False)
+                    if hasattr(parsed_intent.entities, "model_dump")
+                    else dict(parsed_intent.entities or {})
+                )
+
+                # session slots may contain start_date/end_date/travel_month from resolve_followup
+                for k, v in (session_state.slots or {}).items():
+                    if v in (None, "", [], {}, "unknown"):
+                        continue
+                    if k not in ents or ents.get(k) in (None, "", [], {}, "unknown"):
+                        ents[k] = v
+
+                parsed_intent = parsed_intent.model_copy(update={"entities": Entities(**ents)})
         resolved = resolve_context(
             parsed_intent=parsed_intent,
             req=req,
@@ -2091,7 +2207,7 @@ class OrchestratorService:
                         # Optional debug
                         ok_to_plan = (len(mf) == 0)
 
-                        if _intent in {"plan_itinerary", "modify_itinerary"} and mf:
+                        if _intent in {"plan_itinerary", "modify_itinerary", "book_hotel"} and mf:
                             return AgentResult(
                                 ok=True,
                                 answer="",
@@ -2099,7 +2215,7 @@ class OrchestratorService:
                                     "skipped": True,
                                     "reason": "missing_fields",
                                     "missing_fields": mf,
-                                    "ok_to_plan": ok_to_plan,
+                                    "ok_to_plan": False,
                                 },
                                 evidence=[],
                                 missing_fields=mf,
@@ -2138,6 +2254,7 @@ class OrchestratorService:
                     # ---- REQUIRED FIELDS (demo-safe strict) ----
                     missing: List[str] = []
 
+
                     # ✅ Only enforce these requirements for plan_itinerary
                     if intent == "plan_itinerary":
                         # Dates: require either start_date OR travel_month
@@ -2157,7 +2274,15 @@ class OrchestratorService:
 
                         if ((not city or city_is_country) and not dest) and country in {"sri lanka"}:
                             missing.append("destination_city")
+                    elif intent == "book_hotel":
+                        # accept either arrival/departure OR start_date/end_date (since your entities currently use start_date/end_date)
+                        arrival = ents.get("arrival") or ents.get("start_date")
+                        departure = ents.get("departure") or ents.get("end_date")
 
+                        if not arrival:
+                            missing.append("arrival")
+                        if not departure:
+                            missing.append("departure")
                     # ✅ For modify, do not block on dates/destination (it should use active_trip_id / stored plan)
                     elif intent == "modify_itinerary":
                         missing = []
@@ -2180,6 +2305,9 @@ class OrchestratorService:
                             parts.append("Where are you starting from? (e.g., Colombo / Airport / Negombo)")
                         if "destination_city" in missing:
                             parts.append("Which area/city in Sri Lanka do you want for nature? (e.g., Kandy, Ella, Nuwara Eliya, Sigiriya)")
+                        if "arrival" in missing or "departure" in missing:
+                            parts.append("What are your hotel dates? (check-in + check-out)")
+                            followup_options += ["2026-06-03 to 2026-06-06", "This weekend", "Next week"]
 
                         followup_question = "Got it 🌿 Nature trip in Sri Lanka.\n" + "\n".join(f"- {p}" for p in parts)
 
@@ -2317,6 +2445,7 @@ class OrchestratorService:
 
         out = anyio.run(_runner)
         dag_results, exec_results, ctx = normalize_executor_output(out)
+        explain_packets: List[Dict[str, Any]] = []
 
         for task in exec_tasks:
             out = dag_results.get(task.id) or dag_results.get(task.type)
@@ -2342,9 +2471,16 @@ class OrchestratorService:
                 continue
 
             # ✅ AgentResult failed
+            # --- Collect explainability from meta for BOTH success & failure ---
+            meta = out.meta or {}
+            xp = meta.get("explainability")
+            if isinstance(xp, dict):
+                explain_packets.append(xp)
+
+            # ✅ AgentResult failed
             if out.ok is False:
-                meta = out.meta or {}
-                msg = "AgentResult ok:false"
+                # fix msg construction (your old code references msg before assignment)
+                msg = "Task failed"
                 if out.safety_flags:
                     msg = out.safety_flags[0].message or msg
                 elif out.answer:
@@ -2563,6 +2699,8 @@ class OrchestratorService:
                 self.maybe_run_phase3(user_id=user_id, session_id=session_id)
             except Exception as e:
                 print(f"[phase3] trigger failed: {e}")
+        
+        results["explainability"] = merge_explain(explain_packets)
 
         formatted = self.response_formatter.format(
             user_text=req.input_text,
@@ -2576,7 +2714,7 @@ class OrchestratorService:
         try:
             loop_out = self.agentic_loop.run(
                 svc=self,
-                parsed_intent=parsed_intent,
+                # parsed_intent=parsed_intent,
                 req=req,
                 db_prefs=db_prefs,
                 session_state=session_state,
@@ -2669,4 +2807,6 @@ class OrchestratorService:
             errors=errors,
             trace=trace,
             agentic_meta=results.get("agentic_meta"),
+            explainability=results.get("explainability"),
+            explainability_ui=formatted.get("explainability_ui")
         )

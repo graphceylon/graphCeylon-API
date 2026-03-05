@@ -322,12 +322,45 @@ def book_hotel_flow(call: ToolCall) -> Dict[str, Any]:
     selected_rate_code_id = args.get("rate_code_id")  # optional, but useful
     currency_id = args.get("currency_id")             # optional future use
 
+    # if not arrival or not departure:
+    #     return {
+    #         "ok": False,
+    #         "status": "missing_fields",
+    #         "missing_fields": ["arrival", "departure"],
+    #         "message": "Missing arrival/departure dates for pricing.",
+    #     }
+
     if not arrival or not departure:
+        # keep whatever we already know so the next user message can fill only dates
+        partial = {
+            "city": args.get("city"),
+            "property_id": args.get("property_id"),
+            "property_code": args.get("property_code") or args.get("property_prefix"),
+            "adults": adults,
+            "max_price_lkr": args.get("max_price_lkr"),
+            "budget_per_night_lkr": args.get("budget_per_night_lkr"),
+        }
+
         return {
             "ok": False,
-            "status": "missing_fields",
+            "status": "needs_clarification",
             "missing_fields": ["arrival", "departure"],
-            "message": "Missing arrival/departure dates for pricing.",
+            "message": "What are your check-in and check-out dates? (e.g., 2026-06-04 to 2026-06-06)",
+            "followups": [
+                "Please provide check-in and check-out dates (YYYY-MM-DD). Example: 2026-06-04 to 2026-06-06"
+            ],
+            "draft": {
+                "arrival": arrival,
+                "departure": departure,
+                "adults": adults,
+                "known": partial,
+            },
+            # IMPORTANT: gives orchestrator something to store for the next turn
+            "session_state_patch": {
+                "pending_tool": "book_hotel",
+                "pending_args": partial,
+                "pending_missing_fields": ["arrival", "departure"],
+            },
         }
 
     base = HOTEL_EXTERNAL_BASE_URL
@@ -346,7 +379,7 @@ def book_hotel_flow(call: ToolCall) -> Dict[str, Any]:
     property_prefix = args.get("property_code") or args.get("property_prefix")
 
     try:
-        with httpx.Client(timeout=25.0) as client:
+        with httpx.Client(timeout=60.0) as client:
             headers = _auth_headers(client)
 
             # Get properties (so your demo isn't hardcoded to "ABR")

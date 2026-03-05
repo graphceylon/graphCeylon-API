@@ -74,6 +74,21 @@ class TaskGraphBuilder:
             "recommend_pois", "info_transport", "info_accommodation",
             "info_attraction", "info_visa_policy", "recommend_restaurants",
         }
+    @staticmethod
+    def _hotel_missing_fields(parsed: ParsedIntent) -> List[str]:
+        ents = parsed.entities
+        if hasattr(ents, "model_dump"):
+            ents = ents.model_dump(exclude_none=False)
+        else:
+            ents = dict(ents or {})
+
+        missing: List[str] = []
+        # For hotel booking, arrival & departure are mandatory
+        if not ents.get("start_date"):
+            missing.append("arrival")     # map start_date -> arrival later
+        if not ents.get("end_date"):
+            missing.append("departure")   # map end_date -> departure later
+        return missing
 
     @staticmethod
     def _disallow_secondary() -> set[str]:
@@ -247,7 +262,9 @@ class TaskGraphBuilder:
         gate_id: Optional[str] = None
         followup_id: Optional[str] = None
 
-        if parsed.intent in {"plan_itinerary", "modify_itinerary"}:
+        gate_intents = {"plan_itinerary", "modify_itinerary", "book_hotel"}
+
+        if parsed.intent in gate_intents:
             t_gate = TaskNode(
                 id=new_id(),
                 type="validate_required_fields",
@@ -272,7 +289,7 @@ class TaskGraphBuilder:
             self._add(t_follow)
             followup_id = t_follow.id
 
-            anchor_dep = gate_id  # primary should depend on gate
+            anchor_dep = gate_id
 
         # ✅ Only add planner/modifier if we are allowed to plan now
         primary_intent = parsed.intent
