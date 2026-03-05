@@ -710,7 +710,7 @@ class OrchestratorService:
                 endpoint="/itinerary/plan",
                 mapper=map_itinerary_request,
                 response_model=ItineraryPlanResponse,
-                timeout=30,
+                timeout=60,
                 result_field="itinerary_result",
             ),
             "modify_itinerary": IntentHandler(
@@ -2829,7 +2829,7 @@ class OrchestratorService:
         try:
             loop_out = self.agentic_loop.run(
                 svc=self,
-                # parsed_intent=parsed_intent,
+                parsed_intent=parsed_intent,
                 req=req,
                 db_prefs=db_prefs,
                 session_state=session_state,
