@@ -67,7 +67,19 @@ def confirm_booking(req: BookingConfirmRequest):
         status="CONFIRMED",
         message=f"Confirmed via PMS (ref {confirmed_ref}).",
     )
-
+@router.patch("/draft/{draft_id}", response_model=BookingDraftResponse)
+def update_draft(draft_id: UUID, req: BookingDraftCreate):
+    st = repo.get_status(draft_id)
+    if not st:
+        raise HTTPException(404, "Draft not found.")
+    if st not in ("DRAFT", "REJECTED"):
+        raise HTTPException(409, f"Cannot update draft in status={st}.")
+    repo.update_draft(draft_id, req.model_dump())
+    return BookingDraftResponse(
+        draft_id=draft_id,
+        status="DRAFT",
+        message="Draft updated.",
+    )
 @router.post("/draft", response_model=BookingDraftResponse)
 def create_draft(req: BookingDraftCreate):
     draft_id = repo.create_draft(req.model_dump())

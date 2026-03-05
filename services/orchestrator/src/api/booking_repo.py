@@ -57,7 +57,50 @@ class BookingDraftRepo:
                     },
                 )
         return draft_id
-
+    def update_draft(self, draft_id: UUID, payload: Dict[str, Any]) -> None:
+        with psycopg.connect(self.dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE booking_drafts SET
+                        city            = %(city)s,
+                        arrival         = %(arrival)s,
+                        departure       = %(departure)s,
+                        adults          = %(adults)s,
+                        property_id     = %(property_id)s,
+                        property_code   = %(property_code)s,
+                        property_name   = %(property_name)s,
+                        room_category_id = %(room_category_id)s,
+                        room_type_id    = %(room_type_id)s,
+                        meal_plan_id    = %(meal_plan_id)s,
+                        rate_code_id    = %(rate_code_id)s,
+                        currency_code   = %(currency_code)s,
+                        adult_rate      = %(adult_rate)s,
+                        price_breakdown = %(price_breakdown)s,
+                        raw_payload     = %(raw_payload)s,
+                        status          = 'DRAFT',
+                        updated_at      = now()
+                    WHERE draft_id = %(draft_id)s
+                    """,
+                    {
+                        "draft_id": str(draft_id),
+                        "city": payload.get("city"),
+                        "arrival": payload["arrival"],
+                        "departure": payload["departure"],
+                        "adults": int(payload.get("adults") or 2),
+                        "property_id": payload.get("property_id"),
+                        "property_code": payload.get("property_code"),
+                        "property_name": payload.get("property_name"),
+                        "room_category_id": payload["room_category_id"],
+                        "room_type_id": payload["room_type_id"],
+                        "meal_plan_id": payload["meal_plan_id"],
+                        "rate_code_id": payload.get("rate_code_id"),
+                        "currency_code": payload.get("currency_code"),
+                        "adult_rate": payload.get("adult_rate"),
+                        "price_breakdown": _json(payload.get("price_breakdown") or []),
+                        "raw_payload": _json(payload.get("raw_payload") or {}),
+                    },
+                )
     def get_status(self, draft_id: UUID) -> Optional[str]:
         with psycopg.connect(self.dsn) as conn:
             with conn.cursor() as cur:

@@ -9,6 +9,7 @@ from ..api.schemas import Entities
 from .runtime.blackboard import Blackboard
 from .mappers.restaurant_mapper import map_restaurant_request
 from .mappers.book_hotel_mapper import map_book_hotel_request
+from .clients.booking_client import save_booking_draft
 from .contracts.book_hotel import BookHotelResponse
 import hashlib
 import json
@@ -1564,6 +1565,9 @@ class OrchestratorService:
 
         # --- TOOL FAILURE -> AgentResult ---
         if not tool_res.ok:
+            print(f"\n[DEBUG booking_result] intent={intent_name}")
+            # print(f"[DEBUG booking_result] parsed_obj type={type(parsed_obj)}")
+            # print(f"[DEBUG booking_result] parsed_obj = {parsed_obj}")
             return AgentResult(
                 ok=False,
                 answer="",
@@ -1753,6 +1757,8 @@ class OrchestratorService:
         session_id = (req.session_id or "").strip() or "no_session"
         request_trace_id = (req.trace_id or "").strip() or str(uuid4())
         turn_id = (req.turn_id or "").strip() or str(uuid4()) 
+        # ✅ context passed from Flutter edit flow (e.g. updated booking args)
+        request_context: Dict[str, Any] = dict(req.context or {}) if hasattr(req, "context") else {}
         if self.trace_pg:
             self.trace_pg.start_run(
                 trace_id=request_trace_id,
@@ -2058,6 +2064,20 @@ class OrchestratorService:
         parsed_intent = apply_intent_policy(parsed_intent, req.input_text, session_state)
         # ✅ NEW: domain-based override (generic_fact_query -> real capability)
         parsed_intent = apply_domain_overrides(parsed_intent)
+        # ✅ if edit context was passed (e.g. from booking edit sheet), merge into entities
+        if request_context and parsed_intent.intent == "book_hotel":
+            ents = (
+                parsed_intent.entities.model_dump(exclude_none=False)
+                if hasattr(parsed_intent.entities, "model_dump")
+                else dict(parsed_intent.entities or {})
+            )
+            for k, v in request_context.items():
+                if k == "draft_id":
+                    continue  # draft_id is not an entity, handled separately
+                if v is not None:
+                    ents[k] = v  # context overrides whatever classifier extracted
+            parsed_intent = parsed_intent.model_copy(update={"entities": Entities(**ents)})
+            print(f"[context-merge] merged edit context into entities: {list(request_context.keys())}")
 
         bb.intents = {
             "primary": parsed_intent.intent,
@@ -2695,6 +2715,36 @@ class OrchestratorService:
                 results["restaurant_result"] = payload
             elif ttype == "book_hotel":
                 results["booking_result"] = payload
+
+                payload_dict = (
+                    payload.model_dump(mode="json")
+                    if hasattr(payload, "model_dump")
+                    else dict(payload or {})
+                )
+
+                is_pricing_ready = (
+                    isinstance(payload_dict, dict)
+                    and payload_dict.get("ok") is True
+                    and payload_dict.get("status") == "pricing_ready"
+                )
+
+                if is_pricing_ready and user_id:
+                    # ✅ if editing an existing draft, update it instead of creating new
+                    existing_draft_id = (
+                        request_context.get("draft_id")          # passed from Flutter edit flow
+                        or session_state.slots.get("active_draft_id")  # stored from previous turn
+                    ) if request_context else session_state.slots.get("active_draft_id")
+
+                    draft_id = save_booking_draft(
+                        user_id=user_id,
+                        session_id=session_id,
+                        booking_result=payload_dict,
+                        existing_draft_id=existing_draft_id,    # ✅ None = create, str = update
+                    )
+                    if draft_id:
+                        results["booking_result"]["draft_id"] = draft_id
+                        if session_state:
+                            session_state.slots["active_draft_id"] = draft_id
 
             
         # ✅ After DAG mapping: apply modify update to active trip

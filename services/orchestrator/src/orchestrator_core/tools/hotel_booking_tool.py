@@ -462,8 +462,27 @@ def book_hotel_flow(call: ToolCall) -> Dict[str, Any]:
             rate_code_id_for_roomrates = _rate_code_id_for_roomrates(default_rate)  # for /roomrates
 
             # budget priority: max_price_lkr > budget_per_night_lkr > None
+            # budget priority: max_price_lkr > budget_per_night_lkr > None
             budget_lkr = _extract_budget_from_args(args)
             budget_source = _budget_source_from_args(args)
+
+            # ✅ If budget came from query (user typed it), treat it as TOTAL budget
+            # and divide by number of nights to get per-night budget for room comparison.
+            # DB preference (budget_per_night_lkr) is already per-night, so skip division.
+            if budget_lkr is not None and budget_source == "query":
+                try:
+                    from datetime import date
+                    arr = date.fromisoformat(arrival)
+                    dep = date.fromisoformat(departure)
+                    num_nights = (dep - arr).days
+                    if num_nights > 0:
+                        per_night = budget_lkr / num_nights
+                        print(f"[budget] total={budget_lkr} / {num_nights} nights = {per_night:.0f} per night")
+                        budget_lkr = per_night
+                    else:
+                        print(f"[budget] WARNING: num_nights={num_nights}, skipping division")
+                except Exception as e:
+                    print(f"[budget] date parse failed: {e}, using budget as-is")
 
             # 1) call roomrates FIRST
             rates_raw = post_json(
