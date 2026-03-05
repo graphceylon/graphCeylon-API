@@ -88,10 +88,75 @@ def _print_compact_plan(plan: Dict[str, Any], label: str) -> None:
         for item in day.get("items", []) or []:
             print(
                 f"{day_date} | {str(city):<6} | {str(district):<8} | "
-                f"{str(item.get('slot','')):<9} | {str(item.get('attraction_id','')):<13} | "
+                f"{str(item.get('slot','')):<9} | {str(item.get('attraction_id') or item.get('poi_id') or '')} | "
                 f"{str(item.get('title',''))}"
             )
     print("=" * 90)
+
+def _print_waypoint_plans(waypoint_plans: List[Dict[str, Any]]) -> None:
+    print("\n========== WAYPOINT_PLANS ==========")
+    if not waypoint_plans:
+        print("<none>")
+        print("=" * 40)
+        return
+
+    for i, wp in enumerate(waypoint_plans, start=1):
+        wp_city = wp.get("waypoint_city") or f"wp_{i}"
+        _print_compact_plan(wp, f"WAYPOINT_{i}: {wp_city}")
+    print("=" * 40)
+
+def _print_shop_dine(plan: Dict[str, Any], label: str = "SHOP & DINE ON ROUTE") -> None:
+    sd = (plan.get("shopping_dining_on_route") or {})
+    items = sd.get("items") or []
+    dbg = sd.get("debug") or {}
+
+    print(f"\n========== {label} ==========")
+    print(f"[debug] count={len(items)} kg_url={dbg.get('kg_url')}")
+    print("route_idx | cat        | rating |District | city | poi_id        | title")
+    print("-" * 90)
+
+    for p in items[:40]:  # show first 40
+        print(
+            f"{str(p.get('_nearest_point_index', p.get('_route_point_index', ''))):<8} | "
+            f"{str(p.get('category','')):<10} | "
+            f"{str(p.get('rating','')):<6} | "
+            f"{str(p.get('district','')):<8} | "
+            f"{str(p.get('city','')):<4} | "
+            f"{str(p.get('poi_id','')):<12} | "
+            f"{str(p.get('title',''))}"
+        )
+    print("=" * 90)
+
+
+def _print_hotels(plan: Dict[str, Any], label: str = "HOTELS") -> None:
+    hotels = plan.get("hotels") or {}
+    items = hotels.get("items") or []
+    dbg = hotels.get("debug") or {}
+
+    print(f"\n========== {label} ==========")
+    print(f"[debug] count={len(items)} url={dbg.get('hotel_search_url')} ok={dbg.get('ok')} err={dbg.get('error')}")
+
+    if not items:
+        print("<no hotels>")
+        print("=" * 90)
+        return
+
+    print(f"{'name':<30} | {'city':<10} | {'stars':<5} | {'price_range':<20} | {'amenities':<30} | kg_id")
+    print("-" * 130)
+
+    for h in items[:20]:
+        price = h.get("price_range_lkr") or {}
+        price_str = f"{price.get('min', '?')}-{price.get('max', '?')}" if price else "N/A"
+        amenities = ", ".join((h.get("amenities") or [])[:4])
+        print(
+            f"{str(h.get('name','')):<30} | "
+            f"{str(h.get('city','')):<10} | "
+            f"{str(h.get('star_rating','')):<5} | "
+            f"{price_str:<20} | "
+            f"{amenities:<30} | "
+            f"{str(h.get('kg_id',''))}"
+        )
+    print("=" * 130)
 
 
 @router.post("/plan")
@@ -132,31 +197,17 @@ def itinerary_plan(req: Union[ItineraryPlanRequest, C3RequestEnvelope]) -> Dict[
         result = build_two_plans_from_payload(payload, cfg=cfg)
         safe = jsonable_encoder(result)
         plans = safe.get("plans", {}) or {}
+        dest_plan = plans.get("destination_plan", {}) or {}
 
         _print_compact_plan(plans.get("destination_plan", {}), "DESTINATION_PLAN")
-        _print_compact_plan(plans.get("route_plan", {}), "ROUTE_PLAN")
-        _print_compact_plan(plans.get("route_return_plan", {}), "route_return_plan")
+        _print_waypoint_plans(dest_plan.get("waypoint_plans") or [])
+        _print_compact_plan(plans.get("route_plan", {}), "Outbound Plan ")
+        _print_compact_plan(plans.get("route_return_plan", {}), "Return Plan")
+        _print_shop_dine(plans.get("route_return_plan", {}), "Return SHOP & DINE")
+        _print_hotels(dest_plan, "DESTINATION HOTELS")
+        
         print(f"[REQ] city={payload.get('city')} origin={payload.get('origin_city')} days={payload.get('days')} start={payload.get('start_date')}")
 
-
-
-
-        # ✅ PRINT RESPONSE (pretty)
-        # print("\n================ C3 /itinerary/plan RESPONSE ================")
-        # # make sure it's json-serializable (handles dates, pydantic, etc.)
-        # safe = jsonable_encoder(result)
-        # print("\n================ C3 /itinerary/plan RESPONSE (TWO PLANS) ================")
-
-        # plans = safe.get("plans", {})
-        # for key in ["destination_plan", "route_plan"]:
-        #     if key in plans:
-        #         print(f"\n---------------- {key.upper()} ----------------")
-        #         print(json.dumps(plans[key], indent=2, ensure_ascii=False))
-
-        # print("\n=============================================================\n")
-
-        # print(json.dumps(safe, indent=2, ensure_ascii=False))
-        # print("=============================================================\n")
 
         return result
 
