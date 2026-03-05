@@ -1862,27 +1862,81 @@ class OrchestratorService:
     
         parsed_intent: ParsedIntent = self._run_intent_parser(req)
         # ✅ INTENT LOCK: if we are waiting for follow-up fields, keep same intent/domain
+        # if session_state and session_state.slots.get("pending_fields"):
+        #     locked_intent = session_state.slots.get("pending_intent")
+        #     locked_domain  = session_state.slots.get("pending_domain")
+
+        #     if locked_intent:
+        #         parsed_intent = parsed_intent.model_copy(update={
+        #             "intent": locked_intent,
+        #             "domain_category": locked_domain or parsed_intent.domain_category,
+        #             # keep classifier scores if you want; confidence can be boosted a bit
+        #             "confidence": max(float(parsed_intent.confidence or 0.0), 0.95),
+        #             "secondary_intents": [],
+        #         })
+
+        #         # ✅ also merge session slots into entities so the newly provided dates are used
+        #         ents = (
+        #             parsed_intent.entities.model_dump(exclude_none=False)
+        #             if hasattr(parsed_intent.entities, "model_dump")
+        #             else dict(parsed_intent.entities or {})
+        #         )
+
+        #         # session slots may contain start_date/end_date/travel_month from resolve_followup
+        #         for k, v in (session_state.slots or {}).items():
+        #             if v in (None, "", [], {}, "unknown"):
+        #                 continue
+        #             if k not in ents or ents.get(k) in (None, "", [], {}, "unknown"):
+        #                 ents[k] = v
+
+        #         parsed_intent = parsed_intent.model_copy(update={"entities": Entities(**ents)})
+        # ✅ INTENT LOCK: if we are waiting for follow-up fields, keep same intent/domain
+        # BUT: only lock if the user is actually answering the follow-up, not asking something new
         if session_state and session_state.slots.get("pending_fields"):
             locked_intent = session_state.slots.get("pending_intent")
             locked_domain  = session_state.slots.get("pending_domain")
 
-            if locked_intent:
+            # ── ESCAPE HATCH ──────────────────────────────────────────────────────────
+            # If the classifier is highly confident the user wants something DIFFERENT,
+            # clear the pending lock and let the new intent through.
+            _classifier_intent = parsed_intent.intent or ""
+            _classifier_conf   = float(parsed_intent.confidence or 0.0)
+            _lock_escape = (
+                locked_intent is not None
+                and _classifier_intent != locked_intent
+                and _classifier_conf >= 0.85          # classifier is sure
+                and _classifier_intent not in {       # and it's a real routable intent
+                    "smalltalk", "out_of_scope", "generic_fact_query"
+                }
+            )
+
+            if _lock_escape:
+                # User has pivoted to a different topic — clear the stale lock
+                print(
+                    f"[intent-lock] ESCAPE: classifier={_classifier_intent}({_classifier_conf:.2f}) "
+                    f"overrides lock={locked_intent} — clearing pending state"
+                )
+                session_state.slots.pop("pending_fields", None)
+                session_state.slots.pop("pending_intent", None)
+                session_state.slots.pop("pending_domain", None)
+                session_state.slots.pop("pending_clarification", None)
+                # Fall through — parsed_intent stays as classifier returned it
+
+            elif locked_intent:
+                # ── NORMAL LOCK PATH (user is answering the follow-up) ───────────────
                 parsed_intent = parsed_intent.model_copy(update={
                     "intent": locked_intent,
                     "domain_category": locked_domain or parsed_intent.domain_category,
-                    # keep classifier scores if you want; confidence can be boosted a bit
                     "confidence": max(float(parsed_intent.confidence or 0.0), 0.95),
                     "secondary_intents": [],
                 })
 
-                # ✅ also merge session slots into entities so the newly provided dates are used
+                # merge session slots into entities so newly provided values are used
                 ents = (
                     parsed_intent.entities.model_dump(exclude_none=False)
                     if hasattr(parsed_intent.entities, "model_dump")
                     else dict(parsed_intent.entities or {})
                 )
-
-                # session slots may contain start_date/end_date/travel_month from resolve_followup
                 for k, v in (session_state.slots or {}).items():
                     if v in (None, "", [], {}, "unknown"):
                         continue
