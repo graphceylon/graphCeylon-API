@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 from fastapi import APIRouter, HTTPException
 import httpx
+from fastapi import APIRouter, Depends, HTTPException
 
 from uuid import UUID
 from .booking_schemas import (
@@ -137,3 +138,100 @@ def approve_hitl(req: BookingHITLApprove):
 #     repo.set_status(req.draft_id, "CONFIRMED", confirmed_ref=fake_ref)
 
 #     return BookingDraftResponse(draft_id=req.draft_id, status="CONFIRMED", message=f"Confirmed (ref {fake_ref}).")
+
+# booking_router.py — add this endpoint
+
+@router.post("/request/{draft_id}")
+def submit_booking_request(draft_id: str):
+    # 1) fetch raw_payload using existing repo method
+    raw = repo.fetch_draft_payload(draft_id)
+    if not raw:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    draft_data = raw.get("draft") or {}
+    hotel_data = raw.get("hotel") or {}
+    search_data = raw.get("search") or {}
+    rooms_list = draft_data.get("rooms") or []
+
+    # 2) build createreservationforai payload
+    reservation_payload = {
+        "CountryCode": draft_data.get("country_code") or "LKA",
+        "Arrival": draft_data.get("arrival") or search_data.get("arrival"),
+        "Departure": draft_data.get("departure") or search_data.get("departure"),
+        "PropertyCode": hotel_data.get("property_code") or draft_data.get("property_code"),
+        "Uuid": f"gc-{str(draft_id)[:8]}",
+        "Remarks": "Booking request via GraphCeylon AI",
+        "Rooms": rooms_list or [
+            {
+                "RoomCategoryId": raw.get("selected", {}).get("room_category_id"),
+                "RateCodeHeaderId": raw.get("selected", {}).get("rate_code_id"),
+                "RoomTypeId": raw.get("selected", {}).get("room_type_id"),
+                "MealPlanId": raw.get("selected", {}).get("meal_plan_id"),
+                "NoOfRooms": 1,
+            }
+        ],
+    }
+
+    print(f"[booking/request] draft_id={draft_id}")
+    print(f"[booking/request] reservation_payload={reservation_payload}")
+
+    # 3) call hotel API
+    base_url = os.getenv("HOTEL_EXTERNAL_BASE_URL", "http://190.92.219.12:8087")
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            token_resp = client.post(
+                f"{base_url}/token",
+                data={
+                    "grant_type": os.getenv("HOTEL_OAUTH_GRANT_TYPE", "password"),
+                    "username": os.getenv("HOTEL_OAUTH_USERNAME", "externalAPI"),
+                    "password": os.getenv("HOTEL_OAUTH_PASSWORD", "e@x$&n!l&12E"),
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            token_resp.raise_for_status()
+            token = token_resp.json().get("access_token")
+            if not token:
+                raise HTTPException(status_code=502, detail="Failed to get hotel API token")
+
+            res = client.post(
+                f"{base_url}/api/external/createreservationforai",
+                json=reservation_payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+            print(f"[booking/request] hotel status={res.status_code} body={res.text[:1000]}")
+            if res.status_code != 200:
+                raise HTTPException(status_code=502, detail=f"Hotel API returned {res.status_code}: {res.text[:500]}")
+            hotel_response = res.json()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Hotel API error: {e}")
+
+    print(f"[booking/request] hotel_response={hotel_response}")
+
+    reservation_data = hotel_response.get("Data") or {}
+    reservation_no = reservation_data.get("ReservationNo") or f"gc-{str(draft_id)[:8].upper()}"
+    group_no = reservation_data.get("GroupReservationNo")
+    confirmation_url = reservation_data.get("ConfirmationUrl")
+
+    # hotel API returned success even without ReservationNo — use our uuid as ref
+    print(f"[booking/request] reservation_no={reservation_no} confirmation_url={confirmation_url}")
+
+    if not reservation_no:
+        raise HTTPException(status_code=502, detail=f"Hotel API did not return a ReservationNo. Response: {hotel_response}")
+
+    # 4) update status using existing repo
+    repo.set_status(draft_id, "PENDING_APPROVAL", confirmed_ref=reservation_no)
+
+    return {
+        "ok": True,
+        "draft_id": str(draft_id),
+        "reservation_no": reservation_no,
+        "group_reservation_no": group_no,
+        "confirmation_url": confirmation_url,
+        "message": f"Your booking request has been submitted! Reference: {reservation_no}",
+    }

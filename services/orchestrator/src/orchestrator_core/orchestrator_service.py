@@ -1759,6 +1759,8 @@ class OrchestratorService:
         turn_id = (req.turn_id or "").strip() or str(uuid4()) 
         # ✅ context passed from Flutter edit flow (e.g. updated booking args)
         request_context: Dict[str, Any] = dict(req.context or {}) if hasattr(req, "context") else {}
+        print(f"[DEBUG edit-flow] input_text={req.input_text!r}")
+        print(f"[DEBUG edit-flow] request_context={request_context}")
         if self.trace_pg:
             self.trace_pg.start_run(
                 trace_id=request_trace_id,
@@ -2065,7 +2067,16 @@ class OrchestratorService:
         # ✅ NEW: domain-based override (generic_fact_query -> real capability)
         parsed_intent = apply_domain_overrides(parsed_intent)
         # ✅ if edit context was passed (e.g. from booking edit sheet), merge into entities
-        if request_context and parsed_intent.intent == "book_hotel":
+        # ✅ if edit context was passed (e.g. from booking edit sheet), force book_hotel + merge entities
+        if request_context:
+            parsed_intent = parsed_intent.model_copy(update={
+                "intent": "book_hotel",
+                "domain_category": "booking",
+                "confidence": 1.0,
+                "secondary_intents": [],
+            })
+            print(f"[DEBUG edit-flow] intent AFTER override={parsed_intent.intent}")
+            print(f"[DEBUG edit-flow] entities AFTER merge={parsed_intent.entities}")
             ents = (
                 parsed_intent.entities.model_dump(exclude_none=False)
                 if hasattr(parsed_intent.entities, "model_dump")
@@ -2077,7 +2088,7 @@ class OrchestratorService:
                 if v is not None:
                     ents[k] = v  # context overrides whatever classifier extracted
             parsed_intent = parsed_intent.model_copy(update={"entities": Entities(**ents)})
-            print(f"[context-merge] merged edit context into entities: {list(request_context.keys())}")
+            print(f"[context-merge] forced intent=book_hotel, merged context keys: {list(request_context.keys())}")
 
         bb.intents = {
             "primary": parsed_intent.intent,
