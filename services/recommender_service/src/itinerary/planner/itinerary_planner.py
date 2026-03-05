@@ -887,6 +887,214 @@ def _is_non_attraction_poi(c: Dict[str, Any]) -> bool:
     if any(k in blob for k in kw_kills):
         return True
     return False
+
+KG_HOTEL_SEARCH_PATH = "/hotels/orchestrator/call/hotels/search"
+
+
+def fetch_hotels_for_destination(
+    payload: Dict[str, Any],
+    *,
+    timeout: float = 20.0,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Fetch hotels from the KG hotel search endpoint for the destination city.
+
+    Only sends the minimal required fields:
+      - payload["destination"] | payload["city"]  ->  request["city"]
+      - payload["raw_text"]                        ->  request["raw_text"]
+      - payload["user_id"]                         ->  request["user_id"]
+      - payload["session_id"]                      ->  request["session_id"]
+      - intent is always "info_accommodation"
+    """
+    url = f"{KG_BASE_URL}{KG_HOTEL_SEARCH_PATH}"
+
+    # ✅ KEY MAPPING: "destination" from orchestrator payload -> "city" in hotel search
+    destination = str(
+        payload.get("destination") or payload.get("city") or ""
+    ).strip()
+
+    body: Dict[str, Any] = {
+        "intent": "info_accommodation",
+        "raw_text": str(payload.get("raw_text") or f"hotels in {destination}"),
+        "user_id": str(payload.get("user_id") or "system"),
+        "session_id": str(payload.get("session_id") or "itinerary-planner"),
+        "city": destination,
+    }
+
+    body["limit"] = int(payload.get("hotel_limit") or 10)
+
+    debug = {
+        "hotel_search_url": url,
+        "hotel_search_body": body,
+    }
+
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            r = client.post(url, json=body)
+            r.raise_for_status()
+            data = r.json()
+
+        items = data.get("items") or []
+        debug["hotel_count"] = len(items)
+        debug["ok"] = data.get("ok", True)
+        return items, debug
+
+    except Exception as exc:
+        debug["error"] = str(exc)
+        debug["hotel_count"] = 0
+        print(f"[HOTEL FETCH] Error fetching hotels for '{destination}': {exc}")
+        return [], debug
+
+
+KG_SHOP_DINE_PATH = "/Recommender/call/shopping-and-dining-on-route"
+
+def fetch_shop_dine_on_route_from_kg(
+    origin_city: str,
+    destination_city: str,
+    sampled_points: List[Tuple[float, float]],
+    *,
+    country: str = "Sri Lanka",
+    corridor_km: float = 10.0,
+    limit: int = 120,
+    timeout: float = 20.0,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    url = f"{KG_BASE_URL}{KG_SHOP_DINE_PATH}"
+    body = {
+        "country": country,
+        "origin_city": origin_city,
+        "destination_city": destination_city,
+        "corridor_km": corridor_km,
+        "limit": limit,
+        "sampled_route_points": [[lat, lon] for (lat, lon) in sampled_points],
+    }
+
+    with httpx.Client(timeout=timeout) as client:
+        r = client.post(url, json=body)
+        r.raise_for_status()
+        data = r.json()
+
+    items = data.get("items") or []
+    flat: List[Dict[str, Any]] = []
+
+    for grp in items:
+        if not isinstance(grp, dict):
+            continue
+        rp  = grp.get("route_point")        # [lat, lon]
+        rpi = grp.get("route_point_index")  # int
+        subs = grp.get("sub_attractions") or []
+        for s in subs:
+            if not isinstance(s, dict):
+                continue
+            s["_route_point"] = rp
+            s["_route_point_index"] = rpi
+            flat.append(s)
+
+    # normalize to your candidate structure
+    candidates: List[Dict[str, Any]] = []
+    for x in flat[:limit]:
+        c = _kg_shop_dine_item_to_candidate(x)
+        if c:
+            candidates.append(c)
+
+    debug = {"kg_url": url, "kg_request": body, "kg_returned": len(items), "candidates_returned": len(candidates)}
+    return candidates, debug
+
+
+def _kg_shop_dine_item_to_candidate(x: Dict[str, Any]) -> Dict[str, Any]:
+    name = (x.get("name") or x.get("title") or "").strip()
+    if not name:
+        return {}
+
+    # categories you showed: fast_food, supermarket, etc.
+    category = (x.get("category") or "").strip().lower()
+
+    lat = x.get("latitude") or x.get("lat")
+    lng = x.get("longitude") or x.get("lng") or x.get("lon")
+
+    try:
+        lat = float(lat) if lat is not None else None
+        lng = float(lng) if lng is not None else None
+    except Exception:
+        lat, lng = None, None
+
+    # unique-ish id
+    poi_id = normalize_to_attraction_id({
+        "title": name,
+        "district": x.get("district"),
+        "city": x.get("city"),
+        "province": x.get("province"),
+    })
+
+    return {
+        "poi_id": poi_id,
+        "title": name,
+        "category": category,
+        "groups": x.get("groups") or [],
+        "description": x.get("editorial_summary") or x.get("description"),
+        "city": x.get("city"),
+        "district": x.get("district"),
+        "province": x.get("province"),
+        "location": x.get("formatted_address") or x.get("parent_location"),
+        "rating": x.get("rating"),
+        "lat": lat,
+        "lng": lng,
+        "distance_km": x.get("distance_km"),
+        "_route_point": x.get("_route_point"),
+        "_route_point_index": x.get("_route_point_index"),
+        "_kg_raw": x,
+    }
+
+def _shop_category_rank(cat: str) -> int:
+    c = (cat or "").strip().lower()
+
+    # normalize common variants
+    if c in ("restuarent",):   # typo safety
+        c = "restaurant"
+
+    # lower number = earlier
+    order = {
+        "fast_food": 0,
+        "restaurant": 1,
+        "cafe": 2,
+        "bakery": 3,
+        # everything else goes here
+        "supermarket": 99,     # ✅ always last
+    }
+    return order.get(c, 50)
+def order_shop_dine_along_route(
+    pois: List[Dict[str, Any]],
+    sampled_points: List[Tuple[float, float]],
+    *,
+    route_direction: str = "outbound",   # "outbound" | "return"
+) -> List[Dict[str, Any]]:
+    # attach nearest sampled point index + nearest route point coords
+    attach_nearest_route_point(pois, sampled_points)
+
+    # sort: along route first, then by category rank, then by closeness to route, then rating
+    pois.sort(
+        key=lambda x: (
+            x.get("_nearest_point_index") if x.get("_nearest_point_index") is not None else 10**9,
+            _shop_category_rank(x.get("category")),
+            x.get("_nearest_point_km") if x.get("_nearest_point_km") is not None else 10**9,
+            -(float(x.get("rating") or 0.0)),
+        )
+    )
+
+    if (route_direction or "").lower() == "return":
+        pois.reverse()
+
+    # ✅ include the GraphHopper point lat/lon explicitly in each item
+    for p in pois:
+        np = p.get("_nearest_point")
+        if isinstance(np, tuple) and len(np) == 2:
+            p["route_lat"] = float(np[0])
+            p["route_lon"] = float(np[1])
+        else:
+            p["route_lat"] = None
+            p["route_lon"] = None
+
+    return pois
+
 def build_itinerary_days_from_pool(
     *,
     pool: List[Dict[str, Any]],
@@ -1100,6 +1308,7 @@ def build_wayout_stop_plans_from_route_candidates(
         wp_cursor_dt = wp_cursor_dt + timedelta(days=wp_days)
 
     return out
+
 def build_itinerary_days_simple_chunk(
     *,
     pool: List[Dict[str, Any]],
@@ -1273,6 +1482,25 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             route_candidates = [c for c in route_candidates if not _is_non_attraction_poi(c)]
             after = len(route_candidates)
             print(f"[CORRIDOR FILTER] attraction-focused travel_style -> removed {before-after} non-attraction POIs (kept {after})")
+        shop_dine, shop_dbg = fetch_shop_dine_on_route_from_kg(
+            origin_city=origin_city,
+            destination_city=dest_city,
+            sampled_points=sampled_points,
+            country=country,
+            corridor_km=10.0,
+            limit=120,
+        )
+
+        shop_dine = order_shop_dine_along_route(
+            shop_dine,
+            sampled_points,
+            route_direction=route_direction,
+        )
+
+        payload["_shopping_dining_on_route"] = {
+            "items": shop_dine,
+            "debug": shop_dbg,
+        }
         # ✅ MUST happen BEFORE scoring/sorting
         attach_nearest_route_point(route_candidates, sampled_points)
         # ✅ semantic after cleaning + snapping
@@ -1541,6 +1769,26 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             "items": day_items
         })
     warnings.extend(getattr(tm, "assumptions", []) or [])
+
+    # ==========================
+    # ✅ HOTEL FETCH for destination city
+    # ==========================
+    if not payload.get("_hotels"):
+        try:
+            hotel_items, hotel_dbg = fetch_hotels_for_destination(payload, timeout=15.0)
+            payload["_hotels"] = {
+                "items": hotel_items,
+                "debug": hotel_dbg,
+            }
+            print(f"\n[HOTELS] Fetched {len(hotel_items)} hotels for destination='{city}'")
+        except Exception as exc:
+            payload["_hotels"] = {
+                "items": [],
+                "debug": {"error": str(exc)},
+            }
+            warnings.append(f"Hotel fetch failed: {exc}")
+            print(f"[HOTELS] Error: {exc}")
+
     return {
         "status": "ok",
         "city": city,
@@ -1561,6 +1809,8 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         },
         "warnings": warnings,
         "itinerary": itinerary_days,
+        "hotels": payload.get("_hotels") or {},
+        "shopping_dining_on_route": payload.get("_shopping_dining_on_route") or {},
         "waypoint_plans": waypoint_plans,
         "way_out_stop_plans": payload.get("_way_out_stop_plans") or [],
         "debug": {
