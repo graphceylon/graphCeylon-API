@@ -382,6 +382,11 @@ def apply_intent_policy(parsed_intent: ParsedIntent, req_text: str, session_stat
         # do not carry active itinerary into a new plan
         ents_dict.pop("itinerary_id", None)
         ents_dict.pop("current_itinerary", None)
+        # ✅ Clear stale session state for fresh plan
+        if session_state:
+            for key in ("active_trip_id", "city", "active_place", "start_date", "end_date",
+                        "pending_fields", "pending_intent", "pending_domain", "pending_clarification"):
+                session_state.slots.pop(key, None)
 
         return parsed_intent.model_copy(update={
             "intent": "plan_itinerary",
@@ -1939,12 +1944,26 @@ class OrchestratorService:
                     "secondary_intents": [],
                 })
 
-                # merge session slots into entities so newly provided values are used
                 ents = (
                     parsed_intent.entities.model_dump(exclude_none=False)
                     if hasattr(parsed_intent.entities, "model_dump")
                     else dict(parsed_intent.entities or {})
                 )
+
+                # Layer 1: pull ALL relevant entity keys from session slots (previous turn context)
+                ENTITY_SLOT_KEYS = {
+                    "city", "destination", "origin", "origin_city", "country",
+                    "days", "start_date", "end_date", "travel_month",
+                    "waypoints", "include_stops", "region",
+                }
+                for k in ENTITY_SLOT_KEYS:
+                    v = session_state.slots.get(k)
+                    if v in (None, "", [], {}, "unknown"):
+                        continue
+                    if ents.get(k) in (None, "", [], {}, "unknown"):
+                        ents[k] = v
+
+                # Layer 2: also sweep ALL other slots (catches anything not in the explicit list)
                 for k, v in (session_state.slots or {}).items():
                     if v in (None, "", [], {}, "unknown"):
                         continue
@@ -2015,8 +2034,10 @@ class OrchestratorService:
                 if v in (None, "", [], {}, "unknown"):
                     continue
 
-                # ✅ avoid poisoning session before a plan is generated
-                if parsed_intent.intent == "plan_itinerary" and k in {"city", "destination", "active_place"}:
+                # ✅ only block stale trip references, NOT city/destination
+                if parsed_intent.intent == "plan_itinerary" and k in {
+                    "itinerary_id", "current_itinerary", "active_trip_id"
+                }:
                     continue
 
                 session_state.slots[k] = v
@@ -2348,6 +2369,9 @@ class OrchestratorService:
 
                         if not start_date and not travel_month:
                             missing.append("start_date")  # simplest label for demo
+                        days = ents.get("days")
+                        if not days:
+                            missing.append("days")
 
                         # Destination/city: if only country-level ("Sri Lanka") and no city/destination
                         city = (ents.get("city") or "").strip() if isinstance(ents.get("city"), str) else ents.get("city")
@@ -2384,25 +2408,26 @@ class OrchestratorService:
                     if missing:
                         # Build a single friendly follow-up question
                         parts = []
-                        if "start_date" in missing:
-                            parts.append("What are your travel dates? (start date + end date, or just the month)")
-                        if "origin_city" in missing:
-                            parts.append("Where are you starting from? (e.g., Colombo / Airport / Negombo)")
-                        if "destination_city" in missing:
-                            parts.append("Which area/city in Sri Lanka do you want for nature? (e.g., Kandy, Ella, Nuwara Eliya, Sigiriya)")
-                        if "arrival" in missing or "departure" in missing:
-                            parts.append("What are your hotel dates? (check-in + check-out)")
-                            followup_options += ["2026-06-03 to 2026-06-06", "This weekend", "Next week"]
+                        if missing:
+                            parts = []
+                            if "start_date" in missing:
+                                parts.append("When are you planning to travel?")
+                            if "days" in missing:                                          # ✅ NEW
+                                parts.append("How many days are you planning to stay?")
+                            if "destination_city" in missing:
+                                parts.append("Which city in Sri Lanka would you like to visit?")
+                            if "arrival" in missing or "departure" in missing:
+                                parts.append("What are your hotel dates? (check-in + check-out)")
+                                followup_options += ["2026-06-03 to 2026-06-06", "This weekend", "Next week"]
 
-                        followup_question = "Got it 🌿 Nature trip in Sri Lanka.\n" + "\n".join(f"- {p}" for p in parts)
+                            followup_question = "\n".join(f"- {p}" for p in parts)
 
-                        # Nice clickable options (you can tune)
-                        if "destination_city" in missing:
-                            followup_options += ["Kandy", "Ella", "Nuwara Eliya", "Sigiriya"]
-                        if "origin_city" in missing:
-                            followup_options += ["Colombo", "Bandaranaike Airport", "Negombo"]
-                        if "start_date" in missing:
-                            followup_options += ["This weekend", "Next week", "April 2026"]
+                            if "days" in missing:                                          # ✅ NEW
+                                followup_options += ["1 day", "2 days", "3 days", "5 days"]
+                            if "destination_city" in missing:
+                                followup_options += ["Kandy", "Ella", "Nuwara Eliya", "Sigiriya"]
+                            if "start_date" in missing:
+                                followup_options += ["This weekend", "Next week", "April 2026"]
 
                     # write into results so other tasks can see it
                     results["missing_fields"] = missing
@@ -2923,5 +2948,6 @@ class OrchestratorService:
             trace=trace,
             agentic_meta=results.get("agentic_meta"),
             explainability=results.get("explainability"),
-            explainability_ui=formatted.get("explainability_ui")
+            explainability_ui=formatted.get("explainability_ui"),
+            sources=formatted.get("sources"),
         )

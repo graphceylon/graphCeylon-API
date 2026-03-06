@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, List
 import os
 import json
+from pandas import date_range
 import requests
 import re
 
@@ -196,6 +197,36 @@ class ResponseFormatter:
             (k.endswith("_result") and results.get(k) is not None)
             for k in (results or {}).keys()
         )
+        # ✅ Visa short-circuit — always use structured template (never Groq for visa)
+        if results.get("visa_result"):
+            vr = results["visa_result"]
+            vr_dict = vr.model_dump(mode="json") if hasattr(vr, "model_dump") else dict(vr or {})
+
+            formatted_text = self._format_visa(vr)
+
+            # Build structured sources for explainability_ui
+            sources = []
+            seen = set()
+            for rule in (vr_dict.get("rules") or []):
+                for ev in (rule.get("evidence") or []):
+                    url = (ev.get("url") or "").strip()
+                    source = (ev.get("source") or "").strip()
+                    if url and url not in seen:
+                        seen.add(url)
+                        label = source.replace("_", " ").replace(".json", "").title() if source else "Official Source"
+                        sources.append({"label": label, "url": url})
+
+            explainability_ui = ""
+            if sources:
+                src_lines = "\n".join(f"• {s['label']}: {s['url']}" for s in sources)
+                explainability_ui = f"Sources verified from official Sri Lanka Immigration authorities:\n{src_lines}"
+
+            return {
+                "text": formatted_text,
+                "followups": ["Tourist visa", "Visa fee", "Processing time", "Required documents"],
+                "explainability_ui": explainability_ui,
+                "sources": sources,  # Flutter renders these as tappable links
+            }
 
         if not has_any_result and intent in {"out_of_scope", "generic_fact_query"}:
             if self.provider == "groq" and self.groq_key:
@@ -747,8 +778,9 @@ class ResponseFormatter:
                     w = attractions[0].get("weather") or {}
                     if w.get("temp_c") is not None and w.get("rain_risk"):
                         weather_str = f"Weather: {int(w['temp_c'])}C, {w['rain_risk'].lower()} rain risk"
+                district = d.get("district") or d.get("city") or "Hill Country"
 
-                lines = [f"{label} — {date} | Kandy"]
+                lines = [f"{label} — {date} | {district}"]
                 if weather_str:
                     lines.append(weather_str)
 
@@ -784,7 +816,8 @@ class ResponseFormatter:
             start = (parsed_intent.get("entities") or {}).get("start_date") or ""
             end = (parsed_intent.get("entities") or {}).get("end_date") or ""
             date_range = f"{start} – {end}" if start and end else start
-            header = f"{origin} to {dest} | {len(itinerary)}-Day Itinerary | {date_range}"
+            n = days or len(itinerary)
+            header = f"{origin} to {dest} | {n}-Day Itinerary | {date_range}"
 
             out_lines = [header, ""]
 
@@ -828,7 +861,7 @@ class ResponseFormatter:
                     out_lines.append(f"- {title} — {category}{rating_str}")
                 out_lines.append("")
 
-            n = days or len(itinerary)
+            # n = days or len(itinerary)
             chips = [f"Day {i}" for i in range(1, min(n, 4) + 1)]
             return {"text": "\n".join(out_lines).strip(), "followups": chips}
 
@@ -895,7 +928,93 @@ class ResponseFormatter:
 
         # generic fallback
         return {"text": "I got your request. What would you like to do next?", "followups": []}
+    def _format_visa(self, visa_result: Any) -> str:
+        if not visa_result:
+            return ""
 
+        vr = visa_result.model_dump(mode="json") if hasattr(visa_result, "model_dump") else dict(visa_result or {})
+
+        if vr.get("status") != "ok":
+            return "Visa information is currently unavailable."
+
+        dest = vr.get("destination_country") or "Sri Lanka"
+        lines = [f"Visa & Entry Requirements — {dest}\n"]
+
+        # ── Group rules by their title ─────────────────────────────────────
+        rules = vr.get("rules") or []
+        seen_details = set()
+        seen_urls = {}   # url -> source label (from the data itself)
+        grouped = {}     # title -> list of clean bullets
+
+        for rule in rules:
+            details = (rule.get("details") or "").strip()
+            if not details or details in seen_details:
+                continue
+            seen_details.add(details)
+
+            # Use actual title from data, fallback to rule_type
+            title = (rule.get("title") or rule.get("rule_type") or "Information").strip()
+
+            # Collect URLs + labels FROM the evidence itself (not hardcoded)
+            for ev in (rule.get("evidence") or []):
+                url = (ev.get("url") or "").strip()
+                source = (ev.get("source") or "").strip()
+                if url and url not in seen_urls:
+                    # derive readable label from source filename
+                    label = (
+                        source
+                        .replace("_data.json", "")
+                        .replace("_", " ")
+                        .title()
+                    ) if source else url
+                    seen_urls[url] = label
+
+            # ── Clean raw text into readable sentences ─────────────────────
+            sentences = re.split(r'\n{2,}|\.\s+(?=[A-Z])', details)
+            for sentence in sentences:
+                s = sentence.strip().strip(".")
+                if not s or len(s) < 20:
+                    continue
+                if re.match(r'^\d+\.?\s', s):
+                    continue
+                if s.lower().startswith("where can i") or s.lower().startswith("how can i"):
+                    continue
+                if "dependents" in s.lower() and "diplomat" in s.lower():
+                    continue
+                if s in seen_details:
+                    continue
+                seen_details.add(s)
+
+                if len(s) > 200:
+                    s = s[:200].rsplit(" ", 1)[0] + "..."
+
+                grouped.setdefault(title, [])
+                if s not in grouped[title]:
+                    grouped[title].append(s)
+
+        # ── Render grouped sections ────────────────────────────────────────
+        for title, bullets in grouped.items():
+            if not bullets:
+                continue
+            lines.append(f"{title}:")
+            for b in bullets[:6]:
+                lines.append(f"• {b}")
+            lines.append("")
+
+        # ── Warnings ──────────────────────────────────────────────────────
+        for w in (vr.get("warnings") or []):
+            lines.append(f"⚠ {w}")
+        if vr.get("warnings"):
+            lines.append("")
+
+        # ── Sources — labels derived from data, not hardcoded ─────────────
+        # if seen_urls:
+        #     lines.append("Official Sources:")
+        #     for url, label in seen_urls.items():
+        #         lines.append(f"  • {label}")
+        #         lines.append(f"    {url}")
+
+        return "\n".join(lines)
     def _format_with_groq(self, user_text, parsed_intent, results, tasks, *, effective_intent: str):
         # If key missing, fallback safely
         if effective_intent == "plan_itinerary":

@@ -167,3 +167,4 @@ class OrchestrateResponse(BaseModel):
     agentic_meta: Optional[Dict[str, Any]] = None
     explainability: Optional[Dict[str, Any]] = None
     explainability_ui: Optional[str] = None
+    sources: Optional[List[Dict[str, str]]] = None

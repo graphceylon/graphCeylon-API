@@ -160,6 +160,8 @@ async def orchestrate_stream_generator(
         result_dict = result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result)
         print("🔍 [SSE] result_dict keys:", list(result_dict.keys()))
         print("🔍 [SSE] explainability:", result_dict.get("explainability"))
+        print("🔵 [SSE] result_dict keys:", list(result_dict.keys()))
+        print("🔵 [SSE] sources:", result_dict.get("sources"))
         yield f"data: {json.dumps({'type': 'done', 'result': result_dict})}\n\n"
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
