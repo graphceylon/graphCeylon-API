@@ -124,7 +124,8 @@ services:
       - API_PREFIX=/api/users
       - DB_TYPE=postgres
       - DB_HOST=postgres
-      - DB_PORT=5432
+      # - DB_PORT=5432
+      - DB_PORT=5433
       - DB_USERNAME=postgres
       - DB_PASSWORD=postgres
       - DB_DATABASE=graphceylon_users
@@ -259,7 +260,8 @@ services:
     environment:
       - SERVICE_NAME=profile_agent
       - SERVICE_PORT=8007
-      - PROFILE_DB_URL=postgresql+psycopg://postgres:postgres@postgres:5432/graphceylon_users
+      # - PROFILE_DB_URL=postgresql+psycopg://postgres:postgres@postgres:5432/graphceylon_users
+      - PROFILE_DB_URL=postgresql+psycopg://postgres:postgres@postgres:5433/graphceylon_users
       - SERVICE_TOKEN=your-internal-service-secret-token-change-in-production
       - USER_SERVICE_URL=http://user_service:8005
     depends_on:
