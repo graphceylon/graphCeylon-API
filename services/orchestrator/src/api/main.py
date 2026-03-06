@@ -10,6 +10,7 @@ from .booking_routes import router as booking_router
 from .phase2_routes import router as phase2_router
 from .semantic_routes import router as semantic_router
 from .trip_routes import router as trips_router
+from .stream_router import router as stream_router 
 from uuid import uuid4
 from ..orchestrator_core.trace_utils import ensure_ids
 from dotenv import load_dotenv
@@ -21,7 +22,7 @@ app = FastAPI(
     description="Tourism multi-agent orchestrator for Sri Lanka",
 )
 app.include_router(events_router)
-
+app.include_router(stream_router)
 app.include_router(phase2_router)
 app.include_router(semantic_router)
 app.include_router(trips_router)
