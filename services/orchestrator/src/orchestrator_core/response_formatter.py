@@ -701,8 +701,19 @@ class ResponseFormatter:
 
                 # ---- plan_itinerary template fallback (Day 1/2/3 + chips) ----
         if intent == "plan_itinerary":
-            it = results.get("itinerary_result") or {}
-            days = it.get("days") or ((parsed_intent.get("entities") or {}).get("days") or 0) or 0
+            it_raw = results.get("itinerary_result") or {}
+            # convert Pydantic model to dict if needed
+            if hasattr(it_raw, "model_dump"):
+                it = it_raw.model_dump(mode="json")
+            elif hasattr(it_raw, "dict"):
+                it = it_raw.dict()
+            else:
+                it = dict(it_raw) if it_raw else {}
+
+            parsed_intent_dict = parsed_intent if isinstance(parsed_intent, dict) else (
+                parsed_intent.model_dump(mode="json") if hasattr(parsed_intent, "model_dump") else {}
+            )
+            days = it.get("days") or ((parsed_intent_dict.get("entities") or {}).get("days") or 0) or 0
 
             itinerary = it.get("itinerary") or []
             if not itinerary:
@@ -728,20 +739,30 @@ class ResponseFormatter:
             def format_one_day(d, label):
                 date = d.get("date") or ""
                 district = d.get("district") or d.get("city") or "Hill Country"
-                lines = [f"{label} ({date}) — {district}"]
-                items = d.get("items") or []
-                # group by slot
-                slot_order = ["morning", "afternoon", "evening"]
-                by_slot = {s: [] for s in slot_order}
-                for itx in items:
-                    slot = (itx.get("slot") or "").lower()
-                    title = itx.get("title") or itx.get("name") or "Activity"
-                    if slot in by_slot and len(by_slot[slot]) < 1:
-                        by_slot[slot].append(title)
+                
+                # weather from first attraction if available
+                attractions = d.get("attractions") or d.get("items") or []
+                weather_str = ""
+                if attractions:
+                    w = attractions[0].get("weather") or {}
+                    if w.get("temp_c") is not None and w.get("rain_risk"):
+                        weather_str = f"Weather: {int(w['temp_c'])}C, {w['rain_risk'].lower()} rain risk"
 
-                for s in slot_order:
-                    if by_slot[s]:
-                        lines.append(f"- {s}: {by_slot[s][0]}")
+                lines = [f"{label} — {date} | Kandy"]
+                if weather_str:
+                    lines.append(weather_str)
+
+                for attr in attractions:
+                    slot = (attr.get("slot") or "").capitalize()
+                    title = attr.get("title") or "Activity"
+                    desc = (attr.get("description") or "").strip()
+                    rating = attr.get("rating")
+                    if desc and "." in desc:
+                        desc = desc.split(".")[0].strip() + "."
+                    rating_str = f" Rated {rating}." if rating else ""
+                    desc_str = f" — {desc}{rating_str}" if desc else (f" — Rated {rating}." if rating else "")
+                    lines.append(f"- {title} ({slot}){desc_str}")
+
                 return "\n".join(lines)
 
             # If specific day requested, show only that day
@@ -757,12 +778,56 @@ class ResponseFormatter:
                 return {"text": text, "followups": chips[:4]}
 
             # Otherwise show all days (max 3 shown; you have 3 anyway)
-            out_lines = []
+            # Build header
+            origin = (parsed_intent.get("entities") or {}).get("origin_city") or "Colombo"
+            dest = (parsed_intent.get("entities") or {}).get("city") or "Kandy"
+            start = (parsed_intent.get("entities") or {}).get("start_date") or ""
+            end = (parsed_intent.get("entities") or {}).get("end_date") or ""
+            date_range = f"{start} – {end}" if start and end else start
+            header = f"{origin} to {dest} | {len(itinerary)}-Day Itinerary | {date_range}"
+
+            out_lines = [header, ""]
+
             for i, d in enumerate(itinerary[:3], start=1):
                 out_lines.append(format_one_day(d, f"Day {i}"))
-                out_lines.append("")  # spacing
+                out_lines.append("")
 
-            # chips Day 1..Day N (max 4)
+            # Hotels — deduplicate, pull from first day
+            first_day = itinerary[0] if itinerary else {}
+            hotels = first_day.get("hotel_options") or []
+            if hotels:
+                out_lines.append("Where to Stay")
+                for h in hotels:
+                    name = h.get("name") or "Hotel"
+                    price = h.get("price_range_lkr") or {}
+                    price_str = f"LKR {int(price['min']):,}–{int(price['max']):,}/night" if price.get("min") and price.get("max") else ""
+                    amenities = h.get("amenities") or []
+                    amenities_str = ", ".join(amenities[:4]) if amenities else ""
+                    parts = [p for p in [price_str, amenities_str] if p]
+                    detail = " | ".join(parts)
+                    out_lines.append(f"- {name}" + (f" — {detail}" if detail else ""))
+                out_lines.append("")
+
+            # Restaurants — collect unique across all days
+            seen_restaurants = set()
+            all_restaurants = []
+            for d in itinerary:
+                for r in (d.get("restaurants") or []):
+                    title = r.get("title") or ""
+                    if title and title not in seen_restaurants:
+                        seen_restaurants.add(title)
+                        all_restaurants.append(r)
+
+            if all_restaurants:
+                out_lines.append("Where to Eat")
+                for r in all_restaurants:
+                    title = r.get("title") or "Restaurant"
+                    rating = r.get("rating")
+                    category = (r.get("category") or "").replace("_", " ").capitalize()
+                    rating_str = f", rated {rating}" if rating else ""
+                    out_lines.append(f"- {title} — {category}{rating_str}")
+                out_lines.append("")
+
             n = days or len(itinerary)
             chips = [f"Day {i}" for i in range(1, min(n, 4) + 1)]
             return {"text": "\n".join(out_lines).strip(), "followups": chips}
@@ -833,6 +898,8 @@ class ResponseFormatter:
 
     def _format_with_groq(self, user_text, parsed_intent, results, tasks, *, effective_intent: str):
         # If key missing, fallback safely
+        if effective_intent == "plan_itinerary":
+            return self._format_with_templates(user_text, parsed_intent, results, tasks)
         if not self.groq_key:
             if self.debug:
                 print("[ResponseFormatter:groq] groq_key missing -> templates")

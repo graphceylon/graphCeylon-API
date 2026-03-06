@@ -38,7 +38,7 @@ KG_RAW_DIR.mkdir(parents=True, exist_ok=True)
 # ---- 8. API Key ----
 OPENWEATHER_API_KEY = os.getenv(
     "OPENWEATHER_API_KEY",
-    "563f99c8a6edd46108814d78d1fd655f",  # default fallback
+    "ff502027d162a931f067c5ee2fe56e02",  # default fallback
 )
 
 # ---- 9. Deprecated paths (kept for compatibility, not used) ----
