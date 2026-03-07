@@ -2959,6 +2959,10 @@ class OrchestratorService:
             if session_state and user_id and session_id != "no_session":
                 self.session_store.save(user_id=user_id, session_id=session_id, state=session_state.to_dict())
         _save_session_if_needed()
+        it = results.get("itinerary_result") or {}
+        it_dict = it.model_dump(mode="json") if hasattr(it, "model_dump") else dict(it)
+        print("outbound_stops count:", len(it_dict.get("outbound_stops") or []))
+        print("return_stops count:", len(it_dict.get("return_stops") or []))
         return OrchestrateResponse(
             status="partial" if errors else "ok",
             message="Orchestration executed.",

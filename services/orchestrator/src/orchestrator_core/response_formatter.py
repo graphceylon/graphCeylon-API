@@ -860,6 +860,40 @@ class ResponseFormatter:
                     rating_str = f", rated {rating}" if rating else ""
                     out_lines.append(f"- {title} — {category}{rating_str}")
                 out_lines.append("")
+            outbound_stops = it.get("outbound_stops") or []
+            if outbound_stops:
+                meta = it.get("meta") or {}
+                origin = meta.get("origin_city") or "Origin"
+                destination = meta.get("destination") or "Destination"
+                out_lines.append(f"On the Way to {destination} ({origin} → {destination})")
+                for i, stop in enumerate(outbound_stops, start=1):
+                    title = stop.get("title") or "Stop"
+                    city = stop.get("city") or ""
+                    district = stop.get("district") or ""
+                    rating = stop.get("rating")
+                    location = f"{city}, {district}".strip(", ") if city or district else ""
+                    rating_str = f" — Rated {rating}" if rating else ""
+                    location_str = f" | {location}" if location else ""
+                    out_lines.append(f"- {i}. {title}{location_str}{rating_str}")
+                out_lines.append("")
+
+            # ── ADD THIS: Return stops ────────────────────────────────────
+            return_stops = it.get("return_stops") or []
+            if return_stops:
+                meta = it.get("meta") or {}
+                origin = meta.get("origin_city") or "Origin"
+                destination = meta.get("destination") or "Destination"
+                out_lines.append(f"On the Way Back ({destination} → {origin})")
+                for i, stop in enumerate(return_stops, start=1):
+                    title = stop.get("title") or "Stop"
+                    city = stop.get("city") or ""
+                    district = stop.get("district") or ""
+                    rating = stop.get("rating")
+                    location = f"{city}, {district}".strip(", ") if city or district else ""
+                    rating_str = f" — Rated {rating}" if rating else ""
+                    location_str = f" | {location}" if location else ""
+                    out_lines.append(f"- {i}. {title}{location_str}{rating_str}")
+                out_lines.append("")
 
             # n = days or len(itinerary)
             chips = [f"Day {i}" for i in range(1, min(n, 4) + 1)]

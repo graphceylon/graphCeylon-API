@@ -183,7 +183,43 @@ def _build_one_plan(payload: Dict[str, Any], cfg: PlannerConfig, mode: PlanMode)
 # PATCH: Add this function BEFORE build_two_plans_from_payload
 # in your itinerary_planner.py
 # ============================================================
+def _flatten_plan_items(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw_days = (plan or {}).get("itinerary") or []
+    out: List[Dict[str, Any]] = []
 
+    for day in raw_days:
+        for item in (day.get("items") or []):
+            enrichment = item.get("enrichment") or {}
+            weather_raw = enrichment.get("weather") or {}
+            weather_pt = weather_raw.get("weather_point") or {}
+            sustain = enrichment.get("sustainability") or {}
+            dynamic = item.get("dynamic") or {}
+            raw = item.get("raw") or {}
+
+            out.append({
+                "date": day.get("date"),
+                "city": item.get("city") or day.get("city") or raw.get("city"),
+                "district": item.get("district") or day.get("district") or raw.get("district"),
+                "slot": item.get("slot"),
+                "kind": item.get("kind"),
+                "title": item.get("title"),
+                "attraction_id": item.get("attraction_id"),
+                "category": raw.get("category"),
+                "description": raw.get("description"),
+                "rating": raw.get("rating"),
+                "weather": {
+                    "condition": weather_pt.get("condition"),
+                    "temp_c": weather_pt.get("temp_c"),
+                    "min_c": weather_pt.get("min_c"),
+                    "max_c": weather_pt.get("max_c"),
+                    "rain_risk": weather_raw.get("rain_risk"),
+                    "mean_mm": weather_pt.get("mean_mm"),
+                },
+                "crowd_risk": dynamic.get("crowd_risk_0_1"),
+                "sustainability_score": sustain.get("score_0_1"),
+                "sustainability_label": sustain.get("label"),
+            })
+    return out
 def _build_structured_itinerary(
     destination_plan: Dict[str, Any],
     hotels: List[Dict[str, Any]],
@@ -373,14 +409,14 @@ def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) ->
 
     plans: Dict[str, Any] = {
         "destination_plan": destination_plan,
+        "outbound_plan": None,
+        "return_plan": None,
+        "route_plan": None,   # keep for clarification/debug only if needed later
     }
 
-    # =========================================================
-    # 2. Build route plans only when origin differs from dest
-    # =========================================================
     if origin and origin.lower() != dest.lower():
-        plans["route_plan"]        = _build_one_plan(payload, cfg, mode="corridor_outbound")
-        plans["route_return_plan"] = _build_one_plan(payload, cfg, mode="corridor_return")
+        plans["outbound_plan"] = _build_one_plan(payload, cfg, mode="corridor_outbound")
+        plans["return_plan"]   = _build_one_plan(payload, cfg, mode="corridor_return")
 
     # =========================================================
     # 3. Collect hotels from destination plan
@@ -392,7 +428,7 @@ def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) ->
     #    Priority: corridor outbound -> return -> destination
     # =========================================================
     shop_dine_items: List[Dict[str, Any]] = []
-    for plan_key in ("route_plan", "route_return_plan", "destination_plan"):
+    for plan_key in ("outbound_plan", "return_plan", "destination_plan"):
         plan  = plans.get(plan_key) or {}
         items = plan.get("shopping_dining_on_route", {}).get("items") or []
         if items:
@@ -411,6 +447,9 @@ def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) ->
     # =========================================================
     # 6. Return full response
     # =========================================================
+    outbound_plan = plans.get("outbound_plan") or {}
+    return_plan = plans.get("return_plan") or {}
+
     return {
         "status": "ok",
         "meta": {
@@ -419,14 +458,10 @@ def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) ->
             "days":         payload.get("days"),
             "start_date":   payload.get("start_date"),
         },
-
-        # ✅ Clean day-by-day itinerary (attractions + restaurants + hotels)
         "itinerary": structured_itinerary,
-
-        # Raw plans kept for debugging / route display on map
+        "outbound_stops": _flatten_plan_items(outbound_plan),
+        "return_stops": _flatten_plan_items(return_plan),
         "plans": plans,
-
-        # Top-level raw hotel + shop/dine for any consumer that wants raw data
         "hotels": destination_plan.get("hotels") or {},
         "shopping_dining_on_route": {
             "items": shop_dine_items,
