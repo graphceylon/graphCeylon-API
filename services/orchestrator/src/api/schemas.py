@@ -95,6 +95,7 @@ class OrchestrateRequest(BaseModel):
     turn_id: Optional[str] = None           # per user message/turn
     idempotency_key: Optional[str] = None 
     context: Optional[Dict[str, Any]] = None
+    benchmark_transport: Optional[str] = None
 
 
 # what intent parser returns (after wrapping)

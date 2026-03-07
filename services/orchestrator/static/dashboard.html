@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GraphCeylon · Transport Benchmark</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.5.0/Recharts.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body { background: #060910; color: #fff; font-family: 'Syne', sans-serif; }
+    @keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.35} }
+    @keyframes fadeUp { from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)} }
+    @keyframes scanline { 0%{transform:translateY(-100%)}100%{transform:translateY(100vh)} }
+    @keyframes spin { from{transform:rotate(0deg)}to{transform:rotate(360deg)} }
+    .fade-up { animation: fadeUp 0.45s ease forwards; }
+    .cap-btn:hover { background: rgba(0,229,255,0.08) !important; border-color: rgba(0,229,255,0.35) !important; color: #00E5FF !important; }
+    .row-hover:hover { background: rgba(255,255,255,0.03) !important; }
+    .refresh-btn:hover { background: rgba(0,229,255,0.15) !important; }
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(0,229,255,0.2); border-radius: 2px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script>
+    const { useState, useEffect, useCallback, useRef } = React;
+    const {
+      BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+      ResponsiveContainer, LineChart, Line
+    } = Recharts;
+
+    const API_BASE = "http://localhost:8002";
+
+    const TRANSPORT_CONFIG = {
+      a2a_http:            { label: "A2A HTTP",            color: "#00E5FF", bg: "rgba(0,229,255,0.07)",   border: "rgba(0,229,255,0.25)",  desc: "Direct POST via A2AHttpAdapter" },
+      mcp_stdio:           { label: "MCP stdio",           color: "#FF6B35", bg: "rgba(255,107,53,0.07)",  border: "rgba(255,107,53,0.25)", desc: "Subprocess IPC over stdin/stdout" },
+      mcp_streamable_http: { label: "MCP Streamable HTTP", color: "#69FF47", bg: "rgba(105,255,71,0.07)",  border: "rgba(105,255,71,0.25)", desc: "SSE-based streaming transport" },
+      local:               { label: "Local",               color: "#B794F4", bg: "rgba(183,148,244,0.07)", border: "rgba(183,148,244,0.25)",desc: "In-process handler" },
+    };
+
+    const METRICS = [
+      { key: "p50_ms", label: "p50" },
+      { key: "p95_ms", label: "p95" },
+      { key: "p99_ms", label: "p99" },
+      { key: "avg_ms", label: "avg" },
+    ];
+
+    // ── helpers ───────────────────────────────────────────────────────────────
+
+    function cfg(transport) {
+      return TRANSPORT_CONFIG[transport] || { label: transport, color: "#888", bg: "rgba(136,136,136,0.07)", border: "rgba(136,136,136,0.25)", desc: "" };
+    }
+
+    function StatusDot({ ok }) {
+      return React.createElement("span", {
+        style: {
+          display: "inline-block", width: 7, height: 7, borderRadius: "50%",
+          background: ok ? "#69FF47" : "#FF4757",
+          boxShadow: ok ? "0 0 6px #69FF47" : "0 0 6px #FF4757",
+          marginRight: 6,
+          animation: ok ? "pulse 2s ease-in-out infinite" : "none",
+        }
+      });
+    }
+
+    function Badge({ transport }) {
+      const c = cfg(transport);
+      return React.createElement("span", {
+        style: {
+          display: "inline-flex", alignItems: "center", gap: 5,
+          padding: "2px 9px", borderRadius: 4,
+          background: c.bg, border: `1px solid ${c.border}`,
+          color: c.color, fontSize: 11,
+          fontFamily: "'JetBrains Mono', monospace",
+          fontWeight: 600, letterSpacing: "0.04em",
+          whiteSpace: "nowrap",
+        }
+      },
+        React.createElement("span", { style: { width: 5, height: 5, borderRadius: "50%", background: c.color, boxShadow: `0 0 4px ${c.color}` } }),
+        c.label
+      );
+    }
+
+    const CustomTooltip = ({ active, payload, label }) => {
+      if (!active || !payload?.length) return null;
+      return React.createElement("div", {
+        style: {
+          background: "#0A0E1A", border: "1px solid rgba(0,229,255,0.2)",
+          borderRadius: 6, padding: "10px 14px",
+        }
+      },
+        React.createElement("p", { style: { margin: "0 0 6px", color: "rgba(255,255,255,0.4)", fontSize: 10, fontFamily: "'JetBrains Mono', monospace" } }, label),
+        ...payload.map((p, i) =>
+          React.createElement("div", { key: i, style: { display: "flex", alignItems: "center", gap: 7, marginBottom: 2 } },
+            React.createElement("span", { style: { width: 7, height: 7, borderRadius: "50%", background: p.fill || p.stroke } }),
+            React.createElement("span", { style: { color: "#fff", fontSize: 12, fontFamily: "'JetBrains Mono', monospace" } },
+              `${p.name}: `, React.createElement("strong", null, `${p.value}ms`)
+            )
+          )
+        )
+      );
+    };
+
+    // ── main app ──────────────────────────────────────────────────────────────
+
+    function App() {
+      const [summary, setSummary]   = useState(null);
+      const [series, setSeries]     = useState({});
+      const [loading, setLoading]   = useState(true);
+      const [error, setError]       = useState(null);
+      const [selCap, setSelCap]     = useState(null);
+      const [selMetric, setSelMetric] = useState("p95_ms");
+      const [hours, setHours]       = useState(24);
+      const [lastAt, setLastAt]     = useState(null);
+      const selCapRef               = useRef(null);
+      selCapRef.current             = selCap;
+
+      const fetchSummary = useCallback(async () => {
+        try {
+          const r = await fetch(`${API_BASE}/benchmark/summary?since_hours=${hours}`);
+          const d = await r.json();
+          if (d.ok) {
+            setSummary(d);
+            const caps = Object.keys(d.summary || {});
+            if (caps.length && !selCapRef.current) setSelCap(caps[0]);
+            setLastAt(new Date());
+            setError(null);
+          }
+        } catch (e) {
+          setError(`Cannot reach ${API_BASE}`);
+        } finally {
+          setLoading(false);
+        }
+      }, [hours]);
+
+      const fetchSeries = useCallback(async (cap, transport) => {
+        try {
+          const r = await fetch(`${API_BASE}/benchmark/series?capability=${cap}&transport=${transport}&limit=60`);
+          const d = await r.json();
+          if (d.ok) setSeries(prev => ({ ...prev, [`${cap}__${transport}`]: d.series }));
+        } catch (_) {}
+      }, []);
+
+      useEffect(() => { fetchSummary(); const t = setInterval(fetchSummary, 15000); return () => clearInterval(t); }, [fetchSummary]);
+
+      useEffect(() => {
+        if (!summary || !selCap) return;
+        Object.keys(summary.summary[selCap] || {}).forEach(t => fetchSeries(selCap, t));
+      }, [summary, selCap, fetchSeries]);
+
+      const allTransports = summary ? [...new Set(summary.transport_types || [])] : [];
+      const capabilities  = summary ? Object.keys(summary.summary || {}) : [];
+
+      const barData = (() => {
+        if (!summary || !selCap) return [];
+        const cap = summary.summary[selCap] || {};
+        return METRICS.map(m => {
+          const row = { metric: m.label };
+          Object.entries(cap).forEach(([t, s]) => { row[t] = s[m.key] ?? null; });
+          return row;
+        });
+      })();
+
+      const tableRows = (() => {
+        if (!summary) return [];
+        const rows = [];
+        Object.entries(summary.summary || {}).forEach(([cap, transports]) => {
+          Object.entries(transports).forEach(([t, s]) => rows.push({ capability: cap, transport: t, ...s }));
+        });
+        return rows;
+      })();
+
+      const seqData = (() => {
+        if (!summary || !selCap) return [];
+        const transports = Object.keys(summary.summary[selCap] || {});
+        const allS = transports.map(t => ({ t, data: series[`${selCap}__${t}`] || [] }));
+        const maxLen = Math.max(...allS.map(s => s.data.length), 0);
+        if (!maxLen) return [];
+        return Array.from({ length: maxLen }, (_, i) => {
+          const pt = { call: i + 1 };
+          allS.forEach(s => { if (s.data[i]) pt[s.t] = s.data[i].latency_ms; });
+          return pt;
+        });
+      })();
+
+      // ── render helpers ────────────────────────────────────────────────────
+
+      const s = (style) => style; // identity for readability
+
+      const section = (children, delay = 0, extra = {}) =>
+        React.createElement("div", { style: { animation: `fadeUp 0.45s ${delay}s ease both`, ...extra } }, ...children);
+
+      // ── render ────────────────────────────────────────────────────────────
+
+      return React.createElement("div", {
+        style: { minHeight: "100vh", background: "#060910", color: "#fff", fontFamily: "'Syne', sans-serif", position: "relative", overflow: "hidden" }
+      },
+
+        // grid bg
+        React.createElement("div", { style: { position: "fixed", inset: 0, backgroundImage: "linear-gradient(rgba(0,229,255,0.025) 1px,transparent 1px),linear-gradient(90deg,rgba(0,229,255,0.025) 1px,transparent 1px)", backgroundSize: "48px 48px", pointerEvents: "none", zIndex: 0 } }),
+        // glow orbs
+        React.createElement("div", { style: { position: "fixed", top: -200, right: -150, width: 600, height: 600, borderRadius: "50%", background: "radial-gradient(circle,rgba(0,229,255,0.045) 0%,transparent 70%)", pointerEvents: "none", zIndex: 0 } }),
+        React.createElement("div", { style: { position: "fixed", bottom: -180, left: -100, width: 500, height: 500, borderRadius: "50%", background: "radial-gradient(circle,rgba(105,255,71,0.03) 0%,transparent 70%)", pointerEvents: "none", zIndex: 0 } }),
+        // scanline
+        React.createElement("div", { style: { position: "fixed", top: 0, left: 0, right: 0, height: 2, background: "linear-gradient(90deg,transparent,rgba(0,229,255,0.12),transparent)", animation: "scanline 9s linear infinite", pointerEvents: "none", zIndex: 1 } }),
+
+        // content
+        React.createElement("div", { style: { position: "relative", zIndex: 2, maxWidth: 1280, margin: "0 auto", padding: "40px 28px" } },
+
+          // ── header ──
+          section([
+            React.createElement("div", { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 16, marginBottom: 36 } },
+              React.createElement("div", null,
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 } },
+                  React.createElement("div", { style: { width: 26, height: 26, borderRadius: 5, background: "rgba(0,229,255,0.1)", border: "1px solid rgba(0,229,255,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 } }, "⬡"),
+                  React.createElement("span", { style: { fontSize: 10, letterSpacing: "0.2em", color: "rgba(0,229,255,0.55)", fontFamily: "'JetBrains Mono',monospace", textTransform: "uppercase" } }, "GraphCeylon · Transport Benchmark")
+                ),
+                React.createElement("h1", { style: { fontSize: 30, fontWeight: 800, letterSpacing: "-0.02em", lineHeight: 1.1 } },
+                  "MCP Latency ", React.createElement("span", { style: { color: "#00E5FF" } }, "Analysis")
+                ),
+                React.createElement("p", { style: { marginTop: 6, fontSize: 12, color: "rgba(255,255,255,0.28)", fontFamily: "'JetBrains Mono',monospace" } }, "A2A HTTP · MCP stdio · MCP Streamable HTTP")
+              ),
+              React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 7 } },
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: 5, background: error ? "rgba(255,71,87,0.07)" : "rgba(105,255,71,0.06)", border: `1px solid ${error ? "rgba(255,71,87,0.25)" : "rgba(105,255,71,0.2)"}` } },
+                  React.createElement(StatusDot, { ok: !error && !loading }),
+                  React.createElement("span", { style: { fontSize: 10, color: error ? "#FF4757" : "#69FF47", fontFamily: "'JetBrains Mono',monospace" } }, error ? "offline" : loading ? "connecting…" : "live · 15s refresh")
+                ),
+                lastAt && React.createElement("span", { style: { fontSize: 9, color: "rgba(255,255,255,0.18)", fontFamily: "'JetBrains Mono',monospace" } }, `last: ${lastAt.toLocaleTimeString()}`),
+                React.createElement("div", { style: { display: "flex", gap: 3 } },
+                  ...[6, 24, 48].map(h =>
+                    React.createElement("button", {
+                      key: h, onClick: () => setHours(h),
+                      style: { padding: "3px 9px", borderRadius: 4, fontSize: 10, cursor: "pointer", fontFamily: "'JetBrains Mono',monospace", background: hours === h ? "rgba(0,229,255,0.12)" : "transparent", border: hours === h ? "1px solid rgba(0,229,255,0.35)" : "1px solid rgba(255,255,255,0.07)", color: hours === h ? "#00E5FF" : "rgba(255,255,255,0.28)", transition: "all 0.15s" }
+                    }, `${h}h`)
+                  )
+                )
+              )
+            )
+          ], 0),
+
+          // ── loading ──
+          loading && React.createElement("div", { style: { textAlign: "center", padding: 80, color: "rgba(255,255,255,0.2)", fontFamily: "'JetBrains Mono',monospace", fontSize: 13 } },
+            React.createElement("div", { style: { fontSize: 22, color: "#00E5FF", animation: "spin 1.2s linear infinite", display: "inline-block", marginBottom: 12 } }, "⟳"),
+            React.createElement("div", null, `connecting to ${API_BASE}…`)
+          ),
+
+          // ── error ──
+          !loading && error && React.createElement("div", { style: { textAlign: "center", padding: 80 } },
+            React.createElement("div", { style: { color: "#FF4757", fontFamily: "'JetBrains Mono',monospace", fontSize: 13, marginBottom: 6 } }, `⚠ ${error}`),
+            React.createElement("div", { style: { color: "rgba(255,255,255,0.2)", fontSize: 11, fontFamily: "'JetBrains Mono',monospace" } }, `make sure orchestrator is running at ${API_BASE}`)
+          ),
+
+          // ── main content ──
+          !loading && !error && summary && React.createElement(React.Fragment, null,
+
+            // transport legend
+            section([
+              React.createElement("div", { style: { display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 28 } },
+                ...Object.entries(TRANSPORT_CONFIG).map(([key, c]) => {
+                  const active = allTransports.includes(key);
+                  return React.createElement("div", { key, style: { display: "flex", alignItems: "center", gap: 7, padding: "7px 13px", borderRadius: 6, background: active ? c.bg : "rgba(255,255,255,0.015)", border: `1px solid ${active ? c.border : "rgba(255,255,255,0.04)"}`, opacity: active ? 1 : 0.4 } },
+                    React.createElement("span", { style: { width: 6, height: 6, borderRadius: "50%", background: c.color, boxShadow: active ? `0 0 5px ${c.color}` : "none" } }),
+                    React.createElement("span", { style: { fontSize: 11, color: active ? c.color : "rgba(255,255,255,0.28)", fontFamily: "'JetBrains Mono',monospace", fontWeight: 600 } }, c.label),
+                    React.createElement("span", { style: { fontSize: 10, color: "rgba(255,255,255,0.18)", fontFamily: "'JetBrains Mono',monospace" } }, active ? c.desc : "no data yet")
+                  );
+                })
+              )
+            ], 0.05),
+
+            // stat cards for selected capability
+            selCap && summary.summary[selCap] && section([
+              React.createElement("div", { style: { fontSize: 10, letterSpacing: "0.14em", color: "rgba(255,255,255,0.22)", fontFamily: "'JetBrains Mono',monospace", textTransform: "uppercase", marginBottom: 10 } }, `${selCap} · transport stats`),
+              React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(210px,1fr))", gap: 8, marginBottom: 24 } },
+                ...Object.entries(summary.summary[selCap]).map(([transport, st]) => {
+                  const c = cfg(transport);
+                  return React.createElement("div", { key: transport, style: { background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.055)", borderRadius: 8, padding: "15px 17px", borderLeft: `2px solid ${c.color}` } },
+                    React.createElement(Badge, { transport }),
+                    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "7px 10px", marginTop: 11 } },
+                      ...[{ l: "p50", v: st.p50_ms }, { l: "p95", v: st.p95_ms }, { l: "avg", v: st.avg_ms }, { l: "calls", v: st.call_count, u: "" }].map(m =>
+                        React.createElement("div", { key: m.l },
+                          React.createElement("div", { style: { fontSize: 9, color: "rgba(255,255,255,0.22)", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.1em", textTransform: "uppercase" } }, m.l),
+                          React.createElement("div", { style: { fontSize: 20, fontWeight: 700, color: c.color, fontFamily: "'JetBrains Mono',monospace", lineHeight: 1.15 } },
+                            m.v ?? "—", React.createElement("span", { style: { fontSize: 10, color: "rgba(255,255,255,0.25)" } }, m.u !== undefined ? m.u : "ms")
+                          )
+                        )
+                      )
+                    ),
+                    React.createElement("div", { style: { marginTop: 9, padding: "3px 7px", borderRadius: 4, background: st.success_rate === 100 ? "rgba(105,255,71,0.07)" : "rgba(255,71,87,0.07)", display: "inline-flex", alignItems: "center", gap: 4 } },
+                      React.createElement(StatusDot, { ok: st.success_rate === 100 }),
+                      React.createElement("span", { style: { fontSize: 10, fontFamily: "'JetBrains Mono',monospace", color: st.success_rate === 100 ? "#69FF47" : "#FF4757" } }, `${st.success_rate}% success`)
+                    )
+                  );
+                })
+              )
+            ], 0.1),
+
+            // capability + metric selectors
+            section([
+              React.createElement("div", { style: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 18 } },
+                React.createElement("div", { style: { display: "flex", gap: 3 } },
+                  ...capabilities.map(cap =>
+                    React.createElement("button", { key: cap, className: "cap-btn", onClick: () => setSelCap(cap), style: { padding: "5px 11px", borderRadius: 4, cursor: "pointer", fontSize: 11, fontFamily: "'JetBrains Mono',monospace", background: selCap === cap ? "rgba(0,229,255,0.1)" : "transparent", border: selCap === cap ? "1px solid rgba(0,229,255,0.35)" : "1px solid rgba(255,255,255,0.07)", color: selCap === cap ? "#00E5FF" : "rgba(255,255,255,0.35)", transition: "all 0.15s" } }, cap)
+                  )
+                ),
+                React.createElement("div", { style: { width: 1, height: 18, background: "rgba(255,255,255,0.07)" } }),
+                React.createElement("div", { style: { display: "flex", gap: 3 } },
+                  ...METRICS.map(m =>
+                    React.createElement("button", { key: m.key, onClick: () => setSelMetric(m.key), style: { padding: "4px 9px", borderRadius: 4, cursor: "pointer", fontSize: 10, fontFamily: "'JetBrains Mono',monospace", background: selMetric === m.key ? "rgba(255,255,255,0.07)" : "transparent", border: selMetric === m.key ? "1px solid rgba(255,255,255,0.18)" : "1px solid transparent", color: selMetric === m.key ? "#fff" : "rgba(255,255,255,0.28)", transition: "all 0.15s" } }, m.label)
+                  )
+                )
+              )
+            ], 0.15),
+
+            // charts
+            section([
+              React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 } },
+
+                // bar chart
+                React.createElement("div", { style: { background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.055)", borderRadius: 10, padding: "18px 14px" } },
+                  React.createElement("div", { style: { marginBottom: 14 } },
+                    React.createElement("div", { style: { fontSize: 10, color: "rgba(255,255,255,0.45)", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.08em" } }, "LATENCY DISTRIBUTION"),
+                    React.createElement("div", { style: { fontSize: 9, color: "rgba(255,255,255,0.18)", fontFamily: "'JetBrains Mono',monospace", marginTop: 2 } }, "p50 · p95 · p99 · avg per transport")
+                  ),
+                  barData.length > 0
+                    ? React.createElement(ResponsiveContainer, { width: "100%", height: 210 },
+                        React.createElement(BarChart, { data: barData, barGap: 2, barCategoryGap: "28%" },
+                          React.createElement(CartesianGrid, { stroke: "rgba(255,255,255,0.04)", vertical: false }),
+                          React.createElement(XAxis, { dataKey: "metric", tick: { fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "'JetBrains Mono',monospace" }, axisLine: false, tickLine: false }),
+                          React.createElement(YAxis, { tick: { fill: "rgba(255,255,255,0.28)", fontSize: 9, fontFamily: "'JetBrains Mono',monospace" }, axisLine: false, tickLine: false, unit: "ms", width: 38 }),
+                          React.createElement(Tooltip, { content: React.createElement(CustomTooltip), cursor: { fill: "rgba(255,255,255,0.02)" } }),
+                          ...allTransports.map(t => React.createElement(Bar, { key: t, dataKey: t, name: cfg(t).label, fill: cfg(t).color, radius: [3, 3, 0, 0], maxBarSize: 30 }))
+                        )
+                      )
+                    : React.createElement("div", { style: { height: 210, display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.13)", fontSize: 11, fontFamily: "'JetBrains Mono',monospace" } }, "no data for selected capability")
+                ),
+
+                // line chart
+                React.createElement("div", { style: { background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.055)", borderRadius: 10, padding: "18px 14px" } },
+                  React.createElement("div", { style: { marginBottom: 14 } },
+                    React.createElement("div", { style: { fontSize: 10, color: "rgba(255,255,255,0.45)", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.08em" } }, "CALL SEQUENCE"),
+                    React.createElement("div", { style: { fontSize: 9, color: "rgba(255,255,255,0.18)", fontFamily: "'JetBrains Mono',monospace", marginTop: 2 } }, "latency over time · connection warmup effect")
+                  ),
+                  seqData.length > 0
+                    ? React.createElement(ResponsiveContainer, { width: "100%", height: 210 },
+                        React.createElement(LineChart, { data: seqData },
+                          React.createElement(CartesianGrid, { stroke: "rgba(255,255,255,0.04)", vertical: false }),
+                          React.createElement(XAxis, { dataKey: "call", tick: { fill: "rgba(255,255,255,0.28)", fontSize: 9, fontFamily: "'JetBrains Mono',monospace" }, axisLine: false, tickLine: false }),
+                          React.createElement(YAxis, { tick: { fill: "rgba(255,255,255,0.28)", fontSize: 9, fontFamily: "'JetBrains Mono',monospace" }, axisLine: false, tickLine: false, unit: "ms", width: 38 }),
+                          React.createElement(Tooltip, { content: React.createElement(CustomTooltip) }),
+                          ...allTransports.map(t => React.createElement(Line, { key: t, type: "monotone", dataKey: t, name: cfg(t).label, stroke: cfg(t).color, strokeWidth: 1.5, dot: false, activeDot: { r: 3, fill: cfg(t).color } }))
+                        )
+                      )
+                    : React.createElement("div", { style: { height: 210, display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.13)", fontSize: 11, fontFamily: "'JetBrains Mono',monospace" } }, "fire more requests to see sequence")
+                )
+              )
+            ], 0.2),
+
+            // table
+            section([
+              React.createElement("div", { style: { background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.055)", borderRadius: 10, overflow: "hidden" } },
+                React.createElement("div", { style: { padding: "14px 18px", borderBottom: "1px solid rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "space-between" } },
+                  React.createElement("div", null,
+                    React.createElement("div", { style: { fontSize: 10, color: "rgba(255,255,255,0.45)", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.08em" } }, "ALL RESULTS"),
+                    React.createElement("div", { style: { fontSize: 9, color: "rgba(255,255,255,0.18)", fontFamily: "'JetBrains Mono',monospace", marginTop: 2 } }, `${tableRows.length} transport × intent combinations`)
+                  ),
+                  React.createElement("button", { className: "refresh-btn", onClick: fetchSummary, style: { padding: "4px 11px", borderRadius: 4, cursor: "pointer", fontSize: 10, fontFamily: "'JetBrains Mono',monospace", background: "rgba(0,229,255,0.07)", border: "1px solid rgba(0,229,255,0.2)", color: "#00E5FF", transition: "all 0.15s" } }, "↻ refresh")
+                ),
+                React.createElement("div", { style: { overflowX: "auto" } },
+                  React.createElement("table", { style: { width: "100%", borderCollapse: "collapse" } },
+                    React.createElement("thead", null,
+                      React.createElement("tr", { style: { borderBottom: "1px solid rgba(255,255,255,0.05)" } },
+                        ...["Intent", "Transport", "calls", "avg", "p50", "p95", "p99", "min", "max", "success"].map(h =>
+                          React.createElement("th", { key: h, style: { padding: "9px 14px", textAlign: ["Intent","Transport"].includes(h) ? "left" : "right", fontSize: 9, color: "rgba(255,255,255,0.22)", fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.1em", textTransform: "uppercase", fontWeight: 500 } }, h)
+                        )
+                      )
+                    ),
+                    React.createElement("tbody", null,
+                      tableRows.length === 0
+                        ? React.createElement("tr", null, React.createElement("td", { colSpan: 10, style: { padding: 32, textAlign: "center", color: "rgba(255,255,255,0.13)", fontSize: 12, fontFamily: "'JetBrains Mono',monospace" } }, "no benchmark data yet — fire some requests first"))
+                        : tableRows.map((row, i) => {
+                            const c = cfg(row.transport);
+                            return React.createElement("tr", { key: i, className: "row-hover", style: { borderBottom: "1px solid rgba(255,255,255,0.03)", transition: "background 0.1s" } },
+                              React.createElement("td", { style: { padding: "9px 14px", fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "rgba(255,255,255,0.65)" } }, row.capability),
+                              React.createElement("td", { style: { padding: "9px 14px" } }, React.createElement(Badge, { transport: row.transport })),
+                              React.createElement("td", { style: { padding: "9px 14px", textAlign: "right", fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: "rgba(255,255,255,0.35)" } }, row.call_count),
+                              ...["avg_ms","p50_ms","p95_ms","p99_ms","min_ms","max_ms"].map(k =>
+                                React.createElement("td", { key: k, style: { padding: "9px 14px", textAlign: "right", fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: k === "p95_ms" ? c.color : "rgba(255,255,255,0.55)", fontWeight: k === "p95_ms" ? 700 : 400 } },
+                                  row[k] ?? "—", React.createElement("span", { style: { fontSize: 8, color: "rgba(255,255,255,0.2)" } }, "ms")
+                                )
+                              ),
+                              React.createElement("td", { style: { padding: "9px 14px", textAlign: "right" } },
+                                React.createElement("span", { style: { fontSize: 11, fontFamily: "'JetBrains Mono',monospace", color: row.success_rate === 100 ? "#69FF47" : "#FF4757" } }, `${row.success_rate}%`)
+                              )
+                            );
+                          })
+                    )
+                  )
+                )
+              )
+            ], 0.25),
+
+            // footer
+            React.createElement("div", { style: { marginTop: 28, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6 } },
+              React.createElement("span", { style: { fontSize: 9, color: "rgba(255,255,255,0.13)", fontFamily: "'JetBrains Mono',monospace" } }, `graphceylon · transport benchmark · ${new Date().getFullYear()}`),
+              React.createElement("span", { style: { fontSize: 9, color: "rgba(255,255,255,0.13)", fontFamily: "'JetBrains Mono',monospace" } }, `window: ${hours}h · auto-refresh: 15s`)
+            )
+          ),
+
+          // empty state
+          !loading && !error && summary && Object.keys(summary.summary || {}).length === 0 &&
+            React.createElement("div", { style: { textAlign: "center", padding: 80 } },
+              React.createElement("div", { style: { fontSize: 36, marginBottom: 14 } }, "📡"),
+              React.createElement("div", { style: { color: "rgba(255,255,255,0.35)", fontFamily: "'JetBrains Mono',monospace", fontSize: 13, marginBottom: 6 } }, "no benchmark data yet"),
+              React.createElement("div", { style: { color: "rgba(255,255,255,0.18)", fontSize: 11, fontFamily: "'JetBrains Mono',monospace" } }, "fire requests to /orchestrate and data will appear here automatically")
+            )
+        )
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+  </script>
+</body>
+</html>

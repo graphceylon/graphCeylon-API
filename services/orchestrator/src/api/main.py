@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from .schemas import OrchestrateRequest, OrchestrateResponse
 from ..orchestrator_core.orchestrator_service import OrchestratorService
@@ -6,7 +7,8 @@ from ..orchestrator_core.intent_parser.agent import IntentParserAgent
 from ..orchestrator_core.task_graph_builder import TaskGraphBuilder
 from .events_routes import router as events_router
 from .booking_routes import router as booking_router
-
+from .benchmark_routes import router as benchmark_router
+from fastapi.responses import HTMLResponse
 from .phase2_routes import router as phase2_router
 from .semantic_routes import router as semantic_router
 from .trip_routes import router as trips_router
@@ -21,12 +23,14 @@ app = FastAPI(
     version="0.1.0",
     description="Tourism multi-agent orchestrator for Sri Lanka",
 )
+app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(events_router)
 app.include_router(stream_router)
 app.include_router(phase2_router)
 app.include_router(semantic_router)
 app.include_router(trips_router)
 app.include_router(booking_router)
+app.include_router(benchmark_router, prefix="/benchmark")
 
 intent_parser_agent = IntentParserAgent(
 
@@ -47,7 +51,11 @@ orchestrator = OrchestratorService(
     task_graph_builder=task_graph_builder,
     protocol_mode="direct",
 )
-
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard():
+    with open("static/dashboard.html") as f:
+        return f.read()
+    
 @app.get("/")
 def root():
     return {"message": "GraphCeylon Orchestrator running", "status": "ok"}

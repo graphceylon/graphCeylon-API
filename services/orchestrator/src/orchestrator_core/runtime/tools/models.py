@@ -1,23 +1,9 @@
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, Literal
 from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional, Literal
 from uuid import uuid4
 from enum import Enum
-import time
-from ...core_contract.models import EvidenceItem
 
-
-"""
-Single import surface for runtime/tools.
-
-Rule:
-- All tool contracts come from orchestrator_core/core_contract/models.py
-- No duplicates inside runtime/
-"""
-
-from ...core_contract.models import ToolCall, ToolResult
-
-__all__ = ["ToolCall", "ToolResult"]
 
 class ToolErrorCode(str, Enum):
     TIMEOUT = "timeout"
@@ -30,12 +16,16 @@ class ToolErrorCode(str, Enum):
     UNKNOWN = "unknown"
 
 
+# ✅ Transport type literal — used for benchmark tagging
+TransportType = Literal["a2a_http", "mcp_stdio", "mcp_streamable_http", "local", "unknown"]
+
+
 class ToolCall(BaseModel):
     name: str
     args: Dict[str, Any] = Field(default_factory=dict)
 
-    # standard runtime controls
-    timeout_ms: int = 20000
+    # runtime controls
+    timeout_ms: int = 20_000
     retries: int = 1
 
     # tracing / idempotency
@@ -47,6 +37,10 @@ class ToolCall(BaseModel):
     is_write: bool = False
     idempotency_key: Optional[str] = None
 
+    # ✅ NEW: which transport to use — router uses this to pick provider
+    # If None, ToolRouter falls back to tool_to_provider mapping
+    transport_type: Optional[TransportType] = None
+
 
 class ToolResult(BaseModel):
     ok: bool
@@ -55,9 +49,12 @@ class ToolResult(BaseModel):
     error_code: Optional[ToolErrorCode] = None
     latency_ms: int = 0
 
+    # ✅ provider is now the transport name for benchmark clarity
     provider: Optional[Literal["a2a", "mcp", "local"]] = None
+
+    # ✅ NEW: exact transport used — persisted to trace_events.transport_type
+    transport_type: Optional[TransportType] = None
+
     tool_name: Optional[str] = None
     trace_id: Optional[str] = None
-    evidence: List[EvidenceItem] = Field(default_factory=list)
-
-ToolResult.model_rebuild()
+    evidence: List[Any] = Field(default_factory=list)

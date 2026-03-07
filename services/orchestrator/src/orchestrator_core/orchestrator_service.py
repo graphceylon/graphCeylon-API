@@ -11,6 +11,7 @@ from .mappers.restaurant_mapper import map_restaurant_request
 from .mappers.book_hotel_mapper import map_book_hotel_request
 from .clients.booking_client import save_booking_draft
 from .contracts.book_hotel import BookHotelResponse
+from .runtime.tools.providers.mcp_provider import MCPToolProvider
 import hashlib
 import json
 import traceback
@@ -811,47 +812,73 @@ class OrchestratorService:
 
         # ✅ 3) A2A adapter
         self.a2a = A2AHttpAdapter()
-        # Map tool_name -> endpoint using existing intent handlers
         tool_endpoints = {k: v.endpoint for k, v in self.handlers.items()}
 
-        # A2A provider (uses your existing AgentRegistry + HTTP adapter)
         a2a_provider = A2AToolProvider(
             registry=self.registry,
             adapter=self.a2a,
             tool_endpoints=tool_endpoints,
         )
 
-        # Local provider (for booking stub / demo HITL)
         local_provider = LocalToolProvider(
             handlers={
-                "booking_stub": booking_stub,  # define this function somewhere above
+                "booking_stub": booking_stub,
                 "book_hotel": book_hotel_flow,
             }
         )
 
-        # Tool router (single entry point for all tool calls)
+        # ✅ MCP stdio (local tools over subprocess)
+        _MCP_SERVER_LOCAL = str(
+            Path(__file__).resolve().parent / "servers" / "mcp_server_local.py"
+        )
+        mcp_stdio_provider = MCPToolProvider(
+            transport="stdio",
+            server_script=_MCP_SERVER_LOCAL,
+            timeout_sec=30.0,
+        )
+
+        # ✅ MCP Streamable HTTP (remote agents over MCP protocol)
+        _MCP_SERVER_URL = os.getenv("MCP_SERVER_HTTP_URL", "http://localhost:9101")
+        mcp_http_provider = MCPToolProvider(
+            transport="streamable_http",
+            server_url=_MCP_SERVER_URL,
+            timeout_sec=30.0,
+        )
+
         self.tool_router = ToolRouter(
             providers={
-                "a2a": a2a_provider,
-                "local": local_provider,
-                # "mcp": MCPToolProvider(mcp_client),  # add later
+                "a2a":       a2a_provider,
+                "local":     local_provider,
+                "mcp_stdio": mcp_stdio_provider,
+                "mcp_http":  mcp_http_provider,
             },
             tool_to_provider={
-                "forecast_weather": "a2a",
-                "info_attraction": "a2a",
-                "info_accommodation": "a2a",
-                "info_transport": "a2a",
-                "plan_itinerary": "a2a",
-                "modify_itinerary": "a2a",
-                "booking_stub": "local",
-                "info_visa_policy": "a2a",
-                "crowd_forecast": "a2a",
-                "forecast_price": "a2a",
+                # existing A2A routes — unchanged
+                "forecast_weather":        "a2a",
+                "info_attraction":         "a2a",
+                "info_accommodation":      "a2a",
+                "info_transport":          "a2a",
+                "plan_itinerary":          "a2a",
+                "modify_itinerary":        "a2a",
+                "info_visa_policy":        "a2a",
+                "crowd_forecast":          "a2a",
+                "forecast_price":          "a2a",
                 "forecast_sustainability": "a2a",
-                "recommend_pois": "a2a",
-                "recommend_restaurants": "a2a",
-                "book_hotel": "local",  # for demo, or "a2a" if a service handles it
-            }
+                "recommend_pois":          "a2a",
+                "recommend_restaurants":   "a2a",
+                # existing local routes — unchanged
+                "booking_stub":            "local",
+                "book_hotel":              "local",
+                # MCP stdio benchmark variants
+                "booking_stub_stdio":      "mcp_stdio",
+                "book_hotel_stdio":        "mcp_stdio",
+                # MCP streamable HTTP benchmark variants
+                "forecast_weather_mcp":    "mcp_http",
+                "recommend_pois_mcp":      "mcp_http",
+                "info_visa_policy_mcp":    "mcp_http",
+                "info_accommodation_mcp":  "mcp_http",
+                "plan_itinerary_mcp":      "mcp_http",
+            },
         )
         # ---------------------------
     # Phase 3 — Semantic Memory trigger (PGVector)
@@ -1554,6 +1581,14 @@ class OrchestratorService:
             is_write=is_write,
             idempotency_key=idem_key,
         )
+        # ✅ benchmark override — route to different transport if requested
+        benchmark_transport = getattr(req, "benchmark_transport", None)
+        print(f"[BENCHMARK DEBUG] benchmark_transport={benchmark_transport!r}, call.name before={intent_name!r}")
+        if benchmark_transport == "mcp_streamable_http":
+            call = call.model_copy(update={"name": f"{intent_name}_mcp"})
+            print(f"[BENCHMARK DEBUG] call.name after={call.name!r}")
+        elif benchmark_transport == "mcp_stdio":
+            call = call.model_copy(update={"name": f"{intent_name}_stdio"})
         print(
             "[phase4] trace_id=", call.trace_id,
             "intent=", call.name,
@@ -1563,22 +1598,22 @@ class OrchestratorService:
 
 
         # return parsed_obj
+        tool_res = self.tool_router.call(call)
         if self.trace_pg:
             self.trace_pg.add_event(
                 trace_id=request_trace_id or call.trace_id,
                 session_id=req.session_id or "no_session",
                 user_id=req.user_id,
                 turn_id=req.turn_id if hasattr(req, "turn_id") else None,
-                event_type="tool_start",
-                status="started",
+                event_type="tool_end",
+                status="ok" if tool_res.ok else "error",
                 task_id=call.name,
                 capability=call.name,
-                provider=None,
+                provider=tool_res.provider,
                 endpoint=handler.endpoint,
-                request_payload=call.args,
-                idempotency_key=call.idempotency_key,
+                latency_ms=tool_res.latency_ms,
+                transport_type=tool_res.transport_type or "a2a_http",  # ✅ now safe
             )
-        tool_res = self.tool_router.call(call)
         # after tool_router.call(call)
         explain.tool = {
             "intent": call.name,
