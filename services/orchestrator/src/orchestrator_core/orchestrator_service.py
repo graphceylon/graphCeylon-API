@@ -154,6 +154,28 @@ MULTI_INTENT_ALLOW = {
 }
 
 DISALLOW_SECONDARY = {"plan_itinerary", "modify_itinerary"} | WRITE_INTENTS
+import re
+
+PLAN_PHRASES = [
+    "plan a trip", "plan trip", "plan an itinerary", "plan itinerary",
+    "create a trip", "create an itinerary", "make an itinerary",
+    "build an itinerary", "generate an itinerary",
+]
+
+# Fuzzy match for common itinerary misspellings
+_ITINERARY_PATTERN = re.compile(
+    r"\bitin[e]?r+[ae]+r[ay]+\b",  # matches: itinerary, itinereray, itinrerary, etc.
+    re.IGNORECASE
+)
+
+def has_plan_signal(text: str) -> bool:
+    t = norm(text)
+    has_itinerary = bool(_ITINERARY_PATTERN.search(t)) or "itinerary" in t
+    has_trip = "trip" in t
+    return (
+        ("plan" in t and (has_itinerary or has_trip))
+        or any(p in t for p in PLAN_PHRASES)
+    )
 
 def pick_secondary_intents(parsed_intent, handlers: set[str], max_n: int = 2, min_score: float = 0.80) -> list[str]:
     primary = (parsed_intent.intent or "").strip()
@@ -363,6 +385,7 @@ def apply_intent_policy(parsed_intent: ParsedIntent, req_text: str, session_stat
     # --- signals ---
     plan_like = has_plan_signal(raw)
     edit_like = has_edit_signal(raw, ents)
+    print(f"[policy] raw='{raw}' plan={plan_like} edit={edit_like} active_trip={bool(session_state and session_state.slots.get('active_trip_id'))}")
 
     hotel_like = bool(re.search(r"\b(hotel|book|booking|reserve|reservation|check[-\s]?in|check[-\s]?out)\b", raw))
     weather_like = bool(re.search(r"\b(weather|forecast|rain|temperature|climate)\b", raw))
@@ -432,10 +455,10 @@ def has_edit_signal(text: str, entities) -> bool:
         return True
 
     # explicit date edit like "start on 2026-03-01"
-    if getattr(entities, "start_date", None):
-        return True
-    if re.search(r"\b(?:start|begin)\b.*\b\d{4}-\d{2}-\d{2}\b", t):
-        return True
+    # if getattr(entities, "start_date", None):
+    #     return True
+    # if re.search(r"\b(?:start|begin)\b.*\b\d{4}-\d{2}-\d{2}\b", t):
+    #     return True
 
     # days only counts as edit if accompanied by edit verb ("make it 2 days")
     if getattr(entities, "days", None):
@@ -1384,26 +1407,34 @@ class OrchestratorService:
             update={"preference_overrides": merged_prefs}
         )
         # ✅ Attach base plan for modify so recommender can patch
+        # ✅ Attach base plan for modify so recommender can patch
         if intent_name == "modify_itinerary" and session_state and req.user_id:
             active_trip_id = session_state.slots.get("active_trip_id")
             if active_trip_id:
-                trip = self.trip_repo.get_trip(trip_id=active_trip_id, user_id=req.user_id)
-                if trip and trip.plan_json:
-                    # Put these into patched_intent.entities so mapper can pick them up
-                    ents = (
-                        parsed_intent.entities.model_dump(exclude_none=False)
-                        if hasattr(parsed_intent.entities, "model_dump")
-                        else dict(parsed_intent.entities or {})
-                    )
-                    ents["itinerary_id"] = active_trip_id
-                    ents["current_itinerary"] = trip.plan_json
+                ents = (
+                    patched_intent.entities.model_dump(exclude_none=False)
+                    if hasattr(patched_intent.entities, "model_dump")
+                    else dict(patched_intent.entities or {})
+                )
 
-                    # also backfill location if missing
+                # ✅ ALWAYS inject trip_id — don't gate on plan_json
+                ents["itinerary_id"] = active_trip_id
+                print(f"[modify] injecting active_trip_id={active_trip_id} into entities")
+
+                # ✅ Only inject current_itinerary if plan_json actually exists
+                trip = self.trip_repo.get_trip(trip_id=active_trip_id, user_id=req.user_id)
+                if trip:
+                    if trip.plan_json:
+                        ents["current_itinerary"] = trip.plan_json
+                    # backfill location context regardless of plan_json
                     ents.setdefault("city", session_state.slots.get("city"))
                     ents.setdefault("country", session_state.slots.get("country"))
-                    ents.setdefault("start_date", trip.start_date)
+                    if trip.start_date:
+                        ents.setdefault("start_date", trip.start_date)
+                else:
+                    print(f"[modify] WARNING: active_trip_id={active_trip_id} not found in trip_repo for user={req.user_id}")
 
-                    patched_intent = patched_intent.model_copy(update={"entities": Entities(**ents)})  # ✅ wrap back
+                patched_intent = patched_intent.model_copy(update={"entities": Entities(**ents)})
         # 4) Build contract payload via mapper
         print("[debug] entities_type =", type(patched_intent.entities))
         contract_obj = handler.mapper(patched_intent, req)

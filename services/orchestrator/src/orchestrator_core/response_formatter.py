@@ -817,7 +817,7 @@ class ResponseFormatter:
             end = (parsed_intent.get("entities") or {}).get("end_date") or ""
             date_range = f"{start} – {end}" if start and end else start
             n = days or len(itinerary)
-            header = f"{origin} to {dest} | {n}-Day Itinerary | {date_range}"
+            header = f" {n}-Day Itinerary | {date_range}"
 
             out_lines = [header, ""]
 
@@ -902,32 +902,121 @@ class ResponseFormatter:
             return {"text": "😊 How can I help?", "followups": ["Plan an itinerary", "Recommend places"]}
 
         # ---- info_attraction template fallback (cleaner) ----
-        if intent == "info_attraction":
-            atr = results.get("attraction_result") or {}
-            items = atr.get("items") or []
+        if intent == "modify_itinerary":
+            mod_raw = results.get("modify_result")
+            if mod_raw:
+                mod = mod_raw if isinstance(mod_raw, dict) else (
+                    mod_raw.model_dump(mode="json") if hasattr(mod_raw, "model_dump") else dict(mod_raw)
+                )
+                meta = mod.get("meta") or {}
+                destination = meta.get("destination") or "your destination"
+                num_days = meta.get("days")
+                start_date = meta.get("start_date")
 
-            if not items:
+                # Build date string
+                date_str = ""
+                if start_date and num_days:
+                    try:
+                        from datetime import datetime, timedelta
+                        start = datetime.strptime(start_date, "%Y-%m-%d")
+                        end = start + timedelta(days=int(num_days) - 1)
+                        if int(num_days) == 1:
+                            date_str = start.strftime('%b %-d')
+                        else:
+                            date_str = f"{start.strftime('%b %-d')}–{end.strftime('%-d')}"
+                    except Exception:
+                        date_str = start_date
+
+                days_label = f"{num_days} day{'s' if int(num_days) != 1 else ''}" if num_days else "updated"
+                date_part = f" ({date_str})" if date_str else ""
+
+                # Build header
+                out_lines = [
+                    f"Your {destination} trip has been updated to {days_label}{date_part}.",
+                    "",
+                ]
+
+                # Pull itinerary from plan (only show days up to num_days)
+                plan = mod.get("plan") or {}
+                itinerary = plan.get("itinerary") or []
+                num_days_int = int(num_days) if num_days else len(itinerary)
+                itinerary = itinerary[:num_days_int]
+
+                for i, day in enumerate(itinerary, start=1):
+                    date = day.get("date") or ""
+                    district = day.get("district") or day.get("city") or destination
+                    out_lines.append(f"Day {i} — {date} | {district}")
+
+                    # Weather from first attraction
+                    attractions = day.get("attractions") or []
+                    if attractions:
+                        w = attractions[0].get("weather") or {}
+                        if w.get("temp_c") is not None and w.get("rain_risk"):
+                            out_lines.append(f"Weather: {int(w['temp_c'])}°C, {w['rain_risk'].lower()} rain risk")
+
+                    for attr in attractions:
+                        slot = (attr.get("slot") or "").capitalize()
+                        title = attr.get("title") or "Activity"
+                        desc = (attr.get("description") or "").strip()
+                        rating = attr.get("rating")
+                        if desc and "." in desc:
+                            desc = desc.split(".")[0].strip() + "."
+                        rating_str = f" Rated {rating}." if rating else ""
+                        desc_str = f" — {desc}{rating_str}" if desc else (f" — Rated {rating}." if rating else "")
+                        out_lines.append(f"- {title} ({slot}){desc_str}")
+
+                    out_lines.append("")
+
+                # Hotels from first day only
+                first_day = itinerary[0] if itinerary else {}
+                hotels = first_day.get("hotel_options") or []
+                if hotels:
+                    out_lines.append("Where to Stay")
+                    for h in hotels[:3]:
+                        name = h.get("name") or "Hotel"
+                        price = h.get("price_range_lkr") or {}
+                        price_str = f"LKR {int(price['min']):,}–{int(price['max']):,}/night" if price.get("min") and price.get("max") else ""
+                        amenities = h.get("amenities") or []
+                        amenities_str = ", ".join(amenities[:3]) if amenities else ""
+                        parts = [p for p in [price_str, amenities_str] if p]
+                        detail = " | ".join(parts)
+                        out_lines.append(f"- {name}" + (f" — {detail}" if detail else ""))
+                    out_lines.append("")
+
+                # Restaurants — unique across all days, in-destination only
+                seen_restaurants = set()
+                all_restaurants = []
+                for day in itinerary:
+                    for r in (day.get("restaurants") or []):
+                        title = r.get("title") or ""
+                        r_city = (r.get("city") or "").lower()
+                        dest_lower = destination.lower()
+                        # skip restaurants clearly from a different city (e.g. Colombo KFC showing in Kandy)
+                        if title and title not in seen_restaurants and (r_city == dest_lower or not r_city):
+                            seen_restaurants.add(title)
+                            all_restaurants.append(r)
+
+                if all_restaurants:
+                    out_lines.append("Where to Eat")
+                    for r in all_restaurants[:4]:
+                        title = r.get("title") or "Restaurant"
+                        rating = r.get("rating")
+                        category = (r.get("category") or "").replace("_", " ").capitalize()
+                        rating_str = f", rated {rating}" if rating else ""
+                        out_lines.append(f"- {title} — {category}{rating_str}")
+                    out_lines.append("")
+
+                chips = [f"Day {i}" for i in range(1, min(num_days_int, 4) + 1)]
+                chips += ["Show hotels", "Change destination"]
+
                 return {
-                    "text": f"I couldn’t find attractions for **{city}** from my current data. What type of places do you prefer?",
-                    "followups": ["Culture", "Nature", "Viewpoints", "Museums"],
+                    "text": "\n".join(out_lines).strip(),
+                    "followups": chips[:4],
                 }
 
-            lines = [f"Here are some places to explore in **{city}**:\n"]
-            for it in items[:5]:
-                name = it.get("name") or "Attraction"
-                desc = (it.get("description") or "").strip()
-
-                # nicer shortening: first sentence only
-                if "." in desc:
-                    desc = desc.split(".")[0].strip() + "."
-
-                lines.append(f"📍 **{name}**\n{desc}\n")
-
-            lines.append("Want me to narrow it down (culture / nature / family-friendly / short visit)?")
-            return {"text": "\n".join(lines).strip(), "followups": []}
-
-        # generic fallback
-        return {"text": "I got your request. What would you like to do next?", "followups": []}
+                # generic fallback
+                return {"text": "I got your request. What would you like to do next?", "followups": []}
+        # return {"text": "I got your request. What would you like to do next?", "followups": []}
     def _format_visa(self, visa_result: Any) -> str:
         if not visa_result:
             return ""
@@ -1017,7 +1106,7 @@ class ResponseFormatter:
         return "\n".join(lines)
     def _format_with_groq(self, user_text, parsed_intent, results, tasks, *, effective_intent: str):
         # If key missing, fallback safely
-        if effective_intent == "plan_itinerary":
+        if effective_intent in {"plan_itinerary", "modify_itinerary"}:
             return self._format_with_templates(user_text, parsed_intent, results, tasks)
         if not self.groq_key:
             if self.debug:
