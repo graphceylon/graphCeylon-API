@@ -19,6 +19,8 @@ from src.api.routes.itinerary import router as itinerary_router
 
 from src.api.routes.sustainability import router as sustainability_router
 
+# ✅ NEW: proactive micro-moment router
+from src.api.routes.proactive import router as proactive_router
 
 
 
@@ -34,6 +36,7 @@ app.include_router(crowd_router)
 app.include_router(itinerary_router)  # ✅ add
 app.include_router(sustainability_router)
 app.include_router(recommend_router)
+app.include_router(proactive_router)  # ✅ micro-moment proactive recommendations
 
 
 
