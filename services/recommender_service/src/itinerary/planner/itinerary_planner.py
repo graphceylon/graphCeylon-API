@@ -19,6 +19,7 @@ import os
 import httpx
 from copy import deepcopy
 from typing import Literal
+from collections import defaultdict
 PlanMode = Literal["city", "corridor_outbound", "corridor_return"]
 #from services.recommender_service.src.routing.graphhopper_route import fetch_route_sampled_points
 from services.recommender_service.src.routing.city_coords import resolve_city_coords
@@ -26,6 +27,10 @@ from services.recommender_service.src.routing.graphhopper_route import fetch_rou
 from services.recommender_service.src.poi.normalize import (
     normalize_to_attraction_id,
     get_attraction_record,
+)
+from .preference_embedder import (
+    score_attraction_for_preference,
+    precompute_attraction_embeddings,
 )
 from services.recommender_service.src.itinerary.enrichment.enrich_item import enrich_attraction
 #from services.recommender_service.src.routing.city_coords1 import resolve_city_coords
@@ -932,19 +937,21 @@ def compute_rank_score(
     eco_preference: float,
 ) -> float:
     """
-    Rank score is a weighted sum of:
-    - query priorities (ordered)
-    - eco_hint (still useful, but not hardcoded as "sort by eco")
+    Embedding-based rank score.
+    Each priority contributes its weight × semantic similarity (0..1).
+    No hardcoded keywords. No eco baseline bias.
     """
-    # baseline from eco_hint (0..1)
-    eco_hint = float(rec.get("_eco_hint", 0.5))
-    score = 0.25 * eco_hint + 0.05 * float(eco_preference)  # light baseline
-    # priority contributions
+    # small rating tiebreaker (0..0.05)
+    rating = float(rec.get("rating") or 3.0)
+    score = 0.05 * ((rating - 1.0) / 4.0)
+
     for p in priorities:
-        rel = _matches_priority(rec, p.key)  # 0..1
-        score += p.weight * rel
+        # ← THIS is the only change: embedding similarity instead of binary keyword
+        similarity = score_attraction_for_preference(rec, p.key)
+        score += p.weight * similarity
+
     return float(score)
-from collections import defaultdict
+
 def group_by_district(candidates):
     buckets = defaultdict(list)
     for p in candidates:
@@ -1797,6 +1804,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         # -----------------------------------------------------
     # ✅ candidates
     kg_atts = getattr(res, "candidates", None) or []
+    precompute_attraction_embeddings(kg_atts) 
     if not is_corridor_plan:
         print("[TOP-15 KG IDS]")
         for a in kg_atts[:15]:
