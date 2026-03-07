@@ -162,6 +162,7 @@ async def orchestrate_stream_generator(
         print("🔍 [SSE] explainability:", result_dict.get("explainability"))
         print("🔵 [SSE] result_dict keys:", list(result_dict.keys()))
         print("🔵 [SSE] sources:", result_dict.get("sources"))
+        print("🟡 [SSE] agentic_meta:", result_dict.get("agentic_meta")) 
         yield f"data: {json.dumps({'type': 'done', 'result': result_dict})}\n\n"
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"

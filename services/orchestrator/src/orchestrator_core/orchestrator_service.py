@@ -649,7 +649,8 @@ class OrchestratorService:
         self.trace_pg = PostgresTraceStore(TRACE_DSN) if TRACE_DSN else None
         self.response_formatter = ResponseFormatter()
         self.task_graph_builder = task_graph_builder
-        self.agentic_loop = AgenticLoop()
+        # self.agentic_loop = AgenticLoop()
+        # self.agentic_loop.set_nli(self.nli) 
         self.protocol_mode = protocol_mode
         MODEL_DIR = (
             Path(__file__).resolve()
@@ -659,6 +660,8 @@ class OrchestratorService:
 
         self.nli = NLIWrapper(model_dir=str(MODEL_DIR))
         self.verifier = VerifierAgent(nli=self.nli)
+        self.agentic_loop = AgenticLoop()
+        self.agentic_loop.set_nli(self.nli)
         # self.trace_store = InMemoryTraceStore(max_per_session=500)
         self.profile_event_store = ProfileEventStore()
         self.trip_repo = TripRepo()
@@ -2907,7 +2910,10 @@ class OrchestratorService:
                     for r in loop_out.repairs_applied
                 ],
                 "changed_summary": loop_out.changed_summary,
-                "verifier_meta": (loop_out.verify_report.meta if loop_out.verify_report else None),
+                "verifier_meta": (
+                    (loop_out.verify_report.meta or {}).get("verifier_meta", {})
+                    if loop_out.verify_report else {}
+                ),
             }
 
             if self.trace_pg:
