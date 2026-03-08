@@ -40,9 +40,19 @@ class SubAttractionRepository(BaseRepository):
     # Schema
     # ------------------------------------------------------------------
 
+    # def load_schema(self) -> Dict[str, Any]:
+    #     """Load sub-attraction schema (constraints and indexes)."""
+    #     return self.load_schema_from_file("init_sub_attractions_schema.cypher")
+
     def load_schema(self) -> Dict[str, Any]:
         """Load sub-attraction schema (constraints and indexes)."""
-        return self.load_schema_from_file("init_sub_attractions_schema.cypher")
+        try:
+            return self.load_schema_from_file("init_sub_attractions_schema.cypher")
+        except Exception as e:
+            if "EquivalentSchemaRuleAlreadyExistsException" in str(e) or "already exists" in str(e).lower():
+                logger.info("Schema already exists, skipping schema creation")
+                return {"success": True, "message": "Schema already exists"}
+            raise
 
     # ------------------------------------------------------------------
     # Data Loading

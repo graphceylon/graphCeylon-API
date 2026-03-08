@@ -7,7 +7,15 @@ import re
 import copy
 from pathlib import Path
 import math
+from .cross_encoder_reranker import (
+    rerank_candidates_with_cross_encoder,
+    build_resolved_ce_query,
+)
 from ..enrichment.enrich_candidates import enrich_and_rerank_candidates, EnrichConfig
+from .semantic_ranker import attach_semantic_scores
+from .semantic_ranker import build_semantic_query
+from .vector_search_integration import hybrid_fetch_city_attractions
+from .cross_encoder_reranker import rerank_candidates_with_cross_encoder
 from ..enrichment.enrich_item import enrich_attraction
 from ..nsga.objectives import build_objectives
 from ..nsga.pareto import pareto_front
@@ -32,7 +40,7 @@ from .preference_embedder import (
     score_attraction_for_preference,
     precompute_attraction_embeddings,
 )
-from services.recommender_service.src.itinerary.enrichment.enrich_item import enrich_attraction
+# from services.recommender_service.src.itinerary.enrichment.enrich_item import enrich_attraction
 #from services.recommender_service.src.routing.city_coords1 import resolve_city_coords
 from collections import defaultdict
 from .semantic_ranker import attach_semantic_scores
@@ -51,10 +59,11 @@ def _is_destination_candidate(c: Dict[str, Any], dest_city: str) -> bool:
     dc = (dest_city or "").strip().lower()
     if not dc:
         return True
-    # your KG uses district heavily; sometimes city is present too
+
     cand_city = str(c.get("city") or "").strip().lower()
     cand_dist = str(c.get("district") or "").strip().lower()
-    return (cand_city == dc) or (cand_dist == dc) or (dc in cand_city) or (dc in cand_dist)
+
+    return cand_city == dc or cand_dist == dc
 def _is_destination_area(c: Dict[str, Any], dest_city: str) -> bool:
     dc = (dest_city or "").strip().lower()
     if not dc:
@@ -560,14 +569,17 @@ def recommend_city_pois_simple(payload: Dict[str, Any], cfg: PlannerConfig = Pla
     # --------------------------
     # 1️⃣ Fetch from KG
     # --------------------------
+    # 1️⃣ Fetch from KG
     candidates, dbg = fetch_city_attractions_from_kg(
         city=city,
         country=country,
         limit=int(payload.get("max_candidates") or cfg.max_candidates),
         timeout=40.0,
     )
-    # Optional: ensure strict city match
+
     candidates = [c for c in candidates if _safe_city_match(c, city)]
+    attach_semantic_scores(candidates, payload)
+
     if not candidates:
         return {
             "status": "ok",
@@ -576,27 +588,59 @@ def recommend_city_pois_simple(payload: Dict[str, Any], cfg: PlannerConfig = Pla
             "items": [],
             "warnings": [f"No attractions found for city='{city}'."],
         }
-    # Add eco hint so reranker works correctly
+
     for c in candidates:
         c["_eco_hint"] = _eco_score_hint(c)
         c["_score"] = float(c.get("_score", 0.0))
-    # --------------------------
-    # 2️⃣ Preference rerank
-    # --------------------------
-    # 1️⃣ Extract priorities from payload
-    priorities = extract_priorities(payload)
-    # 2️⃣ Compute rank score using preferences ONLY (no date logic)
+
+    # ✅ ADD HERE: cross-encoder rerank
+    query_text = build_resolved_ce_query(payload)
+    if query_text:
+        candidates = rerank_candidates_with_cross_encoder(
+            query=query_text,
+            candidates=candidates,
+            top_k=20,
+        )
+
+    # ✅ ADD HERE: fuse CE + vector + base retrieval
     for c in candidates:
-        c["_eco_hint"] = _eco_score_hint(c)
-        c["_final_score"] = compute_rank_score(
+        base = float(c.get("_score", 0.0))
+        vec  = float(c.get("_vector_sim", 0.0))
+        ce = float(c.get("_ce_score_norm", 0.0))
+        kg_sem = float(c.get("_semantic_sim", 0.0))
+
+        c["_retrieval_score"] = (
+            0.50 * ce +
+            0.30 * vec +
+            0.20 * base +
+            0.15 * kg_sem
+        )
+    print("\n========== SEMANTIC DEBUG ==========")
+    for c in candidates:
+        print(
+            f"{c.get('title','?')[:35]:35s} | "
+            f"kg_sem={float(c.get('_semantic_sim',0)):.3f} | "
+            f"vec={float(c.get('_vector_sim',0)):.3f} | "
+            f"ce={float(c.get('_ce_score',0)):.3f} | "
+            f"retr={float(c.get('_retrieval_score',0)):.3f}"
+        )
+    print("====================================\n")
+
+    priorities = extract_priorities(payload)
+
+    for c in candidates:
+        pref_score = compute_rank_score(
             rec=c,
             priorities=priorities,
             eco_preference=float(payload.get("eco_preference") or 0.5),
         )
-    # 3️⃣ Sort by final score
+        theme_mult = _query_theme_bonus(c, payload)
+        retrieval = float(c.get("_retrieval_score", 0.0))  # ← add this line
+        c["_final_score"] = (0.60 * retrieval + 0.40 * pref_score) * theme_mult
+
     reranked = sorted(
         candidates,
-        key=lambda x: x.get("_final_score", 0.0),
+        key=lambda x: float(x.get("_final_score", 0.0)),
         reverse=True
     )
     # Apply limit
@@ -661,7 +705,14 @@ def _kg_item_to_candidate(x: Dict[str, Any]) -> Dict[str, Any]:
         "title": title,
         "category": x.get("category"),
         "description": x.get("editorial_summary") or x.get("description"),
-        "city": x.get("city"),
+        "_semantic_sim": (
+            x.get("_semantic_sim")
+            or x.get("semantic_score")
+            or x.get("score_semantic")
+            or x.get("similarity")
+            or 0.0
+        ),
+                "city": x.get("city"),
         "district": x.get("district"),
         "province": x.get("province"),
         "location": x.get("formatted_address") or x.get("parent_location"),
@@ -680,29 +731,43 @@ def fetch_city_attractions_from_kg(
     country: str = "Sri Lanka",
     limit: int = 60,
     timeout: float = 40.0,
+    payload: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """
-    Calls KG endpoint and returns (candidates, debug)
-    """
     url = f"{KG_BASE_URL}{KG_SUB_ATTRACTIONS_PATH}"
-    payload = {
+
+    if limit is ...:
+        raise ValueError("fetch_city_attractions_from_kg received Ellipsis for limit")
+
+    kg_body = {
         "city": city,
         "country": country,
-        "limit": limit,
+        "limit": int(limit),
     }
+    if payload:
+        kg_body["semantic"] = {
+            "enabled": True,
+            "query": build_semantic_query(payload),
+            "fields": ["groups", "editorial_summary", "category", "name"],
+            "weight": 0.35,
+        }
+
     with httpx.Client(timeout=timeout) as client:
-        r = client.post(url, json=payload)
+        r = client.post(url, json=kg_body)
         r.raise_for_status()
         data = r.json()
+
     items = data.get("items") or []
     candidates = [_kg_item_to_candidate(x) for x in items if isinstance(x, dict)]
+
     debug = {
         "kg_url": url,
-        "kg_payload": payload,
+        "kg_payload": kg_body,
         "kg_returned": len(items),
         "candidates_returned": len(candidates),
     }
+
     return candidates, debug
+    # return candidates, debug
 KG_CORRIDOR_ATTRACTIONS_PATH = "/Recommender/call/attractions-on-route"
 def fetch_corridor_attractions_from_kg(
     origin_city: str,
@@ -811,13 +876,212 @@ def _normalize_text(s: str) -> str:
     s = (s or "").lower()
     s = re.sub(r"\s+", " ", s).strip()
     return s
+def _dbg_header(title: str):
+    print("\n" + "=" * 22 + f" {title} " + "=" * 22)
 
+def _dbg_footer():
+    print("=" * 60 + "\n")
+
+def debug_payload_summary(payload: Dict[str, Any]):
+    _dbg_header("PAYLOAD SUMMARY")
+    print(json.dumps({
+        "raw_text": payload.get("raw_text"),
+        "city": payload.get("city"),
+        "destination": payload.get("destination"),
+        "origin_city": payload.get("origin_city"),
+        "days": payload.get("days"),
+        "start_date": payload.get("start_date"),
+        "travel_style": payload.get("travel_style"),
+        "tags": payload.get("tags"),
+        "food_preferences": payload.get("food_preferences"),
+        "budget_level": payload.get("budget_level"),
+        "eco_preference": payload.get("eco_preference"),
+        "route_direction": payload.get("route_direction"),
+        "waypoints": payload.get("waypoints"),
+        "stop_durations_days": payload.get("stop_durations_days"),
+    }, indent=2, ensure_ascii=False))
+    _dbg_footer()
+
+def debug_priorities(priorities: List["Priority"]):
+    _dbg_header("EXTRACTED PRIORITIES")
+    if not priorities:
+        print("No priorities extracted")
+    for p in priorities:
+        print(
+            f"key={p.key:18s} | weight={p.weight:.2f} | "
+            f"source={p.source:10s} | phrase={p.matched_phrase}"
+        )
+    _dbg_footer()
+
+def debug_semantic_query(payload: Dict[str, Any]):
+    _dbg_header("KG SEMANTIC QUERY")
+    try:
+        print(build_semantic_query(payload))
+    except Exception as e:
+        print(f"Failed to build semantic query: {e}")
+    _dbg_footer()
+
+def debug_kg_candidates(candidates: List[Dict[str, Any]], title: str = "KG CANDIDATES", top_n: int = 15):
+    _dbg_header(title)
+    if not candidates:
+        print("No candidates")
+        _dbg_footer()
+        return
+
+    for i, c in enumerate(candidates[:top_n], start=1):
+        print(
+            f"{i:02d}. "
+            f"{str(c.get('title','?'))[:40]:40s} | "
+            f"id={c.get('attraction_id')} | "
+            f"city={c.get('city')} | district={c.get('district')} | "
+            f"cat={c.get('category')} | "
+            f"base={float(c.get('_score', 0.0)):.3f} | "
+            f"kg_sem={float(c.get('_semantic_sim', 0.0)):.3f} | "
+            f"vec={float(c.get('_vector_sim', 0.0)):.3f} | "
+            f"ce={float(c.get('_ce_score', 0.0)):.3f}"
+        )
+    _dbg_footer()
+
+def debug_retrieval_scores(candidates: List[Dict[str, Any]], title: str = "RETRIEVAL FUSION", top_n: int = 15):
+    _dbg_header(title)
+    if not candidates:
+        print("No candidates")
+        _dbg_footer()
+        return
+
+    for i, c in enumerate(candidates[:top_n], start=1):
+        print(
+            f"{i:02d}. "
+            f"{str(c.get('title','?'))[:40]:40s} | "
+            f"kg_sem={float(c.get('_semantic_sim', 0.0)):.3f} | "
+            f"vec={float(c.get('_vector_sim', 0.0)):.3f} | "
+            f"ce={float(c.get('_ce_score', 0.0)):.3f} | "
+            f"base={float(c.get('_score', 0.0)):.3f} | "
+            f"retr={float(c.get('_retrieval_score', 0.0)):.3f}"
+        )
+    _dbg_footer()
+
+def debug_pref_breakdown(candidates: List[Dict[str, Any]], top_n: int = 10):
+    _dbg_header("PREFERENCE BREAKDOWN")
+    if not candidates:
+        print("No candidates")
+        _dbg_footer()
+        return
+
+    for c in candidates[:top_n]:
+        print(f"\nTITLE: {c.get('title')}")
+        print(json.dumps(c.get("_pref_breakdown", {}), indent=2, ensure_ascii=False))
+    _dbg_footer()
+
+def debug_dynamic_scores(candidates: List[Dict[str, Any]], title: str = "DYNAMIC / ENRICH RERANK", top_n: int = 15):
+    _dbg_header(title)
+    if not candidates:
+        print("No candidates")
+        _dbg_footer()
+        return
+
+    for i, c in enumerate(candidates[:top_n], start=1):
+        dyn = c.get("_dynamic", {}) or {}
+        print(
+            f"{i:02d}. "
+            f"{str(c.get('title','?'))[:40]:40s} | "
+            f"final={float(c.get('_final_score', 0.0)):.3f} | "
+            f"sus={float(dyn.get('sustainability_0_1', 0.0)):.3f} | "
+            f"crowd={float(dyn.get('crowd_risk_0_1', 0.0)):.3f} | "
+            f"rain={float(dyn.get('rain_risk_0_1', 0.0)):.3f}"
+        )
+    _dbg_footer()
+
+def debug_planner_scores(candidates: List[Dict[str, Any]], title: str = "FINAL PLANNER SCORES", top_n: int = 15):
+    _dbg_header(title)
+    if not candidates:
+        print("No candidates")
+        _dbg_footer()
+        return
+
+    for i, c in enumerate(candidates[:top_n], start=1):
+        print(
+            f"{i:02d}. "
+            f"{str(c.get('title','?'))[:35]:35s} | "
+            f"retr={float(c.get('_retrieval_score', 0.0)):.3f} | "
+            f"pref={float(c.get('_pref_score', 0.0)):.3f} | "
+            f"dyn={float(c.get('_final_score', 0.0)):.3f} | "
+            f"theme={float(c.get('_theme_align', 0.0)):.3f} | "
+            f"geo={float(c.get('_geo_fit', 0.0)):.3f} | "
+            f"pen={float(c.get('_title_penalty', 0.0)):.3f} | "
+            f"planner={float(c.get('_planner_final', 0.0)):.3f} | "
+            f"pareto={c.get('_is_pareto', False)}"
+        )
+    _dbg_footer()
+
+def debug_nsga_front(candidates: List[Dict[str, Any]], title: str = "NSGA PARETO FRONT", top_n: int = 15):
+    _dbg_header(title)
+    if not candidates:
+        print("No NSGA candidates")
+        _dbg_footer()
+        return
+
+    for i, c in enumerate(candidates[:top_n], start=1):
+        e = c.get("_nsga_explain", {}) or {}
+        print(
+            f"{i:02d}. "
+            f"{str(c.get('title','?'))[:40]:40s} | "
+            f"match={float(e.get('match_0_1', 0.0)):.3f} | "
+            f"sus={float(e.get('sustainability_0_1', 0.0)):.3f} | "
+            f"crowd={float(e.get('crowd_risk_0_1', 0.0)):.3f} | "
+            f"rain={float(e.get('rain_risk_0_1', 0.0)):.3f}"
+        )
+    _dbg_footer()
+
+def debug_final_itinerary(itinerary_days: List[Dict[str, Any]], title: str = "FINAL ITINERARY PICKS"):
+    _dbg_header(title)
+    if not itinerary_days:
+        print("No itinerary days")
+        _dbg_footer()
+        return
+
+    for day in itinerary_days:
+        print(
+            f"DATE={day.get('date')} | city={day.get('city')} | district={day.get('district')}"
+        )
+        for item in day.get("items", []):
+            raw = item.get("raw", {}) or {}
+            print(
+                f"  - slot={item.get('slot'):10s} | "
+                f"title={str(item.get('title','?'))[:40]:40s} | "
+                f"id={item.get('attraction_id')} | "
+                f"cat={raw.get('category')} | "
+                f"rank_final={float(item.get('rank_score_final', 0.0)):.3f}"
+            )
+    _dbg_footer()
+
+def debug_corridor_candidates(candidates: List[Dict[str, Any]], title: str = "CORRIDOR CANDIDATES", top_n: int = 20):
+    _dbg_header(title)
+    if not candidates:
+        print("No corridor candidates")
+        _dbg_footer()
+        return
+
+    for i, c in enumerate(candidates[:top_n], start=1):
+        print(
+            f"{i:02d}. "
+            f"{str(c.get('title','?'))[:35]:35s} | "
+            f"district={c.get('district')} | "
+            f"route_idx={c.get('_nearest_point_index')} | "
+            f"route_km={c.get('_nearest_point_km')} | "
+            f"sem={float(c.get('_semantic_sim', 0.0)):.3f} | "
+            f"pref={float(c.get('_pref_score', 0.0)):.3f} | "
+            f"final={float(c.get('_final_score', 0.0)):.3f} | "
+            f"route={float(c.get('_route_score', 0.0)):.3f}"
+        )
+    _dbg_footer()
 def _compile_priority_vocab() -> List[Tuple[str, List[str]]]:
     """
     Canonical key -> list of phrases/synonyms.
     Extend this anytime; this is not "hardcoding priorities", it is the system vocabulary.
     """
     return [
+        ("beach", ["beach", "beaches", "coast", "coastal", "sea", "ocean", "shore", "bay", "lagoon", "surf", "snorkeling", "snorkelling"]),
         ("eco-friendly", ["eco-friendly", "eco friendly", "eco", "nature", "green", "sustainable", "wildlife", "forest", "park", "reserve", "botanical"]),
         ("family-friendly", ["family-friendly", "family friendly", "kids", "child-friendly", "child friendly", "family"]),
         ("cultural", ["cultural", "heritage", "temple", "museum", "historical", "history"]),
@@ -831,22 +1095,46 @@ def _compile_priority_vocab() -> List[Tuple[str, List[str]]]:
         ("halal", ["halal"]),
     ]
 def extract_priorities(payload: Dict[str, Any]) -> List[Priority]:
-    """
-    1) Use raw_text ordering (most important).
-    2) Fallback to structured fields (travel_style, tags, etc.) if raw_text missing.
-    Returns priorities in descending weight.
-    """
-    raw = _normalize_text(str(payload.get("raw_text") or ""))
     vocab = _compile_priority_vocab()
-    found: List[Tuple[int, str, str]] = []  # (position, key, matched_phrase)
+    trace = payload.get("trace") or {}
+    pref_sources = trace.get("preference_sources") or {}
+
+    out: List[Priority] = []
+
+    def add_priority_items(items: List[str], source_label: str, base_weight: float, step: float):
+        for idx, item in enumerate(items):
+            item_n = _normalize_text(str(item))
+            for key, phrases in vocab:
+                if item_n == _normalize_text(key) or any(item_n == _normalize_text(p) for p in phrases):
+                    out.append(
+                        Priority(
+                            key=key,
+                            weight=max(0.3, base_weight - idx * step),
+                            source=source_label,
+                            matched_phrase=item_n,
+                        )
+                    )
+                    break
+
+    # 1) CURRENT QUERY TAGS / OVERRIDES → strongest
+    tags = payload.get("tags") or []
+    if isinstance(tags, list):
+        add_priority_items(
+            items=[str(x) for x in tags if x],
+            source_label="query_tags",
+            base_weight=1.00,
+            step=0.08,
+        )
+
+    # 2) RAW TEXT matches → strong
+    raw = _normalize_text(str(payload.get("raw_text") or ""))
     if raw:
-        # find earliest position for each canonical key
+        found = []
         for key, phrases in vocab:
             best_pos = None
             best_phrase = None
             for ph in phrases:
                 ph_n = _normalize_text(ph)
-                # word boundary-ish match
                 m = re.search(rf"(?<!\w){re.escape(ph_n)}(?!\w)", raw)
                 if m:
                     pos = m.start()
@@ -855,40 +1143,39 @@ def extract_priorities(payload: Dict[str, Any]) -> List[Priority]:
                         best_phrase = ph
             if best_pos is not None:
                 found.append((best_pos, key, best_phrase or key))
-        # sort by appearance order in query
+
         found.sort(key=lambda x: x[0])
-        # convert ordered keys into decreasing weights
-        # first mentioned gets highest weight, next slightly less, etc.
-        priorities: List[Priority] = []
-        base = 1.0
-        decay = 0.12  # controls how fast priority importance drops
         for idx, (_pos, key, phrase) in enumerate(found):
-            w = max(0.25, base - idx * decay)
-            priorities.append(Priority(key=key, weight=w, source="raw_text", matched_phrase=phrase))
-        return priorities
-    # ---- structured fallback (no raw_text) ----
-    structured_keys: List[str] = []
-    for field in ("travel_style", "tags", "food_preferences"):
-        v = payload.get(field)
-        if isinstance(v, list):
-            structured_keys.extend([_normalize_text(str(x)) for x in v if x])
-    priorities: List[Priority] = []
-    # map structured to canonical keys by synonym matching
-    for idx, item in enumerate(structured_keys):
-        for key, phrases in vocab:
-            if any(item == _normalize_text(p) for p in phrases) or item == _normalize_text(key):
-                # earlier items get higher weight
-                w = max(0.25, 0.8 - idx * 0.08)
-                priorities.append(Priority(key=key, weight=w, source="structured", matched_phrase=item))
-                break
-    # de-duplicate keeping highest weight
+            out.append(
+                Priority(
+                    key=key,
+                    weight=max(0.5, 0.95 - idx * 0.10),
+                    source="raw_text",
+                    matched_phrase=phrase,
+                )
+            )
+
+    # 3) LONG-TERM DB travel_style → weaker fallback
+    travel_style = payload.get("travel_style") or []
+    ts_source = pref_sources.get("travel_style", "unknown")
+    if isinstance(travel_style, list):
+        base = 0.60 if ts_source == "db" else 0.80
+        add_priority_items(
+            items=[str(x) for x in travel_style if x],
+            source_label=f"travel_style_{ts_source}",
+            base_weight=base,
+            step=0.07,
+        )
+
+    # Deduplicate: keep highest weight per key
     best: Dict[str, Priority] = {}
-    for p in priorities:
+    for p in out:
         if p.key not in best or p.weight > best[p.key].weight:
             best[p.key] = p
-    out = list(best.values())
-    out.sort(key=lambda p: p.weight, reverse=True)
-    return out
+
+    final = list(best.values())
+    final.sort(key=lambda p: p.weight, reverse=True)
+    return final
 # ----------------------------
 # Dynamic candidate scoring
 # ----------------------------
@@ -911,6 +1198,9 @@ def _matches_priority(rec: Dict[str, Any], priority_key: str) -> float:
     blob = _text_blob(rec)
     if priority_key == "eco-friendly":
         hits = ["eco", "nature", "forest", "park", "reserve", "botanical", "lake", "sanctuary", "trail", "hike", "wildlife"]
+        return 1.0 if any(h in blob for h in hits) else 0.0
+    if priority_key == "beach":
+        hits = ["beach", "coast", "sea", "ocean", "shore", "bay", "lagoon", "surf", "snorkel", "marine", "coral"]
         return 1.0 if any(h in blob for h in hits) else 0.0
     if priority_key == "family-friendly":
         hits = ["family", "kids", "child", "park", "garden", "lake", "walk"]
@@ -936,20 +1226,37 @@ def compute_rank_score(
     priorities: List[Priority],
     eco_preference: float,
 ) -> float:
-    """
-    Embedding-based rank score.
-    Each priority contributes its weight × semantic similarity (0..1).
-    No hardcoded keywords. No eco baseline bias.
-    """
-    # small rating tiebreaker (0..0.05)
     rating = float(rec.get("rating") or 3.0)
     score = 0.05 * ((rating - 1.0) / 4.0)
 
-    for p in priorities:
-        # ← THIS is the only change: embedding similarity instead of binary keyword
-        similarity = score_attraction_for_preference(rec, p.key)
-        score += p.weight * similarity
+    breakdown = {
+        "rating_bonus": score,
+        "priority_matches": [],
+        "vector_sim_bonus": 0.0,
+        "total": 0.0,
+    }
 
+    for p in priorities:
+        similarity = float(score_attraction_for_preference(rec, p.key))
+        contrib = p.weight * similarity
+        score += contrib
+
+        breakdown["priority_matches"].append({
+            "priority": p.key,
+            "matched_phrase": p.matched_phrase,
+            "weight": p.weight,
+            "similarity": similarity,
+            "contribution": contrib,
+        })
+
+    vector_sim = float(rec.get("_vector_sim") or 0.0)
+    vector_bonus = 0.30 * vector_sim
+    score += vector_bonus
+
+    breakdown["vector_sim_bonus"] = vector_bonus
+    breakdown["total"] = float(score)
+
+    rec["_pref_breakdown"] = breakdown
     return float(score)
 
 def group_by_district(candidates):
@@ -957,9 +1264,16 @@ def group_by_district(candidates):
     for p in candidates:
         d = p.get("district") or p.get("city") or "unknown"
         buckets[d].append(p)
+
     for d in buckets:
-        # ✅ NEW: Sort by Pareto flag first (True > False), then final score
-        buckets[d].sort(key=lambda x: (x.get("_is_pareto", False), x.get("_final_score", x.get("_score", 0.0))), reverse=True)
+        buckets[d].sort(
+            key=lambda x: (
+                x.get("_is_pareto", False),
+                float(x.get("_planner_final", x.get("_final_score", x.get("_score", 0.0))))
+            ),
+            reverse=True
+        )
+
     return buckets
 def district_centroid(pois):
     lats = []
@@ -1363,7 +1677,7 @@ def build_itinerary_days_from_pool(
                 "district": a.get("district"),
                 "city": item_city,
                 "rank_score_base": float(a.get("_score", 0.0)),
-                "rank_score_final": float(a.get("_final_score", a.get("_score", 0.0))),
+                "rank_score_final": float(a.get("_planner_final", a.get("_final_score", a.get("_score", 0.0)))),
                 "dynamic": a.get("_dynamic", {}),
                 "enrichment": enrich,
                 "raw": {k: v for k, v in a.items() if not str(k).startswith("_")},
@@ -1377,6 +1691,96 @@ def build_itinerary_days_from_pool(
         })
 
     return itinerary_days
+def _query_theme_bonus(rec: Dict[str, Any], payload: Dict[str, Any]) -> float:
+    """
+    Returns a MULTIPLIER (0.3 .. 1.8) for how well this attraction
+    matches the user's stated preferences.
+
+    Strong match   → 1.5–1.8  (boost)
+    Partial match  → 1.0–1.4
+    No match       → 0.3–0.5  (penalty when user has clear theme)
+    No user theme  → 1.0      (neutral)
+    """
+    raw = str(payload.get("raw_text") or "").lower()
+    tags = [str(t).lower() for t in (payload.get("tags") or [])]
+    travel_style = [str(t).lower() for t in (payload.get("travel_style") or [])]
+    all_signals = raw + " " + " ".join(tags) + " " + " ".join(travel_style)
+
+    blob = " ".join([
+        str(rec.get("title") or ""),
+        str(rec.get("category") or ""),
+        str(rec.get("description") or ""),
+        str(rec.get("district") or ""),
+        str(rec.get("city") or ""),
+        " ".join(str(g) for g in (rec.get("groups") or [])),
+    ]).lower()
+
+    THEMES = {
+        "beach": {
+            "detect": ["beach", "beaches", "coast", "sea", "ocean", "surf", "snorkel"],
+            "match":  ["beach", "coast", "sea", "ocean", "surf", "bay", "lagoon",
+                       "marine", "snorkel", "coral", "diving", "shore"],
+        },
+        "nature": {
+            "detect": ["nature", "eco", "wildlife", "forest", "green", "eco-friendly"],
+            "match":  ["nature", "forest", "reserve", "park", "wildlife", "sanctuary",
+                       "trail", "hike", "lake", "waterfall", "ella", "botanical",
+                       "bird", "mangrove", "wetland", "rainforest"],
+        },
+        "heritage": {
+            "detect": ["heritage", "historical", "history", "ancient", "cultural", "culture"],
+            "match":  ["heritage", "historical", "ancient", "fort", "bastion", "rampart",
+                       "church", "palace", "memorial", "archaeological", "colonial",
+                       "museum", "old town", "fortification", "dutch", "portuguese",
+                       "british", "monument", "ruins"],
+        },
+        "religious": {
+            "detect": ["temple", "temples", "religious", "religion", "sacred", "spiritual"],
+            "match":  ["temple", "vihara", "maligawa", "kovil", "sacred", "shrine",
+                       "pirivena", "church", "mosque", "dagoba", "stupa", "monastery",
+                       "pansala", "devalaya"],
+        },
+        "relaxation": {
+            "detect": ["relax", "relaxation", "chill", "calm", "peaceful", "spa"],
+            "match":  ["relax", "spa", "garden", "viewpoint", "calm", "quiet",
+                       "lake", "sunset", "beach", "lagoon", "resort"],
+        },
+        "adventure": {
+            "detect": ["adventure", "hiking", "trek", "extreme", "adrenaline", "active"],
+            "match":  ["hike", "trail", "trek", "climb", "rafting", "surf",
+                       "dive", "adventure", "canyon", "zipline", "kayak",
+                       "rock", "camping", "abseil"],
+        },
+    }
+
+    # Detect which themes the user cares about
+    active_themes = []
+    for theme_key, config in THEMES.items():
+        if any(d in all_signals for d in config["detect"]):
+            active_themes.append(theme_key)
+
+    if not active_themes:
+        return 1.0  # no clear preference → neutral multiplier
+
+    # Score this attraction against each active theme
+    total_match = 0.0
+    for theme_key in active_themes:
+        keywords = THEMES[theme_key]["match"]
+        hits = sum(1 for kw in keywords if kw in blob)
+        if hits >= 3:
+            total_match += 1.0
+        elif hits >= 2:
+            total_match += 0.7
+        elif hits >= 1:
+            total_match += 0.4
+        else:
+            total_match += 0.0
+
+    avg_match = total_match / len(active_themes)
+
+    # Convert to multiplier: 0.3 (no match) → 1.8 (strong match)
+    multiplier = 0.3 + (1.5 * avg_match)
+    return multiplier
 def run_city_pipeline(city_name: str, payload: Dict[str, Any], cfg: PlannerConfig) -> Dict[str, Any]:
     """
     Runs: KG fetch -> TOP15 print -> rerank -> NSGA -> returns pareto_pool + debug packs
@@ -1391,7 +1795,9 @@ def run_city_pipeline(city_name: str, payload: Dict[str, Any], cfg: PlannerConfi
         country=country,
         limit=int(payload.get("max_candidates", cfg.max_candidates)),
         timeout=40.0,
+        payload=payload,
     )
+    attach_semantic_scores(candidates, payload)
 
     # prep candidate features (same as your destination setup)
     for c in candidates:
@@ -1412,6 +1818,26 @@ def run_city_pipeline(city_name: str, payload: Dict[str, Any], cfg: PlannerConfi
             f"{a.get('title','?'):<25} | base={a.get('_score', 0.0):.3f} | "
             f"eco={feat.get('eco_hint', 0.0):.2f}"
         )
+    query_text = build_resolved_ce_query(payload)
+    if query_text:
+        candidates = rerank_candidates_with_cross_encoder(
+            query=query_text,
+            candidates=candidates,
+            top_k=20,
+        )
+
+    for c in candidates:
+        base = float(c.get("_score", 0.0))
+        vec  = float(c.get("_vector_sim", 0.0))
+        ce = float(c.get("_ce_score_norm", 0.0))
+        kg_sem = float(c.get("_semantic_sim", 0.0))
+
+        c["_retrieval_score"] = (
+            0.50 * ce +
+            0.30 * vec +
+            0.20 * base +
+            0.15 * kg_sem
+        )
 
     # 2) Rerank (same config)
     reranked = enrich_and_rerank_candidates(
@@ -1424,14 +1850,45 @@ def run_city_pipeline(city_name: str, payload: Dict[str, Any], cfg: PlannerConfi
         ),
         day_offset=0,
     )
+    for c in reranked:
+        retrieval = float(c.get("_retrieval_score", 0.0))
+        dynamic   = float(c.get("_final_score", c.get("_score", 0.0)))
 
-    print("\n--- Top Reranked Attractions (base + dynamic) ---")
+        theme_align = _theme_alignment_score(c, payload)
+        geo_fit = _geo_fit_score(
+            c,
+            destination_city=city_name,
+            days=int(payload.get("days") or 2),
+        )
+        title_penalty = _title_quality_penalty(c)
+
+        c["_theme_align"] = theme_align
+        c["_geo_fit"] = geo_fit
+        c["_title_penalty"] = title_penalty
+
+        c["_planner_final"] = (
+            (0.40 * retrieval)
+            + (0.25 * dynamic)
+            + (0.25 * theme_align)
+            + (0.10 * geo_fit)
+            - title_penalty
+        )
+
+        
+
+    reranked.sort(
+        key=lambda x: float(x.get("_planner_final", 0.0)),
+        reverse=True
+    )
+
+    print("\n--- Top Reranked Attractions (PLANNER FINAL) ---")
     for a in reranked[:10]:
         dyn = a.get("_dynamic", {}) or {}
         base = float(a.get("_score", 0.0))
         final = float(a.get("_final_score", 0.0))
+        planner = float(a.get("_planner_final", 0.0))
         print(
-            f"{a.get('title','?'):<25} | final={final:.3f} | base={base:.3f} | "
+            f"{a.get('title','?'):<35} | planner={planner:.3f} | final={final:.3f} | base={base:.3f} | "
             f"sus={float(dyn.get('sustainability_0_1', 0.0)):.2f} | "
             f"crowd={float(dyn.get('crowd_risk_0_1', 0.0)):.2f} | "
             f"rain={float(dyn.get('rain_risk_0_1', 0.0)):.2f}"
@@ -1586,7 +2043,7 @@ def build_itinerary_days_simple_chunk(
                 "district": a.get("district"),
                 "city": item_city,
                 "rank_score_base": float(a.get("_score", 0.0)),
-                "rank_score_final": float(a.get("_final_score", a.get("_score", 0.0))),
+                "rank_score_final": float(a.get("_planner_final", a.get("_final_score", a.get("_score", 0.0)))),
                 "dynamic": a.get("_dynamic", {}),
                 "enrichment": enrich,
                 "raw": {k: v for k, v in a.items() if not str(k).startswith("_")},
@@ -1600,7 +2057,115 @@ def build_itinerary_days_simple_chunk(
         })
 
     return itinerary_days
+def dedupe_candidates_by_attraction_id(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    out = []
+    for c in candidates:
+        aid = c.get("attraction_id")
+        if not aid:
+            continue
+        if aid in seen:
+            continue
+        seen.add(aid)
+        out.append(c)
+    return out
+def _theme_detected(payload: Dict[str, Any]) -> List[str]:
+    raw = str(payload.get("raw_text") or "").lower()
+    tags = [str(t).lower() for t in (payload.get("tags") or [])]
+    styles = [str(t).lower() for t in (payload.get("travel_style") or [])]
+    text = raw + " " + " ".join(tags) + " " + " ".join(styles)
 
+    active = []
+
+    if any(x in text for x in ["beach", "beaches", "coast", "sea", "ocean", "surf", "snorkel"]):
+        active.append("beach")
+    if any(x in text for x in ["eco", "nature", "forest", "wildlife", "green", "sustainable", "relax", "relaxation"]):
+        active.append("nature_relax")
+    if any(x in text for x in ["culture", "cultural", "history", "historical", "heritage"]):
+        active.append("heritage")
+    if any(x in text for x in ["religion", "religious", "temple", "church", "sacred", "spiritual"]):
+        active.append("religious")
+
+    return active
+
+
+def _poi_theme_profile(rec: Dict[str, Any]) -> Dict[str, float]:
+    blob = " ".join([
+        str(rec.get("title") or ""),
+        str(rec.get("category") or ""),
+        str(rec.get("description") or ""),
+        str(rec.get("district") or ""),
+        str(rec.get("city") or ""),
+        " ".join(str(g) for g in (rec.get("groups") or [])),
+    ]).lower()
+
+    def hits(words: List[str]) -> int:
+        return sum(1 for w in words if w in blob)
+
+    return {
+        "beach": min(1.0, 0.25 * hits([
+            "beach", "coast", "sea", "ocean", "bay", "lagoon", "shore",
+            "surf", "snorkel", "marine", "diving", "coral"
+        ])),
+        "nature_relax": min(1.0, 0.20 * hits([
+            "nature", "forest", "reserve", "park", "wildlife", "garden",
+            "lake", "waterfall", "mangrove", "wetland", "rainforest",
+            "viewpoint", "calm", "relax", "spa", "sunset"
+        ])),
+        "heritage": min(1.0, 0.20 * hits([
+            "heritage", "historical", "history", "ancient", "fort", "bastion",
+            "museum", "old town", "fortification", "colonial", "monument",
+            "palace", "archaeological", "ruins", "dutch", "portuguese", "british"
+        ])),
+        "religious": min(1.0, 0.25 * hits([
+            "temple", "vihara", "maligawa", "kovil", "church", "mosque",
+            "sacred", "shrine", "pirivena", "dagoba", "stupa", "pansala", "devalaya"
+        ])),
+    }
+
+
+def _theme_alignment_score(rec: Dict[str, Any], payload: Dict[str, Any]) -> float:
+    active = _theme_detected(payload)
+    if not active:
+        return 0.5
+
+    profile = _poi_theme_profile(rec)
+    vals = [profile.get(t, 0.0) for t in active]
+    return sum(vals) / len(vals)
+
+
+def _title_quality_penalty(rec: Dict[str, Any]) -> float:
+    title = str(rec.get("title") or "").strip().lower()
+    if not title:
+        return 0.15
+
+    penalty = 0.0
+
+    if len(title.split()) <= 2:
+        penalty += 0.05
+
+    generic_terms = ["site", "place", "view", "entrance", "waterfall", "house"]
+    if any(t in title for t in generic_terms):
+        penalty += 0.05
+
+    if "world heritage" in title and "fort" not in title and "old town" not in title:
+        penalty += 0.10
+
+    return min(0.20, penalty)
+
+
+def _geo_fit_score(rec: Dict[str, Any], destination_city: str, days: int) -> float:
+    dc = str(destination_city or "").strip().lower()
+    cand_city = str(rec.get("city") or "").strip().lower()
+    cand_dist = str(rec.get("district") or "").strip().lower()
+
+    if cand_city == dc:
+        return 1.0
+    if cand_dist == dc:
+        return 0.85
+    if days <= 2:
+        return 0.20
+    return 0.50
 def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = PlannerConfig()) -> Dict[str, Any]:
     city = str(payload.get("city") or payload.get("destination") or "").strip() or "Colombo"
     country = str(payload.get("country") or "Sri Lanka").strip() or "Sri Lanka"
@@ -1645,6 +2210,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     kg_corridor_dbg = {"skipped": True, "reason": "not corridor mode"}
     route_direction = str(payload.get("route_direction") or "").strip().lower()
     precomputed = payload.get("_precomputed_route")
+    debug_payload_summary(payload)
     if precomputed:
         # Swap coords if this is the return trip
         if route_direction == "return":
@@ -1673,6 +2239,8 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     route_start_coords = None
     # # ✅ priorities exist in this scope
     priorities: List[Priority] = extract_priorities(payload) or []
+    debug_priorities(priorities)
+    debug_semantic_query(payload)
     route_direction = str(payload.get("route_direction") or "").strip().lower()
     # ==========================================================
     # NEW: switch KG query mode (corridor vs destination-only)
@@ -1759,38 +2327,73 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         payload["_way_out_stop_plans"] = way_out_stop_plans
         res = CandidatesResult(candidates=route_candidates, debug=kg_corridor_dbg)
     else:
-        # ✅ city mode: fetch from KG service
+        # city mode: fetch from KG service
         city_for_query = tm.destination_city or city
+
+        # candidates, kg_dbg = hybrid_fetch_city_attractions(
+        #     payload=payload,
+        #     city=city_for_query,
+        #     country=country,
+        #     limit=int(payload.get("max_candidates") or cfg.max_candidates),
+        # )
         candidates, kg_dbg = fetch_city_attractions_from_kg(
             city=city_for_query,
             country=country,
-            limit=int(payload.get("max_candidates", cfg.max_candidates)),
-            timeout=20.0,
+            limit=int(payload.get("max_candidates") or cfg.max_candidates),
+            timeout=40.0,
+            payload=payload,
         )
+
+        candidates = dedupe_candidates_by_attraction_id(candidates)
+        attach_semantic_scores(candidates, payload)
+        debug_kg_candidates(candidates, title="KG CANDIDATES BEFORE CE")
+
         for c in candidates:
             c["_eco_hint"] = _eco_score_hint(c)
             c["_score"] = float(c.get("_score", 0.0))
             c["_features"] = {"eco_hint": float(c.get("_eco_hint", 0.5))}
-        # ✅ Build "way-out stop" plans from final corridor candidates
-        
+
+        query_text = build_resolved_ce_query(payload)
+        if query_text:
+            candidates = rerank_candidates_with_cross_encoder(
+                query=query_text,
+                candidates=candidates,
+                top_k=20,
+            )
+        debug_kg_candidates(candidates, title="CANDIDATES AFTER CE RERANK")
+
+        for c in candidates:
+            base = float(c.get("_score", 0.0))
+            vec  = float(c.get("_vector_sim", 0.0))
+            ce = float(c.get("_ce_score_norm", 0.0))
+            kg_sem = float(c.get("_semantic_sim", 0.0))
+
+            c["_retrieval_score"] = (
+                0.50 * ce +
+                0.30 * vec +
+                0.20 * base +
+                0.15 * kg_sem
+            )
+        debug_retrieval_scores(candidates, title="RETRIEVAL FUSION AFTER KG+CE+VEC")
+
         res = CandidatesResult(candidates=candidates, debug=kg_dbg)
         dbg = kg_dbg
         sampled_points = []
         kg_mode = "city"
-        # ✅ debug dict (safe)
+
         dbg = getattr(res, "debug", None) or {}
-        # keep dbg priorities in sync for your printing
         dbg["priorities"] = [
             {"key": p.key, "weight": p.weight, "source": p.source, "matched_phrase": p.matched_phrase}
             for p in priorities
         ]
-        # ---------------- DEBUG PRINTS ----------------
+
         print("\n================ JSON-KG QUERY OUTPUT =================")
         print("\n--- Debug Keys ---")
         print(list(dbg.keys()))
         print("\n--- Extracted Priorities ---")
         for p in dbg.get("priorities", []):
             print(f"{p.get('key')} | w={p.get('weight')} | src={p.get('source')} | phrase={p.get('matched_phrase')}")
+
         print("\n--- Preference Source Map ---")
         pref_src = (
             dbg.get("preference_sources")
@@ -1801,7 +2404,6 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         for k, v in pref_src.items():
             print(f"{k:25s} -> {v}")
         print("=======================================================\n")
-        # -----------------------------------------------------
     # ✅ candidates
     kg_atts = getattr(res, "candidates", None) or []
     precompute_attraction_embeddings(kg_atts) 
@@ -1835,10 +2437,65 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             ),
             day_offset=0,
         )
+        debug_dynamic_scores(reranked, title="AFTER DYNAMIC ENRICHMENT")
+        # for c in reranked:
+        #     ce        = float(c.get("_ce_score", 0.0))
+        #     dyn_final = float(c.get("_final_score", c.get("_score", 0.0)))
+        #     retrieval = float(c.get("_retrieval_score", 0.0))
+
+        #     quality = (0.30 * ce) + (0.30 * retrieval) + (0.20 * dyn_final)
+
+        #     theme_align = _theme_alignment_score(c, payload)     # 0.05 .. 1.0
+        #     geo_fit = _geo_fit_score(
+        #         c,
+        #         destination_city=str(payload.get("destination") or payload.get("city") or ""),
+        #         days=int(payload.get("days") or 2),
+        #     )
+        #     title_penalty = _title_quality_penalty(c)
+
+        #     c["_theme_align"] = theme_align
+        #     c["_geo_fit"] = geo_fit
+        #     c["_title_penalty"] = title_penalty
+
+        #     c["_planner_final"] = (
+        #         (0.50 * quality) +
+        #         (0.35 * theme_align) +
+        #         (0.15 * geo_fit)
+        #         - title_penalty
+        #     )
+            
         dest_city = str(payload.get("destination") or payload.get("city") or "").strip()
         dest_reranked = [c for c in reranked if _is_destination_candidate(c, dest_city)]
+        for c in dest_reranked:
+            retrieval = float(c.get("_retrieval_score", 0.0))
+            dynamic   = float(c.get("_final_score", c.get("_score", 0.0)))
+
+            theme_align = _theme_alignment_score(c, payload)
+            geo_fit = _geo_fit_score(
+                c,
+                destination_city=dest_city,
+                days=int(payload.get("days") or 2),
+            )
+            title_penalty = _title_quality_penalty(c)
+
+            c["_theme_align"] = theme_align
+            c["_geo_fit"] = geo_fit
+            c["_title_penalty"] = title_penalty
+
+            c["_planner_final"] = (
+                (0.40 * retrieval)
+                + (0.25 * dynamic)
+                + (0.25 * theme_align)
+                + (0.10 * geo_fit)
+                - title_penalty
+            )
+
+        dest_reranked.sort(
+            key=lambda x: float(x.get("_planner_final", 0.0)),
+            reverse=True
+        )
         print("\n--- Top Reranked Attractions (base + dynamic) ---")
-        for a in reranked[:10]:
+        for a in dest_reranked[:10]:
             dyn = a.get("_dynamic", {}) or {}
             base = float(a.get("_score", 0.0))
             final = float(a.get("_final_score", 0.0))
@@ -1865,7 +2522,23 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
                 f"match={e['match_0_1']:.2f} sus={e['sustainability_0_1']:.2f} "
                 f"crowd={e['crowd_risk_0_1']:.2f} rain={e['rain_risk_0_1']:.2f}"
             )
-        dest_pool = pareto_dest
+        pareto_ids = {c.get("attraction_id") for c in pareto_dest}
+        for c in dest_reranked:
+            c["_is_pareto"] = c.get("attraction_id") in pareto_ids
+
+        print("\n========== DEST_RERANKED FINAL ORDER ==========")
+        for a in dest_reranked[:15]:
+            print(
+                f"{a.get('title','?'):<35} | "
+                f"planner={float(a.get('_planner_final', -999)):.3f} | "
+                f"final={float(a.get('_final_score', -999)):.3f} | "
+                f"score={float(a.get('_score', -999)):.3f} | "
+                f"district={a.get('district')} | city={a.get('city')} | "
+                f"pareto={a.get('_is_pareto', False)}"
+            )
+        print("==============================================\n")
+
+        dest_pool = dest_reranked[: max(days * int(payload.get("per_day_attractions") or cfg.per_day_attractions), 8)]
         # ==========================
         # ✅ WAYPOINT (STOP) PIPELINE
         # ==========================
@@ -1940,12 +2613,23 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     # ==========================
     # ✅ Build itinerary source depending on plan type
     if not is_corridor_plan:
-        simple_itinerary = build_itinerary(
-            ranked_candidates=dest_pool,
-            days=days,
-            per_day=int(payload.get("per_day_attractions") or cfg.per_day_attractions),
-            anchor=None,
-        )
+        
+        per_day = int(payload.get("per_day_attractions") or cfg.per_day_attractions)
+        total_needed = days * per_day
+
+        top_items = dest_pool[:total_needed]
+
+        simple_itinerary = []
+        idx = 0
+        for day_num in range(1, days + 1):
+            day_items = top_items[idx: idx + per_day]
+            idx += per_day
+            simple_itinerary.append({
+                "day": day_num,
+                "district": city,
+                "attractions": day_items,
+            })
+        
     else:
         # ✅ corridor plan: include ALL filtered route attractions (already sorted origin -> destination)
         # route_pool == route_candidates (kg_mode=corridor_kg_points)
@@ -1979,7 +2663,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
                 "district": a.get("district"),
                 "city": item_city,
                 "rank_score_base": float(a.get("_score", 0.0)),
-                "rank_score_final": float(a.get("_final_score", a.get("_score", 0.0))),
+                "rank_score_final": float(a.get("_planner_final", a.get("_final_score", a.get("_score", 0.0)))),
                 "dynamic": a.get("_dynamic", {}),
                 "enrichment": enrich,
                 "raw": {k: v for k, v in a.items() if not str(k).startswith("_")},
