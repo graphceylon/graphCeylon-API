@@ -95,6 +95,7 @@ class OrchestrateRequest(BaseModel):
     turn_id: Optional[str] = None           # per user message/turn
     idempotency_key: Optional[str] = None 
     context: Optional[Dict[str, Any]] = None
+    benchmark_transport: Optional[str] = None
 
 
 # what intent parser returns (after wrapping)
@@ -167,3 +168,4 @@ class OrchestrateResponse(BaseModel):
     agentic_meta: Optional[Dict[str, Any]] = None
     explainability: Optional[Dict[str, Any]] = None
     explainability_ui: Optional[str] = None
+    sources: Optional[List[Dict[str, str]]] = None

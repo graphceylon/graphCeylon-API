@@ -362,6 +362,8 @@ def normalize_preference_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def llm_extract_entities(text: str) -> Dict[str, Any]:
+    # if os.getenv("BENCHMARK_MODE") == "1":
+    #     return {}
     prompt = f"{BASE_PROMPT}\n\nUser query:\n{text.strip()}"
 
     provider = ENTITY_LLM_PROVIDER.lower()

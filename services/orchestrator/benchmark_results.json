@@ -1,0 +1,28 @@
+{
+  "forecast_weather": {
+    "a2a_http": {
+      "n": 7,
+      "avg_ms": 1605,
+      "p50_ms": 1476,
+      "p95_ms": 2446,
+      "p99_ms": 2446,
+      "min_ms": 1392,
+      "max_ms": 2446,
+      "stdev": 375,
+      "errors": 3,
+      "success_rate": 70.0
+    },
+    "mcp_streamable_http": {
+      "n": 1,
+      "avg_ms": 2150,
+      "p50_ms": 2150,
+      "p95_ms": 2150,
+      "p99_ms": 2150,
+      "min_ms": 2150,
+      "max_ms": 2150,
+      "stdev": 0,
+      "errors": 9,
+      "success_rate": 10.0
+    }
+  }
+}

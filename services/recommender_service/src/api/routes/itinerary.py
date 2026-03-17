@@ -280,6 +280,9 @@ def itinerary_plan(req: Union[ItineraryPlanRequest, C3RequestEnvelope]) -> Dict[
         )
 
         result = build_two_plans_from_payload(payload, cfg=cfg)
+        print(f"[DEBUG] outbound_stops count: {len(result.get('outbound_stops') or [])}")
+        print(f"[DEBUG] return_stops count: {len(result.get('return_stops') or [])}")
+        print(f"[DEBUG] plans.outbound_plan is None: {(result.get('plans') or {}).get('outbound_plan') is None}")
         safe = jsonable_encoder(result)
         plans = safe.get("plans", {}) or {}
         dest_plan = plans.get("destination_plan", {}) or {}

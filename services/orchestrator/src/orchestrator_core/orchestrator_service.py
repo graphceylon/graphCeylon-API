@@ -11,6 +11,7 @@ from .mappers.restaurant_mapper import map_restaurant_request
 from .mappers.book_hotel_mapper import map_book_hotel_request
 from .clients.booking_client import save_booking_draft
 from .contracts.book_hotel import BookHotelResponse
+from .runtime.tools.providers.mcp_provider import MCPToolProvider
 import hashlib
 import json
 import traceback
@@ -154,6 +155,28 @@ MULTI_INTENT_ALLOW = {
 }
 
 DISALLOW_SECONDARY = {"plan_itinerary", "modify_itinerary"} | WRITE_INTENTS
+import re
+
+PLAN_PHRASES = [
+    "plan a trip", "plan trip", "plan an itinerary", "plan itinerary",
+    "create a trip", "create an itinerary", "make an itinerary",
+    "build an itinerary", "generate an itinerary",
+]
+
+# Fuzzy match for common itinerary misspellings
+_ITINERARY_PATTERN = re.compile(
+    r"\bitin[e]?r+[ae]+r[ay]+\b",  # matches: itinerary, itinereray, itinrerary, etc.
+    re.IGNORECASE
+)
+
+def has_plan_signal(text: str) -> bool:
+    t = norm(text)
+    has_itinerary = bool(_ITINERARY_PATTERN.search(t)) or "itinerary" in t
+    has_trip = "trip" in t
+    return (
+        ("plan" in t and (has_itinerary or has_trip))
+        or any(p in t for p in PLAN_PHRASES)
+    )
 
 def pick_secondary_intents(parsed_intent, handlers: set[str], max_n: int = 2, min_score: float = 0.80) -> list[str]:
     primary = (parsed_intent.intent or "").strip()
@@ -363,6 +386,7 @@ def apply_intent_policy(parsed_intent: ParsedIntent, req_text: str, session_stat
     # --- signals ---
     plan_like = has_plan_signal(raw)
     edit_like = has_edit_signal(raw, ents)
+    print(f"[policy] raw='{raw}' plan={plan_like} edit={edit_like} active_trip={bool(session_state and session_state.slots.get('active_trip_id'))}")
 
     hotel_like = bool(re.search(r"\b(hotel|book|booking|reserve|reservation|check[-\s]?in|check[-\s]?out)\b", raw))
     weather_like = bool(re.search(r"\b(weather|forecast|rain|temperature|climate)\b", raw))
@@ -382,6 +406,11 @@ def apply_intent_policy(parsed_intent: ParsedIntent, req_text: str, session_stat
         # do not carry active itinerary into a new plan
         ents_dict.pop("itinerary_id", None)
         ents_dict.pop("current_itinerary", None)
+        # ✅ Clear stale session state for fresh plan
+        if session_state:
+            for key in ("active_trip_id", "city", "active_place", "start_date", "end_date",
+                        "pending_fields", "pending_intent", "pending_domain", "pending_clarification"):
+                session_state.slots.pop(key, None)
 
         return parsed_intent.model_copy(update={
             "intent": "plan_itinerary",
@@ -427,10 +456,10 @@ def has_edit_signal(text: str, entities) -> bool:
         return True
 
     # explicit date edit like "start on 2026-03-01"
-    if getattr(entities, "start_date", None):
-        return True
-    if re.search(r"\b(?:start|begin)\b.*\b\d{4}-\d{2}-\d{2}\b", t):
-        return True
+    # if getattr(entities, "start_date", None):
+    #     return True
+    # if re.search(r"\b(?:start|begin)\b.*\b\d{4}-\d{2}-\d{2}\b", t):
+    #     return True
 
     # days only counts as edit if accompanied by edit verb ("make it 2 days")
     if getattr(entities, "days", None):
@@ -621,7 +650,8 @@ class OrchestratorService:
         self.trace_pg = PostgresTraceStore(TRACE_DSN) if TRACE_DSN else None
         self.response_formatter = ResponseFormatter()
         self.task_graph_builder = task_graph_builder
-        self.agentic_loop = AgenticLoop()
+        # self.agentic_loop = AgenticLoop()
+        # self.agentic_loop.set_nli(self.nli) 
         self.protocol_mode = protocol_mode
         MODEL_DIR = (
             Path(__file__).resolve()
@@ -631,6 +661,8 @@ class OrchestratorService:
 
         self.nli = NLIWrapper(model_dir=str(MODEL_DIR))
         self.verifier = VerifierAgent(nli=self.nli)
+        self.agentic_loop = AgenticLoop()
+        self.agentic_loop.set_nli(self.nli)
         # self.trace_store = InMemoryTraceStore(max_per_session=500)
         self.profile_event_store = ProfileEventStore()
         self.trip_repo = TripRepo()
@@ -780,47 +812,73 @@ class OrchestratorService:
 
         # ✅ 3) A2A adapter
         self.a2a = A2AHttpAdapter()
-        # Map tool_name -> endpoint using existing intent handlers
         tool_endpoints = {k: v.endpoint for k, v in self.handlers.items()}
 
-        # A2A provider (uses your existing AgentRegistry + HTTP adapter)
         a2a_provider = A2AToolProvider(
             registry=self.registry,
             adapter=self.a2a,
             tool_endpoints=tool_endpoints,
         )
 
-        # Local provider (for booking stub / demo HITL)
         local_provider = LocalToolProvider(
             handlers={
-                "booking_stub": booking_stub,  # define this function somewhere above
+                "booking_stub": booking_stub,
                 "book_hotel": book_hotel_flow,
             }
         )
 
-        # Tool router (single entry point for all tool calls)
+        # ✅ MCP stdio (local tools over subprocess)
+        _MCP_SERVER_LOCAL = str(
+            Path(__file__).resolve().parent / "servers" / "mcp_server_local.py"
+        )
+        mcp_stdio_provider = MCPToolProvider(
+            transport="stdio",
+            server_script=_MCP_SERVER_LOCAL,
+            timeout_sec=30.0,
+        )
+
+        # ✅ MCP Streamable HTTP (remote agents over MCP protocol)
+        _MCP_SERVER_URL = os.getenv("MCP_SERVER_HTTP_URL", "http://localhost:9101")
+        mcp_http_provider = MCPToolProvider(
+            transport="streamable_http",
+            server_url=_MCP_SERVER_URL,
+            timeout_sec=30.0,
+        )
+
         self.tool_router = ToolRouter(
             providers={
-                "a2a": a2a_provider,
-                "local": local_provider,
-                # "mcp": MCPToolProvider(mcp_client),  # add later
+                "a2a":       a2a_provider,
+                "local":     local_provider,
+                "mcp_stdio": mcp_stdio_provider,
+                "mcp_http":  mcp_http_provider,
             },
             tool_to_provider={
-                "forecast_weather": "a2a",
-                "info_attraction": "a2a",
-                "info_accommodation": "a2a",
-                "info_transport": "a2a",
-                "plan_itinerary": "a2a",
-                "modify_itinerary": "a2a",
-                "booking_stub": "local",
-                "info_visa_policy": "a2a",
-                "crowd_forecast": "a2a",
-                "forecast_price": "a2a",
+                # existing A2A routes — unchanged
+                "forecast_weather":        "a2a",
+                "info_attraction":         "a2a",
+                "info_accommodation":      "a2a",
+                "info_transport":          "a2a",
+                "plan_itinerary":          "a2a",
+                "modify_itinerary":        "a2a",
+                "info_visa_policy":        "a2a",
+                "crowd_forecast":          "a2a",
+                "forecast_price":          "a2a",
                 "forecast_sustainability": "a2a",
-                "recommend_pois": "a2a",
-                "recommend_restaurants": "a2a",
-                "book_hotel": "local",  # for demo, or "a2a" if a service handles it
-            }
+                "recommend_pois":          "a2a",
+                "recommend_restaurants":   "a2a",
+                # existing local routes — unchanged
+                "booking_stub":            "local",
+                "book_hotel":              "local",
+                # MCP stdio benchmark variants
+                "booking_stub_stdio":      "mcp_stdio",
+                "book_hotel_stdio":        "mcp_stdio",
+                # MCP streamable HTTP benchmark variants
+                "forecast_weather_mcp":    "mcp_http",
+                "recommend_pois_mcp":      "mcp_http",
+                "info_visa_policy_mcp":    "mcp_http",
+                "info_accommodation_mcp":  "mcp_http",
+                "plan_itinerary_mcp":      "mcp_http",
+            },
         )
         # ---------------------------
     # Phase 3 — Semantic Memory trigger (PGVector)
@@ -1379,26 +1437,34 @@ class OrchestratorService:
             update={"preference_overrides": merged_prefs}
         )
         # ✅ Attach base plan for modify so recommender can patch
+        # ✅ Attach base plan for modify so recommender can patch
         if intent_name == "modify_itinerary" and session_state and req.user_id:
             active_trip_id = session_state.slots.get("active_trip_id")
             if active_trip_id:
-                trip = self.trip_repo.get_trip(trip_id=active_trip_id, user_id=req.user_id)
-                if trip and trip.plan_json:
-                    # Put these into patched_intent.entities so mapper can pick them up
-                    ents = (
-                        parsed_intent.entities.model_dump(exclude_none=False)
-                        if hasattr(parsed_intent.entities, "model_dump")
-                        else dict(parsed_intent.entities or {})
-                    )
-                    ents["itinerary_id"] = active_trip_id
-                    ents["current_itinerary"] = trip.plan_json
+                ents = (
+                    patched_intent.entities.model_dump(exclude_none=False)
+                    if hasattr(patched_intent.entities, "model_dump")
+                    else dict(patched_intent.entities or {})
+                )
 
-                    # also backfill location if missing
+                # ✅ ALWAYS inject trip_id — don't gate on plan_json
+                ents["itinerary_id"] = active_trip_id
+                print(f"[modify] injecting active_trip_id={active_trip_id} into entities")
+
+                # ✅ Only inject current_itinerary if plan_json actually exists
+                trip = self.trip_repo.get_trip(trip_id=active_trip_id, user_id=req.user_id)
+                if trip:
+                    if trip.plan_json:
+                        ents["current_itinerary"] = trip.plan_json
+                    # backfill location context regardless of plan_json
                     ents.setdefault("city", session_state.slots.get("city"))
                     ents.setdefault("country", session_state.slots.get("country"))
-                    ents.setdefault("start_date", trip.start_date)
+                    if trip.start_date:
+                        ents.setdefault("start_date", trip.start_date)
+                else:
+                    print(f"[modify] WARNING: active_trip_id={active_trip_id} not found in trip_repo for user={req.user_id}")
 
-                    patched_intent = patched_intent.model_copy(update={"entities": Entities(**ents)})  # ✅ wrap back
+                patched_intent = patched_intent.model_copy(update={"entities": Entities(**ents)})
         # 4) Build contract payload via mapper
         print("[debug] entities_type =", type(patched_intent.entities))
         contract_obj = handler.mapper(patched_intent, req)
@@ -1515,6 +1581,14 @@ class OrchestratorService:
             is_write=is_write,
             idempotency_key=idem_key,
         )
+        # ✅ benchmark override — route to different transport if requested
+        benchmark_transport = getattr(req, "benchmark_transport", None)
+        print(f"[BENCHMARK DEBUG] benchmark_transport={benchmark_transport!r}, call.name before={intent_name!r}")
+        if benchmark_transport == "mcp_streamable_http":
+            call = call.model_copy(update={"name": f"{intent_name}_mcp"})
+            print(f"[BENCHMARK DEBUG] call.name after={call.name!r}")
+        elif benchmark_transport == "mcp_stdio":
+            call = call.model_copy(update={"name": f"{intent_name}_stdio"})
         print(
             "[phase4] trace_id=", call.trace_id,
             "intent=", call.name,
@@ -1524,22 +1598,22 @@ class OrchestratorService:
 
 
         # return parsed_obj
+        tool_res = self.tool_router.call(call)
         if self.trace_pg:
             self.trace_pg.add_event(
                 trace_id=request_trace_id or call.trace_id,
                 session_id=req.session_id or "no_session",
                 user_id=req.user_id,
                 turn_id=req.turn_id if hasattr(req, "turn_id") else None,
-                event_type="tool_start",
-                status="started",
+                event_type="tool_end",
+                status="ok" if tool_res.ok else "error",
                 task_id=call.name,
                 capability=call.name,
-                provider=None,
+                provider=tool_res.provider,
                 endpoint=handler.endpoint,
-                request_payload=call.args,
-                idempotency_key=call.idempotency_key,
+                latency_ms=tool_res.latency_ms,
+                transport_type=tool_res.transport_type or "a2a_http",  # ✅ now safe
             )
-        tool_res = self.tool_router.call(call)
         # after tool_router.call(call)
         explain.tool = {
             "intent": call.name,
@@ -1939,12 +2013,26 @@ class OrchestratorService:
                     "secondary_intents": [],
                 })
 
-                # merge session slots into entities so newly provided values are used
                 ents = (
                     parsed_intent.entities.model_dump(exclude_none=False)
                     if hasattr(parsed_intent.entities, "model_dump")
                     else dict(parsed_intent.entities or {})
                 )
+
+                # Layer 1: pull ALL relevant entity keys from session slots (previous turn context)
+                ENTITY_SLOT_KEYS = {
+                    "city", "destination", "origin", "origin_city", "country",
+                    "days", "start_date", "end_date", "travel_month",
+                    "waypoints", "include_stops", "region",
+                }
+                for k in ENTITY_SLOT_KEYS:
+                    v = session_state.slots.get(k)
+                    if v in (None, "", [], {}, "unknown"):
+                        continue
+                    if ents.get(k) in (None, "", [], {}, "unknown"):
+                        ents[k] = v
+
+                # Layer 2: also sweep ALL other slots (catches anything not in the explicit list)
                 for k, v in (session_state.slots or {}).items():
                     if v in (None, "", [], {}, "unknown"):
                         continue
@@ -2015,8 +2103,10 @@ class OrchestratorService:
                 if v in (None, "", [], {}, "unknown"):
                     continue
 
-                # ✅ avoid poisoning session before a plan is generated
-                if parsed_intent.intent == "plan_itinerary" and k in {"city", "destination", "active_place"}:
+                # ✅ only block stale trip references, NOT city/destination
+                if parsed_intent.intent == "plan_itinerary" and k in {
+                    "itinerary_id", "current_itinerary", "active_trip_id"
+                }:
                     continue
 
                 session_state.slots[k] = v
@@ -2348,6 +2438,9 @@ class OrchestratorService:
 
                         if not start_date and not travel_month:
                             missing.append("start_date")  # simplest label for demo
+                        days = ents.get("days")
+                        if not days:
+                            missing.append("days")
 
                         # Destination/city: if only country-level ("Sri Lanka") and no city/destination
                         city = (ents.get("city") or "").strip() if isinstance(ents.get("city"), str) else ents.get("city")
@@ -2384,25 +2477,26 @@ class OrchestratorService:
                     if missing:
                         # Build a single friendly follow-up question
                         parts = []
-                        if "start_date" in missing:
-                            parts.append("What are your travel dates? (start date + end date, or just the month)")
-                        if "origin_city" in missing:
-                            parts.append("Where are you starting from? (e.g., Colombo / Airport / Negombo)")
-                        if "destination_city" in missing:
-                            parts.append("Which area/city in Sri Lanka do you want for nature? (e.g., Kandy, Ella, Nuwara Eliya, Sigiriya)")
-                        if "arrival" in missing or "departure" in missing:
-                            parts.append("What are your hotel dates? (check-in + check-out)")
-                            followup_options += ["2026-06-03 to 2026-06-06", "This weekend", "Next week"]
+                        if missing:
+                            parts = []
+                            if "start_date" in missing:
+                                parts.append("When are you planning to travel?")
+                            if "days" in missing:                                          # ✅ NEW
+                                parts.append("How many days are you planning to stay?")
+                            if "destination_city" in missing:
+                                parts.append("Which city in Sri Lanka would you like to visit?")
+                            if "arrival" in missing or "departure" in missing:
+                                parts.append("What are your hotel dates? (check-in + check-out)")
+                                followup_options += ["2026-06-03 to 2026-06-06", "This weekend", "Next week"]
 
-                        followup_question = "Got it 🌿 Nature trip in Sri Lanka.\n" + "\n".join(f"- {p}" for p in parts)
+                            followup_question = "\n".join(f"- {p}" for p in parts)
 
-                        # Nice clickable options (you can tune)
-                        if "destination_city" in missing:
-                            followup_options += ["Kandy", "Ella", "Nuwara Eliya", "Sigiriya"]
-                        if "origin_city" in missing:
-                            followup_options += ["Colombo", "Bandaranaike Airport", "Negombo"]
-                        if "start_date" in missing:
-                            followup_options += ["This weekend", "Next week", "April 2026"]
+                            if "days" in missing:                                          # ✅ NEW
+                                followup_options += ["1 day", "2 days", "3 days", "5 days"]
+                            if "destination_city" in missing:
+                                followup_options += ["Kandy", "Ella", "Nuwara Eliya", "Sigiriya"]
+                            if "start_date" in missing:
+                                followup_options += ["This weekend", "Next week", "April 2026"]
 
                     # write into results so other tasks can see it
                     results["missing_fields"] = missing
@@ -2851,7 +2945,10 @@ class OrchestratorService:
                     for r in loop_out.repairs_applied
                 ],
                 "changed_summary": loop_out.changed_summary,
-                "verifier_meta": (loop_out.verify_report.meta if loop_out.verify_report else None),
+                "verifier_meta": (
+                    (loop_out.verify_report.meta or {}).get("verifier_meta", {})
+                    if loop_out.verify_report else {}
+                ),
             }
 
             if self.trace_pg:
@@ -2897,6 +2994,10 @@ class OrchestratorService:
             if session_state and user_id and session_id != "no_session":
                 self.session_store.save(user_id=user_id, session_id=session_id, state=session_state.to_dict())
         _save_session_if_needed()
+        it = results.get("itinerary_result") or {}
+        it_dict = it.model_dump(mode="json") if hasattr(it, "model_dump") else dict(it)
+        print("outbound_stops count:", len(it_dict.get("outbound_stops") or []))
+        print("return_stops count:", len(it_dict.get("return_stops") or []))
         return OrchestrateResponse(
             status="partial" if errors else "ok",
             message="Orchestration executed.",
@@ -2923,5 +3024,6 @@ class OrchestratorService:
             trace=trace,
             agentic_meta=results.get("agentic_meta"),
             explainability=results.get("explainability"),
-            explainability_ui=formatted.get("explainability_ui")
+            explainability_ui=formatted.get("explainability_ui"),
+            sources=formatted.get("sources"),
         )

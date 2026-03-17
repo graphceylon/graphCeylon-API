@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, List
 import os
 import json
+from pandas import date_range
 import requests
 import re
 
@@ -196,6 +197,36 @@ class ResponseFormatter:
             (k.endswith("_result") and results.get(k) is not None)
             for k in (results or {}).keys()
         )
+        # ✅ Visa short-circuit — always use structured template (never Groq for visa)
+        if results.get("visa_result"):
+            vr = results["visa_result"]
+            vr_dict = vr.model_dump(mode="json") if hasattr(vr, "model_dump") else dict(vr or {})
+
+            formatted_text = self._format_visa(vr)
+
+            # Build structured sources for explainability_ui
+            sources = []
+            seen = set()
+            for rule in (vr_dict.get("rules") or []):
+                for ev in (rule.get("evidence") or []):
+                    url = (ev.get("url") or "").strip()
+                    source = (ev.get("source") or "").strip()
+                    if url and url not in seen:
+                        seen.add(url)
+                        label = source.replace("_", " ").replace(".json", "").title() if source else "Official Source"
+                        sources.append({"label": label, "url": url})
+
+            explainability_ui = ""
+            if sources:
+                src_lines = "\n".join(f"• {s['label']}: {s['url']}" for s in sources)
+                explainability_ui = f"Sources verified from official Sri Lanka Immigration authorities:\n{src_lines}"
+
+            return {
+                "text": formatted_text,
+                "followups": ["Tourist visa", "Visa fee", "Processing time", "Required documents"],
+                "explainability_ui": explainability_ui,
+                "sources": sources,  # Flutter renders these as tappable links
+            }
 
         if not has_any_result and intent in {"out_of_scope", "generic_fact_query"}:
             if self.provider == "groq" and self.groq_key:
@@ -701,8 +732,19 @@ class ResponseFormatter:
 
                 # ---- plan_itinerary template fallback (Day 1/2/3 + chips) ----
         if intent == "plan_itinerary":
-            it = results.get("itinerary_result") or {}
-            days = it.get("days") or ((parsed_intent.get("entities") or {}).get("days") or 0) or 0
+            it_raw = results.get("itinerary_result") or {}
+            # convert Pydantic model to dict if needed
+            if hasattr(it_raw, "model_dump"):
+                it = it_raw.model_dump(mode="json")
+            elif hasattr(it_raw, "dict"):
+                it = it_raw.dict()
+            else:
+                it = dict(it_raw) if it_raw else {}
+
+            parsed_intent_dict = parsed_intent if isinstance(parsed_intent, dict) else (
+                parsed_intent.model_dump(mode="json") if hasattr(parsed_intent, "model_dump") else {}
+            )
+            days = it.get("days") or ((parsed_intent_dict.get("entities") or {}).get("days") or 0) or 0
 
             itinerary = it.get("itinerary") or []
             if not itinerary:
@@ -728,20 +770,31 @@ class ResponseFormatter:
             def format_one_day(d, label):
                 date = d.get("date") or ""
                 district = d.get("district") or d.get("city") or "Hill Country"
-                lines = [f"{label} ({date}) — {district}"]
-                items = d.get("items") or []
-                # group by slot
-                slot_order = ["morning", "afternoon", "evening"]
-                by_slot = {s: [] for s in slot_order}
-                for itx in items:
-                    slot = (itx.get("slot") or "").lower()
-                    title = itx.get("title") or itx.get("name") or "Activity"
-                    if slot in by_slot and len(by_slot[slot]) < 1:
-                        by_slot[slot].append(title)
+                
+                # weather from first attraction if available
+                attractions = d.get("attractions") or d.get("items") or []
+                weather_str = ""
+                if attractions:
+                    w = attractions[0].get("weather") or {}
+                    if w.get("temp_c") is not None and w.get("rain_risk"):
+                        weather_str = f"Weather: {int(w['temp_c'])}C, {w['rain_risk'].lower()} rain risk"
+                district = d.get("district") or d.get("city") or "Hill Country"
 
-                for s in slot_order:
-                    if by_slot[s]:
-                        lines.append(f"- {s}: {by_slot[s][0]}")
+                lines = [f"{label} — {date} | {district}"]
+                if weather_str:
+                    lines.append(weather_str)
+
+                for attr in attractions:
+                    slot = (attr.get("slot") or "").capitalize()
+                    title = attr.get("title") or "Activity"
+                    desc = (attr.get("description") or "").strip()
+                    rating = attr.get("rating")
+                    if desc and "." in desc:
+                        desc = desc.split(".")[0].strip() + "."
+                    rating_str = f" Rated {rating}." if rating else ""
+                    desc_str = f" — {desc}{rating_str}" if desc else (f" — Rated {rating}." if rating else "")
+                    lines.append(f"- {title} ({slot}){desc_str}")
+
                 return "\n".join(lines)
 
             # If specific day requested, show only that day
@@ -757,13 +810,92 @@ class ResponseFormatter:
                 return {"text": text, "followups": chips[:4]}
 
             # Otherwise show all days (max 3 shown; you have 3 anyway)
-            out_lines = []
+            # Build header
+            origin = (parsed_intent.get("entities") or {}).get("origin_city") or "Colombo"
+            dest = (parsed_intent.get("entities") or {}).get("city") or "Kandy"
+            start = (parsed_intent.get("entities") or {}).get("start_date") or ""
+            end = (parsed_intent.get("entities") or {}).get("end_date") or ""
+            date_range = f"{start} – {end}" if start and end else start
+            n = days or len(itinerary)
+            header = f" {n}-Day Itinerary | {date_range}"
+
+            out_lines = [header, ""]
+
             for i, d in enumerate(itinerary[:3], start=1):
                 out_lines.append(format_one_day(d, f"Day {i}"))
-                out_lines.append("")  # spacing
+                out_lines.append("")
 
-            # chips Day 1..Day N (max 4)
-            n = days or len(itinerary)
+            # Hotels — deduplicate, pull from first day
+            first_day = itinerary[0] if itinerary else {}
+            hotels = first_day.get("hotel_options") or []
+            if hotels:
+                out_lines.append("Where to Stay")
+                for h in hotels:
+                    name = h.get("name") or "Hotel"
+                    price = h.get("price_range_lkr") or {}
+                    price_str = f"LKR {int(price['min']):,}–{int(price['max']):,}/night" if price.get("min") and price.get("max") else ""
+                    amenities = h.get("amenities") or []
+                    amenities_str = ", ".join(amenities[:4]) if amenities else ""
+                    parts = [p for p in [price_str, amenities_str] if p]
+                    detail = " | ".join(parts)
+                    out_lines.append(f"- {name}" + (f" — {detail}" if detail else ""))
+                out_lines.append("")
+
+            # Restaurants — collect unique across all days
+            seen_restaurants = set()
+            all_restaurants = []
+            for d in itinerary:
+                for r in (d.get("restaurants") or []):
+                    title = r.get("title") or ""
+                    if title and title not in seen_restaurants:
+                        seen_restaurants.add(title)
+                        all_restaurants.append(r)
+
+            if all_restaurants:
+                out_lines.append("Where to Eat")
+                for r in all_restaurants:
+                    title = r.get("title") or "Restaurant"
+                    rating = r.get("rating")
+                    category = (r.get("category") or "").replace("_", " ").capitalize()
+                    rating_str = f", rated {rating}" if rating else ""
+                    out_lines.append(f"- {title} — {category}{rating_str}")
+                out_lines.append("")
+            outbound_stops = it.get("outbound_stops") or []
+            if outbound_stops:
+                meta = it.get("meta") or {}
+                origin = meta.get("origin_city") or "Origin"
+                destination = meta.get("destination") or "Destination"
+                out_lines.append(f"On the Way to {destination} ({origin} → {destination})")
+                for i, stop in enumerate(outbound_stops, start=1):
+                    title = stop.get("title") or "Stop"
+                    city = stop.get("city") or ""
+                    district = stop.get("district") or ""
+                    rating = stop.get("rating")
+                    location = f"{city}, {district}".strip(", ") if city or district else ""
+                    rating_str = f" — Rated {rating}" if rating else ""
+                    location_str = f" | {location}" if location else ""
+                    out_lines.append(f"- {i}. {title}{location_str}{rating_str}")
+                out_lines.append("")
+
+            # ── ADD THIS: Return stops ────────────────────────────────────
+            return_stops = it.get("return_stops") or []
+            if return_stops:
+                meta = it.get("meta") or {}
+                origin = meta.get("origin_city") or "Origin"
+                destination = meta.get("destination") or "Destination"
+                out_lines.append(f"On the Way Back ({destination} → {origin})")
+                for i, stop in enumerate(return_stops, start=1):
+                    title = stop.get("title") or "Stop"
+                    city = stop.get("city") or ""
+                    district = stop.get("district") or ""
+                    rating = stop.get("rating")
+                    location = f"{city}, {district}".strip(", ") if city or district else ""
+                    rating_str = f" — Rated {rating}" if rating else ""
+                    location_str = f" | {location}" if location else ""
+                    out_lines.append(f"- {i}. {title}{location_str}{rating_str}")
+                out_lines.append("")
+
+            # n = days or len(itinerary)
             chips = [f"Day {i}" for i in range(1, min(n, 4) + 1)]
             return {"text": "\n".join(out_lines).strip(), "followups": chips}
 
@@ -804,35 +936,212 @@ class ResponseFormatter:
             return {"text": "😊 How can I help?", "followups": ["Plan an itinerary", "Recommend places"]}
 
         # ---- info_attraction template fallback (cleaner) ----
-        if intent == "info_attraction":
-            atr = results.get("attraction_result") or {}
-            items = atr.get("items") or []
+        if intent == "modify_itinerary":
+            mod_raw = results.get("modify_result")
+            if mod_raw:
+                mod = mod_raw if isinstance(mod_raw, dict) else (
+                    mod_raw.model_dump(mode="json") if hasattr(mod_raw, "model_dump") else dict(mod_raw)
+                )
+                meta = mod.get("meta") or {}
+                destination = meta.get("destination") or "your destination"
+                num_days = meta.get("days")
+                start_date = meta.get("start_date")
 
-            if not items:
+                # Build date string
+                date_str = ""
+                if start_date and num_days:
+                    try:
+                        from datetime import datetime, timedelta
+                        start = datetime.strptime(start_date, "%Y-%m-%d")
+                        end = start + timedelta(days=int(num_days) - 1)
+                        if int(num_days) == 1:
+                            date_str = start.strftime('%b %-d')
+                        else:
+                            date_str = f"{start.strftime('%b %-d')}–{end.strftime('%-d')}"
+                    except Exception:
+                        date_str = start_date
+
+                days_label = f"{num_days} day{'s' if int(num_days) != 1 else ''}" if num_days else "updated"
+                date_part = f" ({date_str})" if date_str else ""
+
+                # Build header
+                out_lines = [
+                    f"Your {destination} trip has been updated to {days_label}{date_part}.",
+                    "",
+                ]
+
+                # Pull itinerary from plan (only show days up to num_days)
+                plan = mod.get("plan") or {}
+                itinerary = plan.get("itinerary") or []
+                num_days_int = int(num_days) if num_days else len(itinerary)
+                itinerary = itinerary[:num_days_int]
+
+                for i, day in enumerate(itinerary, start=1):
+                    date = day.get("date") or ""
+                    district = day.get("district") or day.get("city") or destination
+                    out_lines.append(f"Day {i} — {date} | {district}")
+
+                    # Weather from first attraction
+                    attractions = day.get("attractions") or []
+                    if attractions:
+                        w = attractions[0].get("weather") or {}
+                        if w.get("temp_c") is not None and w.get("rain_risk"):
+                            out_lines.append(f"Weather: {int(w['temp_c'])}°C, {w['rain_risk'].lower()} rain risk")
+
+                    for attr in attractions:
+                        slot = (attr.get("slot") or "").capitalize()
+                        title = attr.get("title") or "Activity"
+                        desc = (attr.get("description") or "").strip()
+                        rating = attr.get("rating")
+                        if desc and "." in desc:
+                            desc = desc.split(".")[0].strip() + "."
+                        rating_str = f" Rated {rating}." if rating else ""
+                        desc_str = f" — {desc}{rating_str}" if desc else (f" — Rated {rating}." if rating else "")
+                        out_lines.append(f"- {title} ({slot}){desc_str}")
+
+                    out_lines.append("")
+
+                # Hotels from first day only
+                first_day = itinerary[0] if itinerary else {}
+                hotels = first_day.get("hotel_options") or []
+                if hotels:
+                    out_lines.append("Where to Stay")
+                    for h in hotels[:3]:
+                        name = h.get("name") or "Hotel"
+                        price = h.get("price_range_lkr") or {}
+                        price_str = f"LKR {int(price['min']):,}–{int(price['max']):,}/night" if price.get("min") and price.get("max") else ""
+                        amenities = h.get("amenities") or []
+                        amenities_str = ", ".join(amenities[:3]) if amenities else ""
+                        parts = [p for p in [price_str, amenities_str] if p]
+                        detail = " | ".join(parts)
+                        out_lines.append(f"- {name}" + (f" — {detail}" if detail else ""))
+                    out_lines.append("")
+
+                # Restaurants — unique across all days, in-destination only
+                seen_restaurants = set()
+                all_restaurants = []
+                for day in itinerary:
+                    for r in (day.get("restaurants") or []):
+                        title = r.get("title") or ""
+                        r_city = (r.get("city") or "").lower()
+                        dest_lower = destination.lower()
+                        # skip restaurants clearly from a different city (e.g. Colombo KFC showing in Kandy)
+                        if title and title not in seen_restaurants and (r_city == dest_lower or not r_city):
+                            seen_restaurants.add(title)
+                            all_restaurants.append(r)
+
+                if all_restaurants:
+                    out_lines.append("Where to Eat")
+                    for r in all_restaurants[:4]:
+                        title = r.get("title") or "Restaurant"
+                        rating = r.get("rating")
+                        category = (r.get("category") or "").replace("_", " ").capitalize()
+                        rating_str = f", rated {rating}" if rating else ""
+                        out_lines.append(f"- {title} — {category}{rating_str}")
+                    out_lines.append("")
+
+                chips = [f"Day {i}" for i in range(1, min(num_days_int, 4) + 1)]
+                chips += ["Show hotels", "Change destination"]
+
                 return {
-                    "text": f"I couldn’t find attractions for **{city}** from my current data. What type of places do you prefer?",
-                    "followups": ["Culture", "Nature", "Viewpoints", "Museums"],
+                    "text": "\n".join(out_lines).strip(),
+                    "followups": chips[:4],
                 }
 
-            lines = [f"Here are some places to explore in **{city}**:\n"]
-            for it in items[:5]:
-                name = it.get("name") or "Attraction"
-                desc = (it.get("description") or "").strip()
+                # generic fallback
+                return {"text": "I got your request. What would you like to do next?", "followups": []}
+        # return {"text": "I got your request. What would you like to do next?", "followups": []}
+    def _format_visa(self, visa_result: Any) -> str:
+        if not visa_result:
+            return ""
 
-                # nicer shortening: first sentence only
-                if "." in desc:
-                    desc = desc.split(".")[0].strip() + "."
+        vr = visa_result.model_dump(mode="json") if hasattr(visa_result, "model_dump") else dict(visa_result or {})
 
-                lines.append(f"📍 **{name}**\n{desc}\n")
+        if vr.get("status") != "ok":
+            return "Visa information is currently unavailable."
 
-            lines.append("Want me to narrow it down (culture / nature / family-friendly / short visit)?")
-            return {"text": "\n".join(lines).strip(), "followups": []}
+        dest = vr.get("destination_country") or "Sri Lanka"
+        lines = [f"Visa & Entry Requirements — {dest}\n"]
 
-        # generic fallback
-        return {"text": "I got your request. What would you like to do next?", "followups": []}
+        # ── Group rules by their title ─────────────────────────────────────
+        rules = vr.get("rules") or []
+        seen_details = set()
+        seen_urls = {}   # url -> source label (from the data itself)
+        grouped = {}     # title -> list of clean bullets
 
+        for rule in rules:
+            details = (rule.get("details") or "").strip()
+            if not details or details in seen_details:
+                continue
+            seen_details.add(details)
+
+            # Use actual title from data, fallback to rule_type
+            title = (rule.get("title") or rule.get("rule_type") or "Information").strip()
+
+            # Collect URLs + labels FROM the evidence itself (not hardcoded)
+            for ev in (rule.get("evidence") or []):
+                url = (ev.get("url") or "").strip()
+                source = (ev.get("source") or "").strip()
+                if url and url not in seen_urls:
+                    # derive readable label from source filename
+                    label = (
+                        source
+                        .replace("_data.json", "")
+                        .replace("_", " ")
+                        .title()
+                    ) if source else url
+                    seen_urls[url] = label
+
+            # ── Clean raw text into readable sentences ─────────────────────
+            sentences = re.split(r'\n{2,}|\.\s+(?=[A-Z])', details)
+            for sentence in sentences:
+                s = sentence.strip().strip(".")
+                if not s or len(s) < 20:
+                    continue
+                if re.match(r'^\d+\.?\s', s):
+                    continue
+                if s.lower().startswith("where can i") or s.lower().startswith("how can i"):
+                    continue
+                if "dependents" in s.lower() and "diplomat" in s.lower():
+                    continue
+                if s in seen_details:
+                    continue
+                seen_details.add(s)
+
+                if len(s) > 200:
+                    s = s[:200].rsplit(" ", 1)[0] + "..."
+
+                grouped.setdefault(title, [])
+                if s not in grouped[title]:
+                    grouped[title].append(s)
+
+        # ── Render grouped sections ────────────────────────────────────────
+        for title, bullets in grouped.items():
+            if not bullets:
+                continue
+            lines.append(f"{title}:")
+            for b in bullets[:6]:
+                lines.append(f"• {b}")
+            lines.append("")
+
+        # ── Warnings ──────────────────────────────────────────────────────
+        for w in (vr.get("warnings") or []):
+            lines.append(f"⚠ {w}")
+        if vr.get("warnings"):
+            lines.append("")
+
+        # ── Sources — labels derived from data, not hardcoded ─────────────
+        # if seen_urls:
+        #     lines.append("Official Sources:")
+        #     for url, label in seen_urls.items():
+        #         lines.append(f"  • {label}")
+        #         lines.append(f"    {url}")
+
+        return "\n".join(lines)
     def _format_with_groq(self, user_text, parsed_intent, results, tasks, *, effective_intent: str):
         # If key missing, fallback safely
+        if effective_intent in {"plan_itinerary", "modify_itinerary"}:
+            return self._format_with_templates(user_text, parsed_intent, results, tasks)
         if not self.groq_key:
             if self.debug:
                 print("[ResponseFormatter:groq] groq_key missing -> templates")
