@@ -174,15 +174,18 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
 
     base_url, endpoint = ROUTES[name]
 
-    # Add required fields the recommender expects
+    # ✅ Build payload that matches what recommender expects
     payload = {
         "intent": name,
-        "raw_text": arguments.get("raw_text", ""),  # required field
+        "raw_text": arguments.get("raw_text", ""),
+        "user_id": "mcp-benchmark",
+        "session_id": "mcp-benchmark",
         **arguments,
     }
 
     try:
-        result = await _post(base_url, endpoint, payload)
+        # ✅ Use longer timeout — plan_itinerary takes ~15-20s
+        result = await _post(base_url, endpoint, payload, timeout=60.0)
         latency_ms = int((time.perf_counter() - t_start) * 1000)
         if isinstance(result, dict):
             result["_transport"] = "mcp_streamable_http"
@@ -197,7 +200,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
             content=[TextContent(type="text", text=json.dumps({"ok": False, "error": str(e), "_latency_ms": latency_ms}))],
             isError=True,
         )
-
 
 # ---- ASGI app -----------------------------------------------------------
 
@@ -247,7 +249,57 @@ fastapi_app = Starlette(routes=[
     Route("/health", handle_health, methods=["GET"]),
     Mount("/mcp", app=handle_mcp),
 ])
+async def handle_health(scope, receive, send):
+    response = JSONResponse({"ok": True, "server": "graphceylon-mcp-streamable-http"})
+    await response(scope, receive, send)
 
+
+# ✅ ADD THIS ENTIRE FUNCTION HERE
+async def handle_direct_tool(request):
+    """Direct synchronous tool endpoint — bypasses MCP protocol for benchmarking."""
+    body = await request.json()
+
+    name = body.get("name") or body.get("intent")
+    arguments = {k: v for k, v in body.items() if k != "name"}
+
+    t_start = time.perf_counter()
+    ROUTES = {
+        "forecast_weather":   (RECOMMENDER_BASE_URL, "/forecast/weather"),
+        "recommend_pois":     (RECOMMENDER_BASE_URL, "/recommend/pois"),
+        "plan_itinerary":     (RECOMMENDER_BASE_URL, "/itinerary/plan"),
+        "info_visa_policy":   (VISA_KG_BASE_URL,     "/graphrag/visa-policy"),
+        "info_accommodation": (VISA_KG_BASE_URL,     "/hotels/orchestrator/call/hotels/search"),
+    }
+
+    if name not in ROUTES:
+        return JSONResponse({"ok": False, "error": f"Unknown tool: {name}"}, status_code=400)
+
+    base_url, endpoint = ROUTES[name]
+    payload = {
+        "intent": name,
+        "raw_text": arguments.get("raw_text", ""),
+        "user_id": "mcp-benchmark",
+        "session_id": "mcp-benchmark",
+        **arguments,
+    }
+
+    try:
+        result = await _post(base_url, endpoint, payload, timeout=60.0)
+        latency_ms = int((time.perf_counter() - t_start) * 1000)
+        result["_transport"] = "mcp_streamable_http"
+        result["_latency_ms"] = latency_ms
+        return JSONResponse(result)
+    except Exception as e:
+        latency_ms = int((time.perf_counter() - t_start) * 1000)
+        return JSONResponse({"ok": False, "error": str(e), "_latency_ms": latency_ms})
+
+
+# ✅ ADD /tool route here
+fastapi_app = Starlette(routes=[
+    Route("/health", handle_health, methods=["GET"]),
+    Route("/tool", handle_direct_tool, methods=["POST"]),  # ✅ new
+    Mount("/mcp", app=handle_mcp),
+])
 
 if __name__ == "__main__":
     import uvicorn

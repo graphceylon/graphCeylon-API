@@ -19,17 +19,17 @@ class DebertaNLIWrapper:
         self.model_dir = model_dir
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_dir, use_fast=True)
+        # changed use_fast=True -> use_fast=False
+        self.tokenizer = AutoTokenizer.from_pretrained("roberta-base", use_fast=True)
 
         self.model = AutoModelForSequenceClassification.from_pretrained(
             model_dir,
-            torch_dtype=torch.float32,          # ✅ force fp32
-            low_cpu_mem_usage=False,            # ✅ safer on some setups
+            torch_dtype=torch.float32,
+            low_cpu_mem_usage=False,
         )
 
         self.model.to(self.device)
 
-        # ✅ If on CPU, force model weights to fp32 explicitly
         if self.device == "cpu":
             self.model = self.model.float()
 
@@ -39,15 +39,12 @@ class DebertaNLIWrapper:
         print("[NLI] config.torch_dtype:", getattr(self.model.config, "torch_dtype", None))
         print("[NLI] param dtype:", next(self.model.parameters()).dtype)
 
-        # check if any parameter tensor has NaN/Inf
         bad = 0
         for p in self.model.parameters():
             if torch.isnan(p).any() or torch.isinf(p).any():
                 bad += 1
         print("[NLI] bad parameter tensors:", bad)
 
-        # If your label mapping differs, adjust this:
-        # You previously used: {'contradiction': 0, 'entailment': 1, 'neutral': 2}
         self.id2label = {0: "contradiction", 1: "entailment", 2: "neutral"}
 
     @torch.no_grad()
@@ -64,7 +61,6 @@ class DebertaNLIWrapper:
         logits = self.model(**inputs).logits[0].float()
         probs = torch.softmax(logits, dim=-1).detach().cpu().tolist()
 
-        # order must match your training label ids
         contradiction, entailment, neutral = probs[0], probs[1], probs[2]
 
         best_id = int(torch.argmax(torch.tensor(probs)))
@@ -84,11 +80,6 @@ class DebertaNLIWrapper:
         min_entail: float = 0.70,
         min_contra: float = 0.60,
     ) -> Tuple[str, Dict]:
-        """
-        Finds best supporting/contradicting evidence among snippets.
-        Returns: (verdict, debug)
-        verdict: "SUPPORTED" | "UNSUPPORTED" | "NEED_MORE_INFO"
-        """
         best = None
         best_entail = -1.0
         best_contra = -1.0
@@ -106,4 +97,8 @@ class DebertaNLIWrapper:
         if best_entail >= min_entail:
             return "SUPPORTED", {"best": best, "best_entailment": best_entail}
 
-        return "NEED_MORE_INFO", {"best": best, "best_entailment": best_entail, "best_contradiction": best_contra}
+        return "NEED_MORE_INFO", {
+            "best": best,
+            "best_entailment": best_entail,
+            "best_contradiction": best_contra,
+        }

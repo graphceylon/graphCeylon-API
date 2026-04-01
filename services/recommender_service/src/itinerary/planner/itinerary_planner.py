@@ -1667,6 +1667,7 @@ def build_itinerary_days_from_pool(
                 eco_preference=eco_pref,
                 country=country,
                 explicit_city=explicit_city_for_enrich,  # ✅ keep same behavior
+                category=a.get("category"),
             )
 
             day_items.append({
@@ -1752,7 +1753,58 @@ def _query_theme_bonus(rec: Dict[str, Any], payload: Dict[str, Any]) -> float:
                        "rock", "camping", "abseil"],
         },
     }
+def _fetch_vector_scores(
+    candidates: List[Dict[str, Any]],
+    payload: Dict[str, Any],
+    *,
+    limit: int = 20,
+    similarity_threshold: float = 0.5,
+    timeout: float = 15.0,
+) -> None:
+    """
+    Calls GET /sub-attractions/search/vector with query params (not POST body).
+    Attaches _vector_sim to each candidate in-place.
+    """
+    query_text = build_semantic_query(payload)
+    if not query_text:
+        return
 
+    url = f"{KG_BASE_URL}/sub-attractions/search/vector"
+    params = {
+        "query": query_text,
+        "limit": limit,
+        "similarity_threshold": similarity_threshold,
+    }
+
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            r = client.get(url, params=params)   # ← GET, not POST
+            r.raise_for_status()
+            data = r.json()
+
+        # Build lookup: name -> similarity (endpoint returns name, not attraction_id)
+        score_map: Dict[str, float] = {}
+        for item in (data.get("results") or []):
+            name = str(item.get("name") or "").strip().lower()
+            sim  = float(item.get("similarity") or 0.0)
+            if name:
+                score_map[name] = sim
+
+        # Attach to candidates by matching on title
+        matched = 0
+        for c in candidates:
+            title = str(c.get("title") or c.get("name") or "").strip().lower()
+            if title in score_map:
+                c["_vector_sim"] = score_map[title]
+                matched += 1
+            else:
+                c["_vector_sim"] = c.get("_vector_sim") or 0.0
+
+        print(f"[VECTOR] matched {matched}/{len(candidates)} candidates "
+              f"from {len(score_map)} results")
+
+    except Exception as exc:
+        print(f"[VECTOR] failed: {exc}")
     # Detect which themes the user cares about
     active_themes = []
     for theme_key, config in THEMES.items():
@@ -2345,6 +2397,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         )
 
         candidates = dedupe_candidates_by_attraction_id(candidates)
+        # _fetch_vector_scores(candidates, payload)  
         attach_semantic_scores(candidates, payload)
         debug_kg_candidates(candidates, title="KG CANDIDATES BEFORE CE")
 
@@ -2481,12 +2534,43 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             c["_theme_align"] = theme_align
             c["_geo_fit"] = geo_fit
             c["_title_penalty"] = title_penalty
+            query_lower = str(payload.get("query") or "").lower()
+            category = str(c.get("category") or "").lower()
+
+            intent_bonus = 0.0
+
+            # FAMILY intent
+            if "family" in query_lower:
+                if category in ["park", "beach", "zoo", "museum"]:
+                    intent_bonus += 0.5
+                if "religious" in category:
+                    intent_bonus -= 0.2
+
+            # CULTURAL intent
+            if "cultural" in query_lower or "heritage" in query_lower:
+                if category in ["museum", "buddhist religious site", "church", "heritage", "monument"]:
+                    intent_bonus += 0.5
+                if category in ["natural attraction", "dam", "mountain"]:
+                    intent_bonus -= 0.3
+
+            # NATURE / HIKING intent
+            if "nature" in query_lower or "hiking" in query_lower:
+                if category in ["viewpoint", "natural attraction", "park", "waterfall"]:
+                    intent_bonus += 0.5
+                if category in ["dining", "religious site"]:
+                    intent_bonus -= 0.2
+
+            # BEACH intent
+            if "beach" in query_lower:
+                if category == "beach":
+                    intent_bonus += 0.5
 
             c["_planner_final"] = (
                 (0.40 * retrieval)
                 + (0.25 * dynamic)
                 + (0.25 * theme_align)
                 + (0.10 * geo_fit)
+                + intent_bonus   # ✅ NEW LINE
                 - title_penalty
             )
 
