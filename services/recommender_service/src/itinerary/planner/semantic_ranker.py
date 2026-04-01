@@ -200,23 +200,19 @@ def _fetch_vector_results(
     if not query:
         return []
 
-    city = str(payload.get("destination") or payload.get("city") or "").strip() or None
-    country = str(payload.get("country") or "Sri Lanka").strip()
-
     url = f"{KG_BASE_URL}{KG_VECTOR_SEARCH_PATH}"
-    body = {
+    params = {
         "query": query,
-        "city": city,
-        "country": country,
-        "top_k": top_k,
+        "limit": min(top_k, 50),      # endpoint max is 50
+        "similarity_threshold": 0.5,  # 0.7 default is too strict, misses good matches
     }
 
     with httpx.Client(timeout=timeout) as client:
-        r = client.post(url, json=body)
+        r = client.post(url, params=params)  # POST + query params, no body
         r.raise_for_status()
         data = r.json()
 
-    items = data.get("items") or []
+    items = data.get("results") or []  # endpoint uses "results" not "items"
     return [x for x in items if isinstance(x, dict)]
 
 

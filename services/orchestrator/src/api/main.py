@@ -5,6 +5,7 @@ from .schemas import OrchestrateRequest, OrchestrateResponse
 from ..orchestrator_core.orchestrator_service import OrchestratorService
 from ..orchestrator_core.intent_parser.agent import IntentParserAgent
 from ..orchestrator_core.task_graph_builder import TaskGraphBuilder
+from fastapi.middleware.cors import CORSMiddleware
 from .events_routes import router as events_router
 from .booking_routes import router as booking_router
 from .benchmark_routes import router as benchmark_router
@@ -23,6 +24,13 @@ app = FastAPI(
     version="0.1.0",
     description="Tourism multi-agent orchestrator for Sri Lanka",
 )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(events_router)
 app.include_router(stream_router)

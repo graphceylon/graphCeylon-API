@@ -838,11 +838,44 @@ class OrchestratorService:
         )
 
         # ✅ MCP Streamable HTTP (remote agents over MCP protocol)
-        _MCP_SERVER_URL = os.getenv("MCP_SERVER_HTTP_URL", "http://localhost:9101")
-        mcp_http_provider = MCPToolProvider(
-            transport="streamable_http",
-            server_url=_MCP_SERVER_URL,
-            timeout_sec=30.0,
+        # _MCP_SERVER_URL = os.getenv("MCP_SERVER_HTTP_URL", "http://localhost:9101/mcp/")
+        # mcp_http_provider = MCPToolProvider(
+        #     transport="streamable_http",
+        #     server_url=_MCP_SERVER_URL,
+        #     timeout_sec=30.0,
+        # )
+        # ✅ MCP Streamable HTTP — using direct /tool endpoint (bypasses async MCP protocol)
+        _MCP_DIRECT_BASE = "http://localhost:9101"
+
+        _mcp_direct_registry = AgentRegistry(
+            agents=[
+                AgentSpec(
+                    agent_id="mcp_http_direct",
+                    base_url=_MCP_DIRECT_BASE,
+                    protocols=["a2a"],
+                    capabilities=[
+                        "plan_itinerary_mcp",
+                        "forecast_weather_mcp",
+                        "recommend_pois_mcp",
+                        "info_visa_policy_mcp",
+                        "info_accommodation_mcp",
+                    ],
+                    sla=SLA(p95_ms=60000, success_rate=0.95),
+                    cost_weight=1.0,
+                )
+            ]
+        )
+
+        mcp_http_provider = A2AToolProvider(
+            registry=_mcp_direct_registry,
+            adapter=self.a2a,
+            tool_endpoints={
+                "plan_itinerary_mcp":     "/tool",
+                "forecast_weather_mcp":   "/tool",
+                "recommend_pois_mcp":     "/tool",
+                "info_visa_policy_mcp":   "/tool",
+                "info_accommodation_mcp": "/tool",
+            },
         )
 
         self.tool_router = ToolRouter(
@@ -872,6 +905,7 @@ class OrchestratorService:
                 # MCP stdio benchmark variants
                 "booking_stub_stdio":      "mcp_stdio",
                 "book_hotel_stdio":        "mcp_stdio",
+                "plan_itinerary_stdio":    "mcp_stdio",
                 # MCP streamable HTTP benchmark variants
                 "forecast_weather_mcp":    "mcp_http",
                 "recommend_pois_mcp":      "mcp_http",
@@ -1599,6 +1633,14 @@ class OrchestratorService:
 
         # return parsed_obj
         tool_res = self.tool_router.call(call)
+
+        # ✅ Fix transport label for MCP benchmark variants
+        transport_type = tool_res.transport_type or "a2a_http"
+        if call.name.endswith("_mcp"):
+            transport_type = "mcp_streamable_http"
+        elif call.name.endswith("_stdio"):
+            transport_type = "mcp_stdio"
+
         if self.trace_pg:
             self.trace_pg.add_event(
                 trace_id=request_trace_id or call.trace_id,
@@ -1612,7 +1654,7 @@ class OrchestratorService:
                 provider=tool_res.provider,
                 endpoint=handler.endpoint,
                 latency_ms=tool_res.latency_ms,
-                transport_type=tool_res.transport_type or "a2a_http",  # ✅ now safe
+                transport_type=transport_type,  # ✅ corrected label
             )
         # after tool_router.call(call)
         explain.tool = {
