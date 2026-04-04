@@ -229,6 +229,18 @@ class ResponseFormatter:
             }
 
         if not has_any_result and intent in {"out_of_scope", "generic_fact_query"}:
+            if intent == "out_of_scope":
+                return {
+                    "text": "I specialize in Sri Lanka travel. I can help you with:\n• Trip planning & itineraries\n• Weather forecasts\n• Hotels & accommodation\n• Attractions & places to visit\n• Restaurants & dining\n• Visa & entry requirements\n\nWhat would you like to explore?",
+                    "followups": [
+                        "Plan a trip to Ella",
+                        "Weather in Kandy",
+                        "Hotels in Sigiriya",
+                        "Visa info for Sri Lanka",
+                    ],
+                    "explainability_ui": None,
+                    "sources": None,
+                }
             if self.provider == "groq" and self.groq_key:
                 return self._answer_general_with_groq(user_text, parsed_intent)
             return {
@@ -310,11 +322,12 @@ class ResponseFormatter:
         return present
     def _answer_general_with_groq(self, user_text: str, parsed_intent: Dict[str, Any]) -> Dict[str, Any]:
         system = (
-            "You are a helpful assistant.\n"
-            "Answer the user's question using general knowledge.\n"
-            "Keep it short and clear.\n"
-            "If the question is unclear, ask ONE short follow-up.\n"
+            "You are GraphCeylon, a Sri Lanka travel assistant.\n"
+            "Answer the user's question helpfully and naturally.\n"
+            "Keep it short and friendly (max 40 words).\n"
+            "If the question is vague, ask ONE short clarifying question about their Sri Lanka trip.\n"
             "OUTPUT FORMAT (strict): Return valid JSON with EXACTLY: text, followups.\n"
+            "- followups: always include 2-4 Sri Lanka travel suggestions like 'Kandy', 'Ella', 'Galle', 'Sigiriya', 'Plan a trip', 'Beach destinations'\n"
         )
 
         prompt = (
@@ -901,39 +914,73 @@ class ResponseFormatter:
 
 
         # ---- smalltalk ----
+        # if intent == "smalltalk":
+        #     st = self.smalltalk.predict(user_text)
+
+        #     if st.subtype == "greeting":
+        #         if stage != "idle":
+        #             return {
+        #                 "text": "Hi 👋 Want to continue from where we left off?",
+        #                 "followups": ["Continue", "Change days", "Change budget"],
+        #             }
+        #         return {
+        #             "text": "Hi 👋 What would you like to do?",
+        #             "followups": ["Plan an itinerary", "Recommend places", "Visa info", "Find hotels"],
+        #         }
+
+        #     if st.subtype == "how_are_you":
+        #         if stage != "idle":
+        #             return {"text": "I’m doing well, thanks 😊 Want to continue?", "followups": ["Continue", "Adjust itinerary"]}
+        #         return {"text": "I’m doing great 😊 How can I help with Sri Lanka travel?", "followups": ["Plan an itinerary", "Recommend places"]}
+
+        #     if st.subtype == "thanks":
+        #         if stage != "idle":
+        #             return {"text": "You’re welcome 😊 Want me to tweak anything?", "followups": ["Budget", "Days", "Pace", "Avoid crowds"]}
+        #         return {"text": "You’re welcome 😊", "followups": []}
+
+        #     if st.subtype == "farewell":
+        #         return {"text": "Bye 👋 Come back anytime!", "followups": []}
+
+        #     if st.subtype == "ack":
+        #         if stage != "idle":
+        #             return {"text": "Got it 👍 What do you want to change next?", "followups": ["Change dates", "Change budget", "Add activities"]}
+        #         return {"text": "Got it 👍 What would you like to do?", "followups": []}
+
+
+        # ---- smalltalk ----
         if intent == "smalltalk":
             st = self.smalltalk.predict(user_text)
 
             if st.subtype == "greeting":
                 if stage != "idle":
                     return {
-                        "text": "Hi 👋 Want to continue from where we left off?",
-                        "followups": ["Continue", "Change days", "Change budget"],
+                        "text": "Welcome back! Want to continue planning your trip?",
+                        "followups": ["Continue", "Change days", "Change destination", "Change budget"],
                     }
                 return {
-                    "text": "Hi 👋 What would you like to do?",
-                    "followups": ["Plan an itinerary", "Recommend places", "Visa info", "Find hotels"],
+                    "text": "Hi! I'm GraphCeylon, your Sri Lanka travel assistant. How can I help you today?",
+                    "followups": ["Plan a trip", "Find hotels", "Check weather", "Visa info"],
                 }
 
             if st.subtype == "how_are_you":
                 if stage != "idle":
-                    return {"text": "I’m doing well, thanks 😊 Want to continue?", "followups": ["Continue", "Adjust itinerary"]}
-                return {"text": "I’m doing great 😊 How can I help with Sri Lanka travel?", "followups": ["Plan an itinerary", "Recommend places"]}
+                    return {"text": "Doing well, thanks for asking! Want to continue with your trip plan?", "followups": ["Continue", "Adjust itinerary"]}
+                return {"text": "Doing well! Ready to help you plan your Sri Lanka trip. Where would you like to go?", "followups": ["Plan a trip", "Recommend places"]}
 
             if st.subtype == "thanks":
                 if stage != "idle":
-                    return {"text": "You’re welcome 😊 Want me to tweak anything?", "followups": ["Budget", "Days", "Pace", "Avoid crowds"]}
-                return {"text": "You’re welcome 😊", "followups": []}
+                    return {"text": "Happy to help! Would you like to adjust anything?", "followups": ["Change budget", "Change days", "Change pace", "Avoid crowds"]}
+                return {"text": "Happy to help!", "followups": []}
 
             if st.subtype == "farewell":
-                return {"text": "Bye 👋 Come back anytime!", "followups": []}
+                return {"text": "Goodbye! Have a great trip to Sri Lanka. Come back anytime.", "followups": []}
 
             if st.subtype == "ack":
                 if stage != "idle":
-                    return {"text": "Got it 👍 What do you want to change next?", "followups": ["Change dates", "Change budget", "Add activities"]}
-                return {"text": "Got it 👍 What would you like to do?", "followups": []}
+                    return {"text": "Got it. What would you like to change?", "followups": ["Change dates", "Change budget", "Add activities"]}
+                return {"text": "Got it. What would you like to do?", "followups": []}
 
-            return {"text": "😊 How can I help?", "followups": ["Plan an itinerary", "Recommend places"]}
+            return {"text": "How can I help you with your Sri Lanka trip?", "followups": ["Plan a trip", "Find hotels", "Check weather", "Visa info"]}
 
         # ---- info_attraction template fallback (cleaner) ----
         if intent == "modify_itinerary":
@@ -1050,6 +1097,33 @@ class ResponseFormatter:
 
                 # generic fallback
                 return {"text": "I got your request. What would you like to do next?", "followups": []}
+        if intent == "info_transport":
+            ents = (parsed_intent.get("entities") or {})
+            origin = ents.get("origin") or ents.get("city") or "your starting point"
+            destination = ents.get("destination") or "your destination"
+            route_str = f"from {origin} to {destination}" if origin and destination and origin != destination else "around Sri Lanka"
+            return {
+                "text": f"Getting {route_str}:\n• Train — scenic and affordable, book at eservices.railway.gov.lk\n• Bus — frequent departures, most budget-friendly option\n• Taxi — approximately LKR 5,000-8,000 depending on distance\n• Private hire — most comfortable for families and groups\n\nWould you like to plan a full trip?",
+                "followups": ["Plan a trip", "Hotels in Kandy", "Places to visit", "Weather forecast"],
+            }
+
+        # ---- catch-all ----
+        if self.provider == "groq" and self.groq_key:
+            return self._answer_general_with_groq(user_text, parsed_intent)
+
+        return {
+            "text": "I can help you plan your Sri Lanka trip. What would you like to know?",
+            "followups": ["Plan a trip", "Find hotels", "Check weather", "Visa info"],
+        }
+
+            # # ---- catch-all: use Groq for anything unhandled ----
+            # if self.provider == "groq" and self.groq_key:
+            #     return self._answer_general_with_groq(user_text, parsed_intent)
+
+            # return {
+            #     "text": "I can help you plan your Sri Lanka trip. What would you like to know?",
+            #     "followups": ["Plan a trip", "Find hotels", "Check weather", "Visa info"],
+            # }
         # return {"text": "I got your request. What would you like to do next?", "followups": []}
     def _format_visa(self, visa_result: Any) -> str:
         if not visa_result:

@@ -1867,7 +1867,178 @@ class OrchestratorService:
         setattr(parsed, "_unknown_amenities", unknown)
 
         return parsed
+    def _llm_routing_fallback(self, parsed_intent: ParsedIntent, input_text: str) -> ParsedIntent:
+        """
+        Use Groq to fix routing when DeBERTa gets it wrong.
+        Triggers when:
+        - confidence < 0.85, OR
+        - primary intent has no handler, OR
+        - secondary intents look wrong
+        """
+        import httpx
 
+        primary = parsed_intent.intent or ""
+        conf = float(parsed_intent.confidence or 0.0)
+
+        # Only trigger if conf is low OR primary has no handler
+        # Also trigger if query looks multi-intent but secondaries are all non-routable
+        _routable_secondaries = [
+            s for s in (parsed_intent.secondary_intents or [])
+            if s in self.handlers
+        ]
+        _has_eat_signal = any(w in input_text.lower() for w in [
+            "eat", "food", "restaurant", "where to eat", "dine", "dining", "hungry"
+        ])
+        _has_visit_signal = any(w in input_text.lower() for w in [
+            "visit", "historical", "sites", "places", "attractions", "what to do", "things to do"
+        ])
+        _needs_secondary_fix = (
+            len(_routable_secondaries) == 0
+            and (_has_eat_signal or _has_visit_signal)
+            and primary in self.handlers  # primary is fine, just missing secondary
+        )
+
+        # ✅ Pre-check: vague travel intent → recommend_pois (never transport)
+        _vague_travel = any(w in (input_text or "").lower() for w in [
+            "i want to travel", "suggest something", "help me plan",
+            "where should i go", "suggest a place", "i want to visit",
+            "where to go", "what to do in sri lanka",
+        ])
+        if _vague_travel:
+            print(f"[llm-routing] vague travel detected — routing to recommend_pois")
+            ents = (
+                parsed_intent.entities.model_dump(exclude_none=False)
+                if hasattr(parsed_intent.entities, "model_dump")
+                else dict(parsed_intent.entities or {})
+            )
+            if not ents.get("city"):
+                ents["city"] = "Colombo"
+                ents["country"] = "Sri Lanka"
+            return parsed_intent.model_copy(update={
+                "intent": "recommend_pois",
+                "confidence": 0.85,
+                "secondary_intents": [],
+                "scores": {**dict(parsed_intent.scores or {}), "recommend_pois": 0.85},
+                "entities": Entities(**ents),
+            })
+        # ✅ Never override when classifier is confident about smalltalk or out_of_scope
+        _out_of_scope_score = float((parsed_intent.scores or {}).get("out_of_scope", 0.0))
+        _smalltalk_score = float((parsed_intent.scores or {}).get("smalltalk", 0.0))
+        if _out_of_scope_score > 0.5 or _smalltalk_score > 0.5:
+            print(f"[llm-routing] smalltalk={_smalltalk_score:.2f} out_of_scope={_out_of_scope_score:.2f} — not overriding")
+            return parsed_intent
+
+        should_fallback = (conf < 0.85) or (primary not in self.handlers and primary not in {
+            "parse_intent", "extract_entities", "format_response",
+            "validate_required_fields", "ask_followup"
+        }) or _needs_secondary_fix
+
+        if not should_fallback:
+            return parsed_intent
+
+        GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+        if not GROQ_API_KEY:
+            return parsed_intent
+
+        VALID_INTENTS = list(self.handlers.keys())
+
+        system_prompt = f"""You are a travel assistant intent router for Sri Lanka.
+    Given a user message, return a JSON object with:
+    - "intent": the single best intent from this list: {VALID_INTENTS}
+    - "secondary_intents": list of up to 2 additional intents from the same list (empty list if none)
+    - "city": city name mentioned or null
+    - "country": country mentioned, default "Sri Lanka"
+
+    Rules:
+    - "what hotels" / "find hotels" / "hotels available" → info_accommodation
+    - "weather" / "rain" / "forecast" → forecast_weather  
+    - "historical sites" / "temples" / "attractions" / "places to visit" → info_attraction
+    - "restaurants" / "where to eat" / "food" → recommend_restaurants
+    - "plan a trip" / "itinerary" → plan_itinerary
+    - "places I can visit" / "what to do" / "POIs" → recommend_pois
+    - If message has TWO clear requests (weather + places), put both in intent + secondary_intents
+    - ONLY return valid JSON, no explanation."""
+
+        user_prompt = f'User message: "{input_text}"'
+
+        try:
+            resp = httpx.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "llama-3.1-8b-instant",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.0,
+                    "max_tokens": 200,
+                },
+                timeout=8.0,
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"].strip()
+
+            # Strip markdown if present
+            if content.startswith("```"):
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            content = content.strip()
+
+            llm_out = json.loads(content)
+
+            new_intent = (llm_out.get("intent") or "").strip()
+            new_secondary = [s for s in (llm_out.get("secondary_intents") or [])
+                            if s in self.handlers and s != new_intent]
+
+            if new_intent not in self.handlers:
+                print(f"[llm-routing] LLM returned unknown intent={new_intent}, keeping DeBERTa result")
+                return parsed_intent
+
+            # If out_of_scope scored high, don't override it
+            _out_of_scope_score = float((parsed_intent.scores or {}).get("out_of_scope", 0.0))
+            _smalltalk_score = float((parsed_intent.scores or {}).get("smalltalk", 0.0))
+            if _out_of_scope_score > 0.5:
+                print(f"[llm-routing] out_of_scope={_out_of_scope_score:.2f} — not overriding")
+                return parsed_intent
+            if _smalltalk_score > 0.5:
+                print(f"[llm-routing] smalltalk={_smalltalk_score:.2f} — not overriding")
+                return parsed_intent
+
+            print(f"[llm-routing] OVERRIDE: {primary}({conf:.2f}) → {new_intent} | secondary={new_secondary}")
+
+            # Patch entities if LLM extracted city
+            ents = (
+                parsed_intent.entities.model_dump(exclude_none=False)
+                if hasattr(parsed_intent.entities, "model_dump")
+                else dict(parsed_intent.entities or {})
+            )
+            if llm_out.get("city") and not ents.get("city"):
+                ents["city"] = llm_out["city"]
+            if llm_out.get("country") and not ents.get("country"):
+                ents["country"] = llm_out["country"]
+
+            # Build updated scores
+            scores = dict(parsed_intent.scores or {})
+            scores[new_intent] = max(scores.get(new_intent, 0.0), 0.90)
+            for s in new_secondary:
+                scores[s] = max(scores.get(s, 0.0), 0.35)
+
+            return parsed_intent.model_copy(update={
+                "intent": new_intent,
+                "confidence": 0.90,
+                "secondary_intents": new_secondary,
+                "scores": scores,
+                "entities": Entities(**ents),
+            })
+
+        except Exception as e:
+            print(f"[llm-routing] fallback failed: {e} — keeping DeBERTa result")
+            return parsed_intent
     def orchestrate(self, req: OrchestrateRequest) -> OrchestrateResponse:
         user_id = (req.user_id or "").strip()
         session_id = (req.session_id or "").strip() or "no_session"
@@ -1985,6 +2156,7 @@ class OrchestratorService:
                     session_state.slots.pop("pending_domain", None)
     
         parsed_intent: ParsedIntent = self._run_intent_parser(req)
+        parsed_intent = self._llm_routing_fallback(parsed_intent, req.input_text)  # ← ADD THIS LINE
         # ✅ INTENT LOCK: if we are waiting for follow-up fields, keep same intent/domain
         # if session_state and session_state.slots.get("pending_fields"):
         #     locked_intent = session_state.slots.get("pending_intent")
@@ -2274,6 +2446,47 @@ class OrchestratorService:
                 parsed_intent = parsed_intent.model_copy(update={"entities": Entities(**ents)})
 
         tasks: List[TaskSummary] = self.task_graph_builder.build(parsed_intent)
+
+        # ── SECONDARY INTENT INJECTION ─────────────────────────────────────
+        # task_graph_builder only sees secondary_intents list from DeBERTa.
+        # But good secondaries can score high WITHOUT being in that list.
+        # Scan ALL scores here and inject anything we missed.
+        _sec_scores  = parsed_intent.scores or {}
+        _sec_primary = (parsed_intent.intent or "").strip()
+        _active_types = {t.type for t in tasks}
+
+        # Hard block: never run these as secondaries
+        _sec_hard_block = DISALLOW_SECONDARY | {"book_hotel"}
+
+        _sec_candidates: List[tuple] = []
+        for _sint, _sscore in _sec_scores.items():
+            _sscore = float(_sscore)
+            if _sint == _sec_primary:          continue  # already primary
+            if _sint in _sec_hard_block:       continue  # blocked
+            if _sint not in self.handlers:     continue  # not routable
+            if _sint in _active_types:         continue  # already in graph
+            if _sscore < 0.12:                 continue  # noise floor
+
+            _sec_candidates.append((_sint, _sscore))
+
+        # sort by score, cap at 2
+        _sec_candidates.sort(key=lambda x: -x[1])
+        _sec_candidates = _sec_candidates[:2]
+
+        _sec_next_num = len(tasks) + 1
+        _sec_injected: List[tuple] = []
+        for _sint, _sscore in _sec_candidates:
+            _new_tid = f"T{_sec_next_num}"
+            _sec_next_num += 1
+            tasks.append(TaskSummary(
+                id=_new_tid,
+                type=_sint,
+                status="pending",
+                assigned_agent="OrchestratorAgent",
+            ))
+            _sec_injected.append((_new_tid, _sint, _sscore))
+            print(f"[secondary-inject] {_new_tid} type={_sint} score={_sscore:.2f}")
+        # ──────────────────────────────────────────────────────────────────
         if self.trace_pg:
             self.trace_pg.update_run(
                 trace_id=request_trace_id,
@@ -2312,6 +2525,19 @@ class OrchestratorService:
         errors: List[AgentCallError] = []
 
         exec_tasks: List[ExecTask] = build_exec_tasks(self.task_graph_builder, parsed_intent)
+
+        # Wire injected secondaries into exec graph
+        _existing_exec_types = {et.type for et in exec_tasks}
+        for _new_tid, _sint, _sscore in _sec_injected:
+            if _sint in _existing_exec_types:
+                continue
+            exec_tasks.append(ExecTask(
+                id=_new_tid,
+                type=_sint,
+                assigned_agent="OrchestratorAgent",
+                depends_on=[],
+            ))
+            print(f"[secondary-exec] wired {_new_tid} type={_sint}")
 
         handlers: Dict[str, HandlerFn] = {}
 
@@ -2371,6 +2597,37 @@ class OrchestratorService:
                         meta={"task": "format_response"},
                     )
                 fn = _format
+            elif ttype == "out_of_scope":
+                async def _out_of_scope(task, ctx, results):
+                    return AgentResult(
+                        ok=True,
+                        answer="I'm GraphCeylon, a Sri Lanka travel assistant. I can help with trip planning, weather forecasts, hotels, attractions and restaurants across Sri Lanka. What would you like to explore?",
+                        data={"out_of_scope": True},
+                        evidence=[],
+                        missing_fields=[],
+                        next_actions=[],
+                        confidence=1.0,
+                        safety_flags=[],
+                        meta={"task": "out_of_scope"},
+                    )
+                fn = _out_of_scope
+
+            elif ttype == "smalltalk":
+                async def _smalltalk(task, ctx, results):
+                    return AgentResult(
+                        ok=True,
+                        answer="I'm GraphCeylon, your Sri Lanka travel assistant! I can help you plan trips, check weather, find hotels, discover attractions and restaurants. What would you like to know?",
+                        data={"smalltalk": True},
+                        evidence=[],
+                        missing_fields=[],
+                        next_actions=[],
+                        confidence=1.0,
+                        safety_flags=[],
+                        meta={"task": "smalltalk"},
+                    )
+                fn = _smalltalk
+
+            
             elif ttype == "forecast_weather":
                 async def _weather(task, ctx, results):
                     # Try to inherit from plan_itinerary output if available
@@ -2860,6 +3117,11 @@ class OrchestratorService:
 
             elif ttype == "recommend_restaurants":
                 results["restaurant_result"] = payload
+            elif ttype == "out_of_scope":
+                results["final_message_override"] = payload.get("answer") if isinstance(payload, dict) else str(payload)
+
+            elif ttype == "smalltalk":
+                results["final_message_override"] = payload.get("answer") if isinstance(payload, dict) else str(payload)
             elif ttype == "book_hotel":
                 results["booking_result"] = payload
 
@@ -2952,13 +3214,32 @@ class OrchestratorService:
                 print(f"[phase3] trigger failed: {e}")
         
         results["explainability"] = merge_explain(explain_packets)
-
-        formatted = self.response_formatter.format(
-            user_text=req.input_text,
-            parsed_intent=parsed_intent.model_dump(mode="json"),
-            results=results,
-            tasks=[t.model_dump(mode="json") for t in tasks],
-        )
+        # Override final message for out_of_scope and smalltalk
+        if results.get("final_message_override"):
+            formatted = {
+                "text": results["final_message_override"],
+                "followups": [
+                    "Weather in Colombo",
+                    "Hotels in Kandy",
+                    "Plan a trip to Ella",
+                    "Places to visit in Galle",
+                ],
+                "explainability_ui": "",
+                "sources": None,
+            }
+        else:
+            formatted = self.response_formatter.format(
+                user_text=req.input_text,
+                parsed_intent=parsed_intent.model_dump(mode="json"),
+                results=results,
+                tasks=[t.model_dump(mode="json") for t in tasks],
+            )
+        # formatted = self.response_formatter.format(
+        #     user_text=req.input_text,
+        #     parsed_intent=parsed_intent.model_dump(mode="json"),
+        #     results=results,
+        #     tasks=[t.model_dump(mode="json") for t in tasks],
+        # )
         # -------------------------
         # ✅ AGENTIC CLOSED LOOP: observe -> verify -> repair -> decide
         # -------------------------

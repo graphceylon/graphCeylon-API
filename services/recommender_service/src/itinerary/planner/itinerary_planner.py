@@ -603,11 +603,12 @@ def recommend_city_pois_simple(payload: Dict[str, Any], cfg: PlannerConfig = Pla
         )
 
     # ✅ ADD HERE: fuse CE + vector + base retrieval
+    # ALL THREE occurrences in the file need this pattern:
     for c in candidates:
-        base = float(c.get("_score", 0.0))
-        vec  = float(c.get("_vector_sim", 0.0))
-        ce = float(c.get("_ce_score_norm", 0.0))
-        kg_sem = float(c.get("_semantic_sim", 0.0))
+        base   = float(c.get("_score") or 0.0)
+        vec    = float(c.get("_vector_sim") or 0.0)
+        ce     = float(c.get("_ce_score_norm") or 0.0)
+        kg_sem = float(c.get("_semantic_sim") or 0.0)
 
         c["_retrieval_score"] = (
             0.50 * ce +
@@ -635,7 +636,7 @@ def recommend_city_pois_simple(payload: Dict[str, Any], cfg: PlannerConfig = Pla
             eco_preference=float(payload.get("eco_preference") or 0.5),
         )
         theme_mult = _query_theme_bonus(c, payload)
-        retrieval = float(c.get("_retrieval_score", 0.0))  # ← add this line
+        retrieval  = float(c.get("_retrieval_score") or 0.0)
         c["_final_score"] = (0.60 * retrieval + 0.40 * pref_score) * theme_mult
 
     reranked = sorted(
@@ -1753,68 +1754,15 @@ def _query_theme_bonus(rec: Dict[str, Any], payload: Dict[str, Any]) -> float:
                        "rock", "camping", "abseil"],
         },
     }
-def _fetch_vector_scores(
-    candidates: List[Dict[str, Any]],
-    payload: Dict[str, Any],
-    *,
-    limit: int = 20,
-    similarity_threshold: float = 0.5,
-    timeout: float = 15.0,
-) -> None:
-    """
-    Calls GET /sub-attractions/search/vector with query params (not POST body).
-    Attaches _vector_sim to each candidate in-place.
-    """
-    query_text = build_semantic_query(payload)
-    if not query_text:
-        return
 
-    url = f"{KG_BASE_URL}/sub-attractions/search/vector"
-    params = {
-        "query": query_text,
-        "limit": limit,
-        "similarity_threshold": similarity_threshold,
-    }
-
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            r = client.get(url, params=params)   # ← GET, not POST
-            r.raise_for_status()
-            data = r.json()
-
-        # Build lookup: name -> similarity (endpoint returns name, not attraction_id)
-        score_map: Dict[str, float] = {}
-        for item in (data.get("results") or []):
-            name = str(item.get("name") or "").strip().lower()
-            sim  = float(item.get("similarity") or 0.0)
-            if name:
-                score_map[name] = sim
-
-        # Attach to candidates by matching on title
-        matched = 0
-        for c in candidates:
-            title = str(c.get("title") or c.get("name") or "").strip().lower()
-            if title in score_map:
-                c["_vector_sim"] = score_map[title]
-                matched += 1
-            else:
-                c["_vector_sim"] = c.get("_vector_sim") or 0.0
-
-        print(f"[VECTOR] matched {matched}/{len(candidates)} candidates "
-              f"from {len(score_map)} results")
-
-    except Exception as exc:
-        print(f"[VECTOR] failed: {exc}")
-    # Detect which themes the user cares about
     active_themes = []
     for theme_key, config in THEMES.items():
         if any(d in all_signals for d in config["detect"]):
             active_themes.append(theme_key)
 
     if not active_themes:
-        return 1.0  # no clear preference → neutral multiplier
+        return 1.0
 
-    # Score this attraction against each active theme
     total_match = 0.0
     for theme_key in active_themes:
         keywords = THEMES[theme_key]["match"]
@@ -1829,10 +1777,89 @@ def _fetch_vector_scores(
             total_match += 0.0
 
     avg_match = total_match / len(active_themes)
+    return 0.3 + (1.5 * avg_match)
 
-    # Convert to multiplier: 0.3 (no match) → 1.8 (strong match)
-    multiplier = 0.3 + (1.5 * avg_match)
-    return multiplier
+
+# def _fetch_vector_scores(
+#     candidates: List[Dict[str, Any]],
+#     payload: Dict[str, Any],
+#     *,
+#     limit: int = 20,
+#     similarity_threshold: float = 0.5,
+#     timeout: float = 15.0,
+# ) -> None:
+#     """
+#     Calls GET /sub-attractions/search/vector with query params (not POST body).
+#     Attaches _vector_sim to each candidate in-place.
+#     """
+#     query_text = build_semantic_query(payload)
+#     if not query_text:
+#         return
+
+#     url = f"{KG_BASE_URL}/sub-attractions/search/vector"
+#     params = {
+#         "query": query_text,
+#         "limit": limit,
+#         "similarity_threshold": similarity_threshold,
+#     }
+
+#     try:
+#         with httpx.Client(timeout=timeout) as client:
+#             r = client.get(url, params=params)   # ← GET, not POST
+#             r.raise_for_status()
+#             data = r.json()
+
+#         # Build lookup: name -> similarity (endpoint returns name, not attraction_id)
+#         score_map: Dict[str, float] = {}
+#         for item in (data.get("results") or []):
+#             name = str(item.get("name") or "").strip().lower()
+#             sim  = float(item.get("similarity") or 0.0)
+#             if name:
+#                 score_map[name] = sim
+
+#         # Attach to candidates by matching on title
+#         matched = 0
+#         for c in candidates:
+#             title = str(c.get("title") or c.get("name") or "").strip().lower()
+#             if title in score_map:
+#                 c["_vector_sim"] = score_map[title]
+#                 matched += 1
+#             else:
+#                 c["_vector_sim"] = c.get("_vector_sim") or 0.0
+
+#         print(f"[VECTOR] matched {matched}/{len(candidates)} candidates "
+#               f"from {len(score_map)} results")
+
+#     except Exception as exc:
+#         print(f"[VECTOR] failed: {exc}")
+    # # Detect which themes the user cares about
+    # active_themes = []
+    # for theme_key, config in THEMES.items():
+    #     if any(d in all_signals for d in config["detect"]):
+    #         active_themes.append(theme_key)
+
+    # if not active_themes:
+    #     return 1.0  # no clear preference → neutral multiplier
+
+    # # Score this attraction against each active theme
+    # total_match = 0.0
+    # for theme_key in active_themes:
+    #     keywords = THEMES[theme_key]["match"]
+    #     hits = sum(1 for kw in keywords if kw in blob)
+    #     if hits >= 3:
+    #         total_match += 1.0
+    #     elif hits >= 2:
+    #         total_match += 0.7
+    #     elif hits >= 1:
+    #         total_match += 0.4
+    #     else:
+    #         total_match += 0.0
+
+    # avg_match = total_match / len(active_themes)
+
+    # # Convert to multiplier: 0.3 (no match) → 1.8 (strong match)
+    # multiplier = 0.3 + (1.5 * avg_match)
+    # return multiplier
 def run_city_pipeline(city_name: str, payload: Dict[str, Any], cfg: PlannerConfig) -> Dict[str, Any]:
     """
     Runs: KG fetch -> TOP15 print -> rerank -> NSGA -> returns pareto_pool + debug packs
@@ -1878,11 +1905,12 @@ def run_city_pipeline(city_name: str, payload: Dict[str, Any], cfg: PlannerConfi
             top_k=20,
         )
 
+    # ALL THREE occurrences in the file need this pattern:
     for c in candidates:
-        base = float(c.get("_score", 0.0))
-        vec  = float(c.get("_vector_sim", 0.0))
-        ce = float(c.get("_ce_score_norm", 0.0))
-        kg_sem = float(c.get("_semantic_sim", 0.0))
+        base   = float(c.get("_score") or 0.0)
+        vec    = float(c.get("_vector_sim") or 0.0)
+        ce     = float(c.get("_ce_score_norm") or 0.0)
+        kg_sem = float(c.get("_semantic_sim") or 0.0)
 
         c["_retrieval_score"] = (
             0.50 * ce +
@@ -2415,11 +2443,12 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             )
         debug_kg_candidates(candidates, title="CANDIDATES AFTER CE RERANK")
 
+        # ALL THREE occurrences in the file need this pattern:
         for c in candidates:
-            base = float(c.get("_score", 0.0))
-            vec  = float(c.get("_vector_sim", 0.0))
-            ce = float(c.get("_ce_score_norm", 0.0))
-            kg_sem = float(c.get("_semantic_sim", 0.0))
+            base   = float(c.get("_score") or 0.0)
+            vec    = float(c.get("_vector_sim") or 0.0)
+            ce     = float(c.get("_ce_score_norm") or 0.0)
+            kg_sem = float(c.get("_semantic_sim") or 0.0)
 
             c["_retrieval_score"] = (
                 0.50 * ce +
