@@ -5,8 +5,10 @@ Business logic for transport search functionality used by orchestrator service.
 """
 
 import logging
+
 from typing import List, Dict, Any
 
+from aiohttp import request
 from neo4j import Driver
 
 from core.utils import normalize_location_name, STATION_ALIASES
@@ -15,8 +17,11 @@ from models.domain.railway import (
     TransportOption,
     TransportSearchResponse,
 )
+import os
+# from services.orchestrator.src.orchestrator_core.orchestrator_service import _SCHEDULE_DATE
 
 logger = logging.getLogger(__name__)
+_SCHEDULE_DATE: str = os.getenv("RAILWAY_SCHEDULE_DATE", "2026-01-09")
 
 # Scenic routes for enriching summaries
 _SCENIC_ROUTES: Dict[tuple, str] = {
@@ -26,7 +31,27 @@ _SCENIC_ROUTES: Dict[tuple, str] = {
     ("colombo fort", "matara"): "southern coastal train route",
 }
 
-
+CITY_TO_STATION: Dict[str, str] = {
+    "colombo": "Colombo Fort",
+    "kandy": "Kandy",
+    "galle": "Galle",
+    "ella": "Ella",
+    "badulla": "Badulla",
+    "jaffna": "Jaffna",
+    "matara": "Matara",
+    "gampaha": "Gampaha",
+    "kurunegala": "Kurunegala",
+    "anuradhapura": "Anuradhapura",
+    "trincomalee": "Trincomalee",
+    "batticaloa": "Batticaloa",
+    "nuwara eliya": "Nanu Oya",
+    "bandarawela": "Bandarawela",
+    "haputale": "Haputale",
+    "peradeniya": "Peradeniya",
+    "vavuniya": "Vavuniya",
+    "polonnaruwa": "Polonnaruwa",
+    "beliaththa": "Beliaththa",
+}
 class OrchestratorTransportService:
     """Service for handling orchestrator transport search requests."""
 
@@ -36,14 +61,20 @@ class OrchestratorTransportService:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-
+    @staticmethod
+    def _resolve_station(city: str) -> str:
+        """Map city name to actual station name stored in Neo4j."""
+        return CITY_TO_STATION.get((city or "").strip().lower(), city)
     def search_transport(self, request: TransportSearchRequest) -> TransportSearchResponse:
-        """Search transport options between origin and destination."""
         try:
-            origin = normalize_location_name(request.origin, STATION_ALIASES)
-            destination = normalize_location_name(request.destination, STATION_ALIASES)
+            origin      = self._resolve_station(normalize_location_name(request.origin, STATION_ALIASES))
+            destination = self._resolve_station(normalize_location_name(request.destination, STATION_ALIASES))
+            print(f"[transport] raw origin={request.origin!r} → resolved={origin!r}")
+            print(f"[transport] raw dest={request.destination!r} → resolved={destination!r}")
+            print(f"[transport] schedule_date={_SCHEDULE_DATE!r}")
 
             train_options = self._get_train_options(origin, destination, request)
+            print(f"[transport] options found: {len(train_options)}")
 
             summary = self._generate_summary(train_options, origin, destination)
 
@@ -84,80 +115,209 @@ class OrchestratorTransportService:
     # Train options
     # ------------------------------------------------------------------
 
+    # def _get_train_options(
+    #     self,
+    #     origin: str,
+    #     destination: str,
+    #     request: TransportSearchRequest,
+    # ) -> List[TransportOption]:
+    #     """Get train route options from Neo4j."""
+    #     options: list[TransportOption] = []
+
+    #     try:
+    #         # Use request date if provided, otherwise query without date filter
+    #         schedule_date = getattr(request, "schedule_date", None) or None
+
+    #         cypher = """
+    #         MATCH (start:RailwayStation)<-[:DEPARTS_FROM]-(schedule:TrainSchedule)-[:ARRIVES_AT]->(end:RailwayStation)
+    #         WHERE toLower(start.name) = toLower($origin)
+    #         AND toLower(end.name) = toLower($destination)
+    #         AND ($schedule_date IS NULL OR schedule.schedule_date = $schedule_date)
+    #         RETURN properties(schedule) as schedule,
+    #             start.name as start_station,
+    #             end.name as end_station
+    #         ORDER BY schedule.departure_time
+    #         LIMIT 5
+    #         """
+    #         with self.driver.session() as session:
+    #             result = session.run(cypher, {
+    #                 "origin": origin,
+    #                 "destination": destination,
+    #                 "schedule_date": schedule_date,
+    #             })
+
+    #             schedules = [record["schedule"] for record in result]
+    #             if not schedules:
+    #                 return options
+
+    #             train_types_seen: set[str] = set()
+
+    #             for sched in schedules:
+    #                 train_type = sched.get("train_type", "Slow")
+    #                 if train_type in train_types_seen:
+    #                     continue
+    #                 train_types_seen.add(train_type)
+
+    #                 duration_min = self._parse_duration_to_minutes(
+    #                     sched.get("duration", "0h 0m")
+    #                 )
+    #                 cost_lkr = self._parse_price_to_float(
+    #                     sched.get("price_3rd_class", "Rs. 0")
+    #                 )
+
+    #                 departure_time = sched.get("departure_time", "")
+    #                 arrival_time = sched.get("arrival_time", "")
+
+    #                 summary = self._generate_train_summary(
+    #                     origin, destination, train_type, departure_time, arrival_time
+    #                 )
+    #                 tips = self._generate_train_tips(train_type, duration_min)
+
+    #                 options.append(
+    #                     TransportOption(
+    #                         mode="train",
+    #                         summary=summary,
+    #                         estimated_time_min=duration_min,
+    #                         estimated_cost_lkr=cost_lkr,
+    #                         tips=tips,
+    #                         source="Sri Lanka Railways",
+    #                     )
+    #                 )
+
+    #     except Exception as e:
+    #         logger.error(f"Error getting train options: {e}")
+
+    #     return options
+
     def _get_train_options(
         self,
         origin: str,
         destination: str,
         request: TransportSearchRequest,
     ) -> List[TransportOption]:
-        """Get train route options from Neo4j."""
         options: list[TransportOption] = []
 
         try:
-            schedule_date = "2026-01-09"
-
-            cypher = """
-            MATCH (start:RailwayStation)<-[:DEPARTS_FROM]-(schedule:TrainSchedule)-[:ARRIVES_AT]->(end:RailwayStation)
-            WHERE toLower(start.name) = toLower($origin)
-              AND toLower(end.name) = toLower($destination)
-              AND schedule.schedule_date = $schedule_date
-            RETURN properties(schedule) as schedule,
-                   start.name as start_station,
-                   end.name as end_station
-            ORDER BY schedule.departure_time
-            LIMIT 5
-            """
+            schedule_date = _SCHEDULE_DATE
 
             with self.driver.session() as session:
-                result = session.run(cypher, {
-                    "origin": origin,
-                    "destination": destination,
-                    "schedule_date": schedule_date,
-                })
 
-                schedules = [record["schedule"] for record in result]
+                # Strategy 1: relationship traversal (correct pattern for this schema)
+                result = session.run("""
+                    MATCH (start:RailwayStation)<-[:DEPARTS_FROM]-(s:TrainSchedule)-[:ARRIVES_AT]->(end:RailwayStation)
+                    WHERE toLower(start.name) = toLower($origin)
+                    AND toLower(end.name) = toLower($destination)
+                    AND s.schedule_date = $schedule_date
+                    RETURN properties(s) AS schedule,
+                        start.name AS start_name,
+                        end.name   AS end_name
+                    ORDER BY s.departure_time
+                """, {"origin": origin, "destination": destination, "schedule_date": schedule_date})
+
+                seen_trains: set[str] = set()
+                schedules: list[dict] = []
+                for record in result:
+                    s = dict(record["schedule"])
+                    tnum = s.get("train_number") or ""
+                    if tnum and tnum in seen_trains:
+                        continue
+                    if tnum:
+                        seen_trains.add(tnum)
+                    schedules.append(s)
+
+                print(f"[transport] strategy1 (relationships) found {len(schedules)} unique schedules")
+
+                # Strategy 2: destination station name contains the search term
+                # (handles "Nanu Oya" for "Nuwara Eliya" etc.)
                 if not schedules:
+                    result = session.run("""
+                        MATCH (start:RailwayStation)<-[:DEPARTS_FROM]-(s:TrainSchedule)-[:ARRIVES_AT]->(end:RailwayStation)
+                        WHERE toLower(start.name) = toLower($origin)
+                        AND toLower(end.name) CONTAINS toLower($destination)
+                        AND s.schedule_date = $schedule_date
+                        RETURN properties(s) AS schedule,
+                            start.name AS start_name,
+                            end.name   AS end_name
+                        ORDER BY s.departure_time
+                    """, {"origin": origin, "destination": destination, "schedule_date": schedule_date})
+
+                    seen_trains = set()
+                    for record in result:
+                        s = dict(record["schedule"])
+                        tnum = s.get("train_number") or ""
+                        if tnum and tnum in seen_trains:
+                            continue
+                        if tnum:
+                            seen_trains.add(tnum)
+                        schedules.append(s)
+
+                    print(f"[transport] strategy2 (contains) found {len(schedules)} unique schedules")
+
+                # Strategy 3: fallback — any schedule departing from origin
+                # gives first/last train info even if destination not found
+                if not schedules:
+                    result = session.run("""
+                        MATCH (start:RailwayStation)<-[:DEPARTS_FROM]-(s:TrainSchedule)
+                        WHERE toLower(start.name) = toLower($origin)
+                        AND s.schedule_date = $schedule_date
+                        RETURN properties(s) AS schedule
+                        LIMIT 1
+                    """, {"origin": origin, "schedule_date": schedule_date})
+
+                    any_sched = [dict(r["schedule"]) for r in result]
+                    if any_sched:
+                        route_key = (origin.lower(), destination.lower())
+                        desc = _SCENIC_ROUTES.get(route_key, "train route")
+                        first = any_sched[0].get("first_train_time") or ""
+                        last  = any_sched[0].get("last_train_time") or ""
+                        tip   = " ".join(filter(None, [first, last, "Book at eservices.railway.gov.lk"])).strip()
+                        options.append(TransportOption(
+                            mode="train",
+                            summary=f"{origin} to {destination} — {desc}",
+                            estimated_time_min=180,
+                            estimated_cost_lkr=300.0,
+                            tips=tip,
+                            source="Sri Lanka Railways",
+                        ))
+                    print(f"[transport] strategy3 (fallback) used")
                     return options
 
-                train_types_seen: set[str] = set()
-
+                # Build TransportOption per unique schedule
                 for sched in schedules:
-                    train_type = sched.get("train_type", "Slow")
-                    if train_type in train_types_seen:
-                        continue
-                    train_types_seen.add(train_type)
+                    duration_min = self._parse_duration_to_minutes(sched.get("duration") or "0h 0m")
+                    cost_lkr     = self._parse_price_to_float(sched.get("price_3rd_class") or "Rs. 0")
+                    dep          = sched.get("departure_time") or ""
+                    arr          = sched.get("arrival_time") or ""
+                    train_type   = sched.get("train_type") or "Express"
+                    train_num    = sched.get("train_number") or ""
 
-                    duration_min = self._parse_duration_to_minutes(
-                        sched.get("duration", "0h 0m")
-                    )
-                    cost_lkr = self._parse_price_to_float(
-                        sched.get("price_3rd_class", "Rs. 0")
-                    )
+                    route_key     = (origin.lower(), destination.lower())
+                    scenic        = _SCENIC_ROUTES.get(route_key, "")
+                    scenic_suffix = f" ({scenic})" if scenic else ""
+                    dep_str       = f"departs {dep}" if dep else ""
+                    arr_str       = f"arrives {arr}" if arr else ""
+                    time_str      = f"{dep_str} → {arr_str}".strip(" →").strip()
+                    summary       = f"Train {train_num} ({train_type}) — {time_str}{scenic_suffix}"
 
-                    departure_time = sched.get("departure_time", "")
-                    arrival_time = sched.get("arrival_time", "")
+                    first = sched.get("first_train_time") or ""
+                    last  = sched.get("last_train_time") or ""
+                    tips  = self._generate_train_tips(train_type, duration_min)
+                    if first or last:
+                        tips = f"{tips}. {first} {last}".strip(". ")
 
-                    summary = self._generate_train_summary(
-                        origin, destination, train_type, departure_time, arrival_time
-                    )
-                    tips = self._generate_train_tips(train_type, duration_min)
-
-                    options.append(
-                        TransportOption(
-                            mode="train",
-                            summary=summary,
-                            estimated_time_min=duration_min,
-                            estimated_cost_lkr=cost_lkr,
-                            tips=tips,
-                            source="Sri Lanka Railways",
-                        )
-                    )
+                    options.append(TransportOption(
+                        mode="train",
+                        summary=summary,
+                        estimated_time_min=duration_min,
+                        estimated_cost_lkr=cost_lkr,
+                        tips=tips,
+                        source="Sri Lanka Railways",
+                    ))
 
         except Exception as e:
-            logger.error(f"Error getting train options: {e}")
+            logger.error(f"[transport] error: {e}", exc_info=True)
 
         return options
-
     # ------------------------------------------------------------------
     # Parsing helpers
     # ------------------------------------------------------------------

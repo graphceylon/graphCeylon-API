@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from asyncio import tasks
 from typing import Any, Dict, Optional, List
 import os
 import json
@@ -1097,24 +1098,275 @@ class ResponseFormatter:
 
                 # generic fallback
                 return {"text": "I got your request. What would you like to do next?", "followups": []}
+        # if intent == "info_transport":
+        #     ents = (parsed_intent.get("entities") or {})
+        #     origin = ents.get("origin") or ents.get("city") or "your starting point"
+        #     destination = ents.get("destination") or "your destination"
+        #     route_str = f"from {origin} to {destination}" if origin and destination and origin != destination else "around Sri Lanka"
+        #     return {
+        #         "text": f"Getting {route_str}:\n• Train — scenic and affordable, book at eservices.railway.gov.lk\n• Bus — frequent departures, most budget-friendly option\n• Taxi — approximately LKR 5,000-8,000 depending on distance\n• Private hire — most comfortable for families and groups\n\nWould you like to plan a full trip?",
+        #         "followups": ["Plan a trip", "Hotels in Kandy", "Places to visit", "Weather forecast"],
+        #     }
         if intent == "info_transport":
             ents = (parsed_intent.get("entities") or {})
-            origin = ents.get("origin") or ents.get("city") or "your starting point"
+            origin      = ents.get("origin") or ents.get("city") or "your starting point"
             destination = ents.get("destination") or "your destination"
-            route_str = f"from {origin} to {destination}" if origin and destination and origin != destination else "around Sri Lanka"
+            route_str   = f"from {origin} to {destination}" if origin != destination else f"around {origin}"
+
+            transport_result = results.get("transport_result") or {}
+
+            # ── Normalize to dict immediately — used by ALL branches below ───
+            transport_dict = (
+                transport_result.model_dump(mode="json")
+                if hasattr(transport_result, "model_dump")
+                else dict(transport_result) if transport_result else {}
+            )
+
+            transport_mode = transport_dict.get("_transport_mode")
+
+            # ── ok:false from downstream — give a useful human answer ────────
+            if transport_dict.get("ok") is False:
+                scenic_note = ""
+                if "colombo" in origin.lower() and "galle" in destination.lower():
+                    scenic_note = " This is a popular 2.5-hour coastal scenic route."
+                elif "colombo" in origin.lower() and any(
+                    x in destination.lower() for x in ["kandy", "ella", "badulla", "nuwara"]
+                ):
+                    scenic_note = " This is a scenic hill country route."
+
+                return {
+                    "text": (
+                        f"Trains from {origin} to {destination}:{scenic_note}\n\n"
+                        "• Several express trains run daily on this route.\n"
+                        "• Book tickets at eservices.railway.gov.lk or at the Colombo Fort station counter.\n"
+                        "• Call 0112 421 281 for live schedule info.\n"
+                        "• 2nd class reserved seats recommended for longer journeys."
+                    ),
+                    "followups": [
+                        "Bus instead",
+                        "How long does it take?",
+                        "Plan a full trip",
+                        f"Hotels in {destination}",
+                    ],
+                }
+
+            # ── BUS ONLY ─────────────────────────────────────────────────
+            # ── BUS ONLY ─────────────────────────────────────────────────
+            if transport_mode == "bus" or (
+                isinstance(transport_dict, dict)
+                and transport_dict.get("ok") is True
+                and "items" in transport_dict
+                and "_transport_mode" not in transport_dict
+            ):
+                schedules = transport_dict.get("items") or []
+                lines = [f"Buses from {origin} to {destination}:\n"]
+
+                if schedules:
+                    for i, s in enumerate(schedules[:5]):
+                        if hasattr(s, "model_dump"):
+                            s = s.model_dump()
+                        open_hours = s.get("open_hours") or ""
+                        parts_time = open_hours.split("→") if "→" in open_hours else []
+                        dep  = parts_time[0].strip() if parts_time else ""
+                        arr  = parts_time[1].strip() if len(parts_time) > 1 else ""
+                        fare = s.get("entry_fee_lkr")
+                        desc = s.get("description") or ""
+                        link = s.get("website") or ""
+
+                        fare_str = f" | LKR {int(fare)}" if fare else ""
+                        time_str = f"departs {dep} → arrives {arr}" if dep and arr else dep or ""
+                        lines.append(f"• {time_str}{fare_str}")
+
+                        # Extract seats note from description
+                        if "seats available" in desc:
+                            for part in desc.split("."):
+                                if "seats available" in part:
+                                    lines.append(f"  ↳ {part.strip()}")
+                                    break
+
+                        # Show booking link
+                        if link:
+                            lines.append(f"  ↳ Book: {link}")
+
+                    # Fare summary
+                    fares = [s.get("entry_fee_lkr") for s in schedules if s.get("entry_fee_lkr")]
+                    if fares:
+                        lines.append(f"\nFares from LKR {int(min(fares))} – LKR {int(max(fares))}")
+                    lines.append("Book at sltb.eseat.lk or Central Bus Stand, Colombo.")
+                else:
+                    lines.append("• Frequent SLTB buses on this route — buy tickets at the terminal.")
+                    lines.append("• Book online at sltb.eseat.lk")
+
+                return {
+                    "text": "\n".join(lines),
+                    "followups": [
+                        "Train instead",
+                        f"Hotels in {destination}",
+                        f"Plan a full trip to {destination}",
+                        "What time is the first bus?",
+                    ],
+                }
+
+            # ── TRAIN ONLY ───────────────────────────────────────────────
+            # ── TRAIN ONLY ───────────────────────────────────────────────
+            # Inside _format_with_templates, the TRAIN ONLY section:
+
+            if transport_mode == "train" or (
+                isinstance(transport_dict, dict)
+                and "options" in transport_dict
+                and "_transport_mode" not in transport_dict
+            ):
+                train_options = transport_dict.get("options") or []
+                lines = [f"Trains from {origin} to {destination}:\n"]
+
+                if train_options:
+                    for i, t in enumerate(train_options):
+                        if hasattr(t, "model_dump"):
+                            t = t.model_dump()
+                        summary  = t.get("summary") or ""
+                        cost     = t.get("estimated_cost_lkr")
+                        duration = t.get("estimated_time_min")
+                        tips     = (t.get("tips") or "").strip()
+
+                        cost_str = f" | LKR {int(cost)}" if cost else ""
+                        dur_str  = f" | ~{int(duration//60)}h {int(duration%60)}m" if duration else ""
+                        lines.append(f"• {summary}{dur_str}{cost_str}")
+
+                        # Only show first/last train info on first and last items
+                        if tips and i == 0:
+                            for part in tips.split("."):
+                                part = part.strip()
+                                if "first train" in part.lower():
+                                    lines.append(f"  ↳ {part}")
+                                    break
+                        elif tips and i == len(train_options) - 1:
+                            for part in tips.split("."):
+                                part = part.strip()
+                                if "last train" in part.lower():
+                                    lines.append(f"  ↳ {part}")
+                                    break
+
+                    # Add booking note once at the bottom
+                    lines.append("\nBook at eservices.railway.gov.lk or Colombo Fort station counter.")
+                    lines.append("Call 0112 421 281 for schedule info.")
+                else:
+                    lines.append("• Several trains run daily on this coastal route.")
+                    lines.append("• Book at eservices.railway.gov.lk")
+
+                return {
+                    "text": "\n".join(lines),
+                    "followups": [
+                        "Bus instead",
+                        f"How long is the journey?",
+                        "Plan a full trip to Galle",
+                        f"Hotels in {destination}",
+                    ],
+                }
+
+            # ── BOTH (generic query) ──────────────────────────────────────
+            # ── BOTH ──────────────────────────────────────────────────────────
+            # ── BOTH (IMPROVED UX FORMAT) ──────────────────────────────────────
+            bus_data   = transport_dict.get("bus")   or {}
+            train_data = transport_dict.get("train") or {}
+
+            bus_items = bus_data.get("items", []) if isinstance(bus_data, dict) else []
+            train_options = train_data.get("options", []) if isinstance(train_data, dict) else []
+
+            # ===== TRAIN SECTION =====
+            train_section = "No train options available."
+
+            if train_options:
+                t = train_options[0]
+
+                train_section = (
+                    f"Best train option\n"
+                    f"• {t.get('summary', 'Colombo → Kandy')} "
+                )
+
+                if t.get("estimated_time_min"):
+                    duration = t["estimated_time_min"]
+                    train_section += f"| ~{int(duration//60)}h {int(duration%60)}m "
+
+                if t.get("estimated_cost_lkr"):
+                    train_section += f"| from LKR {int(t['estimated_cost_lkr'])}"
+
+                train_section += "\n"
+
+                tips = t.get("tips", "")
+
+                for part in tips.split("."):
+                    part = part.strip()
+
+                    if "first train" in part.lower():
+                        cleaned = part.replace("the first train is at", "").strip()
+                        cleaned = cleaned.replace("am", "AM").replace("pm", "PM")
+                        train_section += f"  ↳ First train: {cleaned}\n"
+                        break
+                if "eservices.railway.gov.lk" in tips.lower():
+                    train_section += "  ↳ Book at eservices.railway.gov.lk\n"
+
+
+
+            # ===== BUS SECTION =====
+            bus_section = "No bus options available."
+
+            if bus_items:
+                lines = []
+                for b in bus_items[:3]:
+                    dep = b.get("departure_time") or b.get("open_hours") or ""
+                    fare = b.get("entry_fee_lkr") or b.get("fare")
+
+                    line = f"• {dep}"
+                    if fare:
+                        line += f" | LKR {int(fare)}"
+
+                    desc = (b.get("description") or "").lower()
+                    if "seats available" in desc:
+                        for part in desc.split("."):
+                            if "seats available" in part:
+                                line += f"\n  ↳ {part.strip()}"
+                                break
+
+                    lines.append(line)
+
+                bus_section = "Best bus options\n" + "\n".join(lines)
+
+
+            # ===== COMPARISON =====
+            # ===== COMPARISON =====
+            train_price = train_options[0].get("estimated_cost_lkr") if train_options else None
+            bus_prices = [b.get("entry_fee_lkr") for b in bus_items if b.get("entry_fee_lkr")]
+
+            cheapest = "Train"
+            if train_price and bus_prices:
+                if min(bus_prices) < train_price:
+                    cheapest = "Bus"
+
+            comparison = (
+                "Quick comparison\n"
+                f"• Cheapest: {cheapest}\n"
+                "• More departures: Bus\n"
+                "• Scenic option: Train\n"
+            )
+
+            # ===== FINAL TEXT =====
+            text = (
+                f"Getting {route_str}\n\n"
+                f"{train_section}\n\n"
+                f"{bus_section}\n\n"
+                f"{comparison}\n"
+                f"What would you like next?"
+            )
+
             return {
-                "text": f"Getting {route_str}:\n• Train — scenic and affordable, book at eservices.railway.gov.lk\n• Bus — frequent departures, most budget-friendly option\n• Taxi — approximately LKR 5,000-8,000 depending on distance\n• Private hire — most comfortable for families and groups\n\nWould you like to plan a full trip?",
-                "followups": ["Plan a trip", "Hotels in Kandy", "Places to visit", "Weather forecast"],
+                "text": text,
+                "followups": [
+                    "Cheapest option",
+                    "Fastest option",
+                    "Show more buses",
+                    "Train booking link"
+                ],
             }
-
-        # ---- catch-all ----
-        if self.provider == "groq" and self.groq_key:
-            return self._answer_general_with_groq(user_text, parsed_intent)
-
-        return {
-            "text": "I can help you plan your Sri Lanka trip. What would you like to know?",
-            "followups": ["Plan a trip", "Find hotels", "Check weather", "Visa info"],
-        }
 
             # # ---- catch-all: use Groq for anything unhandled ----
             # if self.provider == "groq" and self.groq_key:
@@ -1214,7 +1466,7 @@ class ResponseFormatter:
         return "\n".join(lines)
     def _format_with_groq(self, user_text, parsed_intent, results, tasks, *, effective_intent: str):
         # If key missing, fallback safely
-        if effective_intent in {"plan_itinerary", "modify_itinerary"}:
+        if effective_intent in {"plan_itinerary", "modify_itinerary", "info_transport"}:
             return self._format_with_templates(user_text, parsed_intent, results, tasks)
         if not self.groq_key:
             if self.debug:

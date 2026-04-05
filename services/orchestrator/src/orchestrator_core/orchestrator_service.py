@@ -3,6 +3,8 @@
 from __future__ import annotations
 import json
 from pathlib import Path
+import os
+
 import psycopg
 from .context_resolver import resolve_context
 from ..api.schemas import Entities 
@@ -130,6 +132,7 @@ EXPLICIT_HOTEL = ["book hotel", "hotel booking", "reserve hotel", "find hotels",
 EXPLICIT_VISA  = ["visa", "eta", "entry requirements"]
 EXPLICIT_WEATHER = ["weather", "rain", "temperature", "forecast"]
 EXPLICIT_TRANSPORT = ["how to go", "bus", "train", "taxi", "transport", "route"]
+_SCHEDULE_DATE = os.getenv("RAILWAY_SCHEDULE_DATE", "2026-01-09")
 
 WRITE_INTENTS = {"booking_create", "booking_confirm", "cancel_booking", "modify_booking"}
 
@@ -681,11 +684,25 @@ class OrchestratorService:
 
         # ✅ 1) capability handlers
         self.handlers: Dict[str, IntentHandler] = {
-            "info_transport": IntentHandler(
-                endpoint="/railway/schedules/orchestrator/call/transport",      # ✅ your KG endpoint here
+           "info_transport": IntentHandler(
+                endpoint="/railway/schedules/orchestrator/call/transport",
                 mapper=map_transport_request,
-                response_model=None,                # or TransportInfoResponse later
-                timeout=20,
+                response_model=None,
+                timeout=60,
+                result_field="transport_result",
+            ),
+            "info_transport_bus": IntentHandler(
+                endpoint="/bus/schedules/orchestrator/call/bus-schedules",
+                mapper=map_transport_request,
+                response_model=None,
+                timeout=60,
+                result_field="transport_result",
+            ),
+            "info_transport_train": IntentHandler(
+                endpoint="/railway/schedules/orchestrator/call/transport",
+                mapper=map_transport_request,
+                response_model=None,
+                timeout=60,
                 result_field="transport_result",
             ),
             "recommend_restaurants": IntentHandler(
@@ -784,7 +801,7 @@ class OrchestratorService:
                     agent_id="recommender",
                     base_url=RECOMMENDER_BASE_URL,
                     protocols=["a2a"],  # later: ["a2a", "mcp", "blackboard"]
-                    capabilities=[
+                     capabilities=[
                         "forecast_weather",
                         "crowd_forecast",
                         "forecast_price",
@@ -801,7 +818,7 @@ class OrchestratorService:
                     agent_id="visa_kg",
                     base_url=VISA_KG_BASE_URL,
                     protocols=["a2a"],
-                    capabilities=["info_visa_policy", "info_accommodation", "info_transport", "info_attraction","recommend_restaurants"],
+                    capabilities=["info_visa_policy", "info_accommodation", "info_attraction","recommend_restaurants" "info_transport", "info_transport_bus", "info_transport_train",],
 
 
                     sla=SLA(p95_ms=1500, success_rate=0.98),
@@ -891,6 +908,8 @@ class OrchestratorService:
                 "info_attraction":         "a2a",
                 "info_accommodation":      "a2a",
                 "info_transport":          "a2a",
+                "info_transport_bus": "a2a",
+                "info_transport_train": "a2a",
                 "plan_itinerary":          "a2a",
                 "modify_itinerary":        "a2a",
                 "info_visa_policy":        "a2a",
@@ -1345,6 +1364,17 @@ class OrchestratorService:
             cleaned.append(d)
 
         return {"session_id": session_id, "events": cleaned}
+    def _detect_transport_mode(self, text: str) -> str:
+        t = (text or "").lower()
+
+        has_train = any(w in t for w in ["train", "trains", "railway", "rail"])
+        has_bus = any(w in t for w in ["bus", "buses", "coach"])
+
+        if has_bus and not has_train:
+            return "bus"
+        if has_train and not has_bus:
+            return "train"
+        return "both"
     def _execute_intent(self, intent_name, parsed_intent, req, db_prefs, session_state=None, request_trace_id: str | None = None) -> Any:
 
 
@@ -1591,6 +1621,42 @@ class OrchestratorService:
 
         print(f"=== {contract_obj.__class__.__name__} payload ({intent_name}) ===")
         print(payload)
+        tool_name = intent_name
+
+        if intent_name == "info_transport":
+            mode = self._detect_transport_mode(req.input_text or "")
+
+            payload["origin"] = payload.get("origin") or payload.get("origin_city") or ""
+            payload["destination"] = payload.get("destination") or payload.get("city") or ""
+            payload["user_id"] = req.user_id or ""
+            payload["session_id"] = req.session_id or "no_session"
+            payload["query"] = req.input_text or ""
+
+            if mode == "bus":
+                tool_name = "info_transport_bus"
+                handler = self.handlers[tool_name]
+                payload["schedule_date"] = payload.get("schedule_date") or payload.get("start_date")
+                payload["_transport_mode"] = "bus"
+                print(f"[transport] BUS only → {payload['origin']} -> {payload['destination']}")
+
+            elif mode == "train":
+                tool_name = "info_transport_train"
+                handler = self.handlers[tool_name]
+                payload["_transport_mode"] = "train"
+                print(f"[transport] TRAIN only → {payload['origin']} -> {payload['destination']}")
+
+            else:
+                print(f"[transport] BOTH → {payload['origin']} -> {payload['destination']}")
+                return self._execute_transport_both(
+                    parsed_intent=parsed_intent,
+                    req=req,
+                    db_prefs=db_prefs,
+                    session_state=session_state,
+                    request_trace_id=request_trace_id,
+                    payload=payload,
+                )
+
+
 
         # 6) Invoke downstream agent/service
         is_write = intent_name in WRITE_INTENTS
@@ -1605,11 +1671,11 @@ class OrchestratorService:
             )
 
         call = ToolCall(
-            name=intent_name,
+            name=tool_name,
             args=payload,
             timeout_ms=handler.timeout * 1000,
-            retries=1 if not is_write else 0,   # ✅ safer: no auto retry for writes
-            trace_id=request_trace_id or str(uuid4()),  # ✅ stable per request
+            retries=1 if not is_write else 0,
+            trace_id=request_trace_id or str(uuid4()),
             session_id=req.session_id or "no_session",
             user_id=req.user_id,
             is_write=is_write,
@@ -1619,10 +1685,9 @@ class OrchestratorService:
         benchmark_transport = getattr(req, "benchmark_transport", None)
         print(f"[BENCHMARK DEBUG] benchmark_transport={benchmark_transport!r}, call.name before={intent_name!r}")
         if benchmark_transport == "mcp_streamable_http":
-            call = call.model_copy(update={"name": f"{intent_name}_mcp"})
-            print(f"[BENCHMARK DEBUG] call.name after={call.name!r}")
+            call = call.model_copy(update={"name": f"{tool_name}_mcp"})
         elif benchmark_transport == "mcp_stdio":
-            call = call.model_copy(update={"name": f"{intent_name}_stdio"})
+            call = call.model_copy(update={"name": f"{tool_name}_stdio"})
         print(
             "[phase4] trace_id=", call.trace_id,
             "intent=", call.name,
@@ -1633,6 +1698,10 @@ class OrchestratorService:
 
         # return parsed_obj
         tool_res = self.tool_router.call(call)
+        if intent_name == "info_transport":
+            print("[transport][debug] endpoint =", handler.endpoint)
+            print("[transport][debug] mode =", payload.get("_transport_mode"))
+            print("[transport][debug] raw tool response =", tool_res.raw if hasattr(tool_res, "raw") else tool_res.data)
 
         # ✅ Fix transport label for MCP benchmark variants
         transport_type = tool_res.transport_type or "a2a_http"
@@ -1745,7 +1814,25 @@ class OrchestratorService:
             )
 
         # --- Downstream explicitly ok:false -> AgentResult ---
+        # --- Downstream explicitly ok:false -> AgentResult ---
         if isinstance(raw, dict) and raw.get("ok") is False:
+            # ✅ For transport: keep data even on ok:false so formatter shows fallback
+            if intent_name == "info_transport":
+                return AgentResult(
+                    ok=True,
+                    answer="",
+                    data=raw,
+                    evidence=tool_evidence,
+                    missing_fields=[],
+                    next_actions=[],
+                    confidence=0.5,
+                    safety_flags=[],
+                    meta={
+                        "tool_name": call.name,
+                        "provider": tool_res.provider,
+                        "endpoint": handler.endpoint,
+                    },
+                )
             return AgentResult(
                 ok=False,
                 answer="",
@@ -1829,7 +1916,108 @@ class OrchestratorService:
                 "explainability": explain.__dict__,
             },
         )
+    def _execute_transport_both(
+        self,
+        *,
+        parsed_intent,
+        req,
+        db_prefs,
+        session_state,
+        request_trace_id,
+        payload: dict,
+    ):
+        origin = payload.get("origin") or payload.get("origin_city") or ""
+        destination = payload.get("destination") or payload.get("city") or ""
+        country = payload.get("country") or "Sri Lanka"
 
+        train_payload = {
+            "origin": origin,
+            "destination": destination,
+            "city": payload.get("city"),
+            "country": country,
+            "time_of_day": payload.get("time_of_day"),
+            "days": payload.get("days"),
+            "budget_level": payload.get("budget_level"),
+            "preferred_transport": payload.get("preferred_transport") or [],
+            "tags": payload.get("tags") or [],
+            "user_id": req.user_id or "",
+            "session_id": req.session_id or "no_session",
+            "query": req.input_text or "",
+            "_transport_mode": "train",
+        }
+
+        bus_payload = {
+            "origin": origin,
+            "destination": destination,
+            "city": payload.get("city"),
+            "country": country,
+            "schedule_date": payload.get("schedule_date") or payload.get("start_date"),
+            "budget_level": payload.get("budget_level"),
+            "tags": payload.get("tags") or [],
+            "user_id": req.user_id or "",
+            "session_id": req.session_id or "no_session",
+            "query": req.input_text or "",
+            "_transport_mode": "bus",
+        }
+
+        train_agent = self.registry.pick(capability="info_transport_train", protocol="a2a")
+        bus_agent = self.registry.pick(capability="info_transport_bus", protocol="a2a")
+
+        if not train_agent or not bus_agent:
+            return AgentResult(
+                ok=False,
+                answer="",
+                data=None,
+                evidence=[],
+                missing_fields=[],
+                next_actions=[],
+                confidence=0.0,
+                safety_flags=[
+                    SafetyFlag(
+                        code="TOOL_CALL_FAILED",
+                        severity=SafetySeverity.medium,
+                        message="Transport agents not found for both-mode routing",
+                        meta={
+                            "train_found": bool(train_agent),
+                            "bus_found": bool(bus_agent),
+                        },
+                    )
+                ],
+                meta={"tool_name": "info_transport_both"},
+            )
+
+        train_raw = self.a2a.invoke(
+            base_url=train_agent.base_url,
+            endpoint="/railway/schedules/orchestrator/call/transport",
+            payload=train_payload,
+            timeout=60,
+        )
+
+        bus_raw = self.a2a.invoke(
+            base_url=bus_agent.base_url,
+            endpoint="/bus/schedules/orchestrator/call/bus-schedules",
+            payload=bus_payload,
+            timeout=60,
+        )
+
+        return AgentResult(
+            ok=True,
+            answer="",
+            data={
+                "_transport_mode": "both",
+                "origin": origin,
+                "destination": destination,
+                "country": country,
+                "train": train_raw,
+                "bus": bus_raw,
+            },
+            evidence=[],
+            missing_fields=[],
+            next_actions=[],
+            confidence=0.9,
+            safety_flags=[],
+            meta={"tool_name": "info_transport_both"},
+        )
     def _run_intent_parser(self, req: OrchestrateRequest) -> ParsedIntent:
         result = self.intent_parser.parse(req.input_text)
 
@@ -3234,6 +3422,18 @@ class OrchestratorService:
                 results=results,
                 tasks=[t.model_dump(mode="json") for t in tasks],
             )
+
+            # ✅ Unwrap if final_message is still a JSON string
+            final_text = formatted.get("text", "")
+            if isinstance(final_text, str) and final_text.strip().startswith("{"):
+                try:
+                    inner = json.loads(final_text)
+                    if isinstance(inner, dict) and "text" in inner:
+                        formatted["text"] = inner["text"]
+                        if not formatted.get("followups") and inner.get("followups"):
+                            formatted["followups"] = inner["followups"]
+                except Exception:
+                    pass
         # formatted = self.response_formatter.format(
         #     user_text=req.input_text,
         #     parsed_intent=parsed_intent.model_dump(mode="json"),
