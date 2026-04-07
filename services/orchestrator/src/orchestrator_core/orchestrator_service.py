@@ -40,6 +40,7 @@ from .runtime.tools.router import ToolRouter
 from .runtime.tools.providers.a2a_provider import A2AToolProvider
 from .runtime.tools.providers.local_provider import LocalToolProvider
 from .core_contract import AgentResult, EvidenceItem, EvidenceSource, SafetyFlag, SafetySeverity
+from .llm.factory import build_llm_client
 # MCP optional
 # from .runtime.tools.providers.mcp_provider import MCPToolProvider
 
@@ -651,7 +652,8 @@ class OrchestratorService:
         self.intent_parser = intent_parser
         TRACE_DSN = os.getenv("ORCH_DB_DSN", "").strip()
         self.trace_pg = PostgresTraceStore(TRACE_DSN) if TRACE_DSN else None
-        self.response_formatter = ResponseFormatter()
+        llm_client = build_llm_client()
+        self.response_formatter = ResponseFormatter(llm_client=llm_client)
         self.task_graph_builder = task_graph_builder
         # self.agentic_loop = AgenticLoop()
         # self.agentic_loop.set_nli(self.nli) 
