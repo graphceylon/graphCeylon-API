@@ -55,7 +55,28 @@ def build_resolved_ce_query(payload: Optional[Dict[str, Any]]) -> str:
     if destination:
         parts.append(destination)
 
-    # ✅ query tags get priority over DB travel_style
+    # ✅ ENHANCED: Amplify cultural/heritage intent
+    combined_tags = set()
+    if isinstance(tags, list):
+        combined_tags.update(tags)
+    if isinstance(travel_style, list):
+        combined_tags.update(travel_style)
+    
+    # Check if query intent is cultural/heritage focused
+    is_cultural_intent = any(
+        keyword in str(combined_tags).lower() or keyword in raw_text.lower()
+        for keyword in ["cultural", "heritage", "historical", "religious", "spiritual", 
+                       "temple", "monastery", "sacred", "archaeological", "historical site"]
+    )
+    
+    # ✅ If cultural intent detected, amplify cultural keywords
+    if is_cultural_intent:
+        if "cultural" not in raw_text.lower():
+            parts.append("cultural heritage")
+        parts.append("religious significance")
+        parts.append("historical importance")
+    
+    # query tags get priority over DB travel_style
     if isinstance(tags, list) and tags:
         parts.extend(tags)
     else:
@@ -92,31 +113,66 @@ def build_resolved_ce_query(payload: Optional[Dict[str, Any]]) -> str:
 def candidate_to_text(c: Dict[str, Any]) -> str:
     """
     Build a richer candidate text representation for CE matching.
+    Prioritizes cultural significance, religious importance, and heritage status.
     """
     fields = [
         str(c.get("title") or ""),
         str(c.get("category") or ""),
         str(c.get("description") or ""),
-        str(c.get("district") or ""),
-        str(c.get("city") or ""),
-        str(c.get("province") or ""),
     ]
 
-    groups = c.get("groups") or []
-    if groups:
-        fields.append(" ".join(str(g) for g in groups if str(g).strip()))
-
-    parent = c.get("parent_attraction")
-    if parent:
-        fields.append(str(parent))
+    # ✅ PRIORITY: Amplify cultural/heritage/religious significance
+    significance = c.get("significance") or c.get("importance_level") or ""
+    if significance:
+        # Repeat for emphasis in CE matching
+        fields.append(f"significance: {significance}")
 
     religion = c.get("religion")
     if religion:
-        fields.append(str(religion))
+        fields.append(f"religion: {religion}")
+        # Add religious keywords for better matching
+        if religion.lower() in ["buddhist", "hindu", "christian", "muslim"]:
+            fields.append("sacred religious site")
 
+    # ✅ Check if this is a heritage/UNESCO site
+    if any(tag in str(c.get("tags", "")).lower() for tag in ["unesco", "heritage", "world heritage"]):
+        fields.append("UNESCO World Heritage")
+
+    groups = c.get("groups") or []
+    if groups:
+        group_str = " ".join(str(g) for g in groups if str(g).strip())
+        fields.append(group_str)
+
+    parent = c.get("parent_attraction")
+    if parent:
+        fields.append(f"part of {parent}")
+
+    # ✅ Add cultural classification tags EARLY
     tags = c.get("tags") or []
-    if isinstance(tags, list) and tags:
-        fields.append(" ".join(str(t) for t in tags if str(t).strip()))
+    cultural_tags = []
+    other_tags = []
+    
+    if isinstance(tags, list):
+        for t in tags:
+            t_lower = str(t).lower().strip()
+            # Prioritize cultural/heritage themed tags
+            if any(keyword in t_lower for keyword in ["cultural", "heritage", "historical", "religious", "spiritual", "archaeological", "temple", "mosque", "church", "shrine", "monastery"]):
+                cultural_tags.append(t)
+            else:
+                other_tags.append(t)
+    
+    if cultural_tags:
+        fields.append("cultural tags: " + " ".join(str(t) for t in cultural_tags))
+    
+    if other_tags:
+        fields.append(" ".join(str(t) for t in other_tags))
+
+    # ✅ Add location context
+    fields.append(str(c.get("district") or ""))
+    if c.get("city"):
+        fields.append(str(c.get("city")))
+    if c.get("province"):
+        fields.append(str(c.get("province")))
 
     return " | ".join(x.strip() for x in fields if x and x.strip())
 
@@ -142,6 +198,48 @@ def attach_normalized_ce_scores(candidates: List[Dict[str, Any]]) -> None:
     for c in candidates:
         raw = float(c.get("_ce_score", 0.0))
         c["_ce_score_norm"] = (raw - lo) / (hi - lo)
+
+
+def apply_cultural_priority_boost(candidates: List[Dict[str, Any]], query: str) -> None:
+    """
+    ✅ NEW: Apply cultural/heritage priority boost after CE scoring.
+    If query contains cultural intent, boost religious/heritage sites.
+    This corrects CE model bias towards commercial attractions.
+    """
+    is_cultural_query = any(
+        keyword in query.lower()
+        for keyword in ["cultural", "heritage", "historical", "religious", "spiritual",
+                       "temple", "monastery", "sacred", "archaeological", "spiritual"]
+    )
+    
+    if not is_cultural_query:
+        return
+
+    # Apply boost to items with cultural/religious importance
+    for c in candidates:
+        ce_norm = float(c.get("_ce_score_norm", 0.0))
+        
+        # Calculate cultural relevance multiplier
+        multiplier = 1.0
+        
+        # High priority: Religious sites with high significance
+        category = str(c.get("category", "")).lower()
+        religion = str(c.get("religion", "")).lower()
+        
+        if "religious" in category or "temple" in category or "mosque" in category or "church" in category or "shrine" in category:
+            multiplier = 1.25  # +25% boost for religious sites
+        elif "monastery" in category:
+            multiplier = 1.35  # +35% boost for monasteries (very culturally significant)
+        elif "heritage" in category or any(tag in str(c.get("tags", "")).lower() for tag in ["heritage", "historical", "archaeological"]):
+            multiplier = 1.15  # +15% boost for heritage sites
+        
+        # Apply religion boost
+        if religion and religion != "none":
+            if multiplier == 1.0:  # Only if not already boosted
+                multiplier = 1.20
+        
+        # Apply boost to normalized score
+        c["_ce_score_norm"] = min(ce_norm * multiplier, 1.0)
 
 
 def rerank_candidates_with_cross_encoder(
@@ -185,6 +283,10 @@ def rerank_candidates_with_cross_encoder(
         c["_ce_score"] = float(s)
 
     attach_normalized_ce_scores(working)
+    
+    # ✅ NEW: Apply cultural priority boost for cultural queries
+    apply_cultural_priority_boost(working, query)
 
-    working.sort(key=lambda x: float(x.get("_ce_score", 0.0)), reverse=True)
+    # Sort by normalized CE score (which includes cultural boost if applied)
+    working.sort(key=lambda x: float(x.get("_ce_score_norm", 0.0)), reverse=True)
     return working + remainder
