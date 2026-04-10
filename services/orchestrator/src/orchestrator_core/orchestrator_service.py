@@ -25,6 +25,7 @@ from .agentic.nli_wrapper import DebertaNLIWrapper as NLIWrapper
 from .tools.hotel_booking_tool import book_hotel_flow
 from .explainability import ExplainPacket
 from .explainability import merge_explain
+from .conversation.manager import ConversationManager
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -654,6 +655,7 @@ class OrchestratorService:
         self.trace_pg = PostgresTraceStore(TRACE_DSN) if TRACE_DSN else None
         llm_client = build_llm_client()
         self.response_formatter = ResponseFormatter(llm_client=llm_client)
+        self.conversation_manager = ConversationManager()
         self.task_graph_builder = task_graph_builder
         # self.agentic_loop = AgenticLoop()
         # self.agentic_loop.set_nli(self.nli) 
@@ -820,7 +822,7 @@ class OrchestratorService:
                     agent_id="visa_kg",
                     base_url=VISA_KG_BASE_URL,
                     protocols=["a2a"],
-                    capabilities=["info_visa_policy", "info_accommodation", "info_attraction","recommend_restaurants" "info_transport", "info_transport_bus", "info_transport_train",],
+                    capabilities=["info_visa_policy", "info_accommodation", "info_attraction","recommend_restaurants","info_transport", "info_transport_bus", "info_transport_train",],
 
 
                     sla=SLA(p95_ms=1500, success_rate=0.98),
@@ -2020,18 +2022,62 @@ class OrchestratorService:
             safety_flags=[],
             meta={"tool_name": "info_transport_both"},
         )
+    # def _run_intent_parser(self, req: OrchestrateRequest) -> ParsedIntent:
+    #     result = self.intent_parser.parse(req.input_text)
+
+    #     primary = result.get("primary_intent", "generic_fact_query")
+    #     secondary = result.get("secondary_intents", [])
+    #     scores = result.get("scores", {})
+    #     raw_text = result.get("raw_text", req.input_text)
+    #     entities = result.get("entities", {})
+    #     preference_overrides = result.get("preference_overrides", {}) or {}
+    #     domain_category = result.get("domain_category")
+
+    #     # ✅ normalize amenities safely (NO extra keys!)
+    #     if isinstance(preference_overrides, dict):
+    #         raw_list = preference_overrides.get("must_have_amenities") or []
+    #         normalized, unknown = normalize_amenities_with_unknown(raw_list)
+    #         preference_overrides["must_have_amenities"] = normalized
+    #     else:
+    #         unknown = []
+
+    #     confidence = float(scores.get(primary, 0.0))
+
+    #     parsed = ParsedIntent(
+    #         domain_category=domain_category,
+    #         intent=primary,
+    #         confidence=confidence,
+    #         secondary_intents=secondary,
+    #         scores=scores,
+    #         entities=entities,
+    #         raw_text=raw_text,
+    #         preference_overrides=preference_overrides,
+    #     )
+
+    #     # ✅ return parsed AND unknown via attribute on self (simple) OR store on req/session elsewhere
+    #     # easiest: attach to request-scope via a private attribute
+    #     setattr(parsed, "_unknown_amenities", unknown)
     def _run_intent_parser(self, req: OrchestrateRequest) -> ParsedIntent:
         result = self.intent_parser.parse(req.input_text)
 
         primary = result.get("primary_intent", "generic_fact_query")
         secondary = result.get("secondary_intents", [])
-        scores = result.get("scores", {})
+        scores = result.get("scores", {}) or {}
         raw_text = result.get("raw_text", req.input_text)
         entities = result.get("entities", {})
         preference_overrides = result.get("preference_overrides", {}) or {}
         domain_category = result.get("domain_category")
 
-        # ✅ normalize amenities safely (NO extra keys!)
+        if scores:
+            best_intent = max(scores, key=scores.get)
+            best_score = float(scores.get(best_intent, 0.0))
+            primary_score = float(scores.get(primary, 0.0))
+
+            if best_score > primary_score:
+                print(f"[intent-fix] overriding parser primary '{primary}' -> '{best_intent}' "
+                    f"(best_score={best_score:.4f}, primary_score={primary_score:.4f})")
+                primary = best_intent
+
         if isinstance(preference_overrides, dict):
             raw_list = preference_overrides.get("must_have_amenities") or []
             normalized, unknown = normalize_amenities_with_unknown(raw_list)
@@ -2052,11 +2098,10 @@ class OrchestratorService:
             preference_overrides=preference_overrides,
         )
 
-        # ✅ return parsed AND unknown via attribute on self (simple) OR store on req/session elsewhere
-        # easiest: attach to request-scope via a private attribute
         setattr(parsed, "_unknown_amenities", unknown)
-
         return parsed
+
+        
     def _llm_routing_fallback(self, parsed_intent: ParsedIntent, input_text: str) -> ParsedIntent:
         """
         Use Groq to fix routing when DeBERTa gets it wrong.
@@ -2562,6 +2607,22 @@ class OrchestratorService:
         parsed_intent = apply_domain_overrides(parsed_intent)
         # ✅ if edit context was passed (e.g. from booking edit sheet), merge into entities
         # ✅ if edit context was passed (e.g. from booking edit sheet), force book_hotel + merge entities
+        parsed_intent = self.conversation_manager.repair_intent_with_context(
+            parsed_intent=parsed_intent,
+            session_state=session_state,
+            user_text=req.input_text or "",
+        )
+
+        parsed_intent = self.conversation_manager.merge_session_slots_into_entities(
+            parsed_intent=parsed_intent,
+            session_state=session_state,
+        )
+        
+
+        self.conversation_manager.update_session_from_turn(
+            parsed_intent=parsed_intent,
+            session_state=session_state,
+)
         if request_context:
             parsed_intent = parsed_intent.model_copy(update={
                 "intent": "book_hotel",
@@ -2967,25 +3028,43 @@ class OrchestratorService:
                         # Build a single friendly follow-up question
                         parts = []
                         if missing:
-                            parts = []
-                            if "start_date" in missing:
-                                parts.append("When are you planning to travel?")
-                            if "days" in missing:                                          # ✅ NEW
-                                parts.append("How many days are you planning to stay?")
-                            if "destination_city" in missing:
-                                parts.append("Which city in Sri Lanka would you like to visit?")
-                            if "arrival" in missing or "departure" in missing:
-                                parts.append("What are your hotel dates? (check-in + check-out)")
-                                followup_options += ["2026-06-03 to 2026-06-06", "This weekend", "Next week"]
+                            primary_missing = missing[0]
 
-                            followup_question = "\n".join(f"- {p}" for p in parts)
+                            question_map = {
+                                "travel_style": "What kind of trip do you want in Sri Lanka?",
+                                "destination_city": "Do you already have a place in mind, or should I suggest a route?",
+                                "start_date": "When are you planning to travel?",
+                                "days": "How many days are you planning for?",
+                                "origin_city": "Where will you be starting from?",
+                                "arrival": "What is your check-in date?",
+                                "departure": "What is your check-out date?",
+                                "nationality_country": "What passport or nationality should I check this for?",
+                            }
 
-                            if "days" in missing:                                          # ✅ NEW
-                                followup_options += ["1 day", "2 days", "3 days", "5 days"]
-                            if "destination_city" in missing:
-                                followup_options += ["Kandy", "Ella", "Nuwara Eliya", "Sigiriya"]
-                            if "start_date" in missing:
-                                followup_options += ["This weekend", "Next week", "April 2026"]
+                            options_map = {
+                                "travel_style": ["Beach", "Culture", "Wildlife", "Mixed"],
+                                "destination_city": ["Suggest a route", "Kandy", "Ella", "Galle"],
+                                "start_date": ["This weekend", "Next week", "Next month"],
+                                "days": ["2 days", "3 days", "5 days", "7 days"],
+                                "origin_city": ["Colombo", "Kandy", "Ella", "Galle"],
+                                "arrival": ["Tomorrow", "This weekend", "Next week"],
+                                "departure": ["2 nights later", "3 nights later", "Next week"],
+                                "nationality_country": ["Indian passport", "UK passport", "US passport", "Other"],
+                            }
+
+                            followup_question = question_map.get(primary_missing, "I need one more detail to continue.")
+                            followup_options = options_map.get(primary_missing, [])
+
+                            results["missing_fields"] = [primary_missing]
+                            results["followup"] = {
+                                "question": followup_question,
+                                "options": followup_options,
+                            }
+
+                            if session_state:
+                                session_state.slots["pending_fields"] = [primary_missing]
+                                session_state.slots["pending_intent"] = pi.intent
+                                session_state.slots["pending_domain"] = pi.domain_category
 
                     # write into results so other tasks can see it
                     results["missing_fields"] = missing
@@ -3523,6 +3602,69 @@ class OrchestratorService:
         it_dict = it.model_dump(mode="json") if hasattr(it, "model_dump") else dict(it)
         print("outbound_stops count:", len(it_dict.get("outbound_stops") or []))
         print("return_stops count:", len(it_dict.get("return_stops") or []))
+               # =========================================================
+        # FINAL RESPONSE ASSEMBLY (schema-safe)
+        # =========================================================
+
+        parsed_intent_dict = (
+            parsed_intent.model_dump(mode="json")
+            if hasattr(parsed_intent, "model_dump")
+            else dict(parsed_intent or {})
+        )
+
+        if results.get("missing_fields") and not results.get("followup"):
+            mf = results.get("missing_fields") or []
+            if mf:
+                first_missing = mf[0]
+                question_map = {
+                    "travel_style": "What kind of trip do you want in Sri Lanka?",
+                    "destination_city": "Do you already have a place in mind, or should I suggest a route?",
+                    "start_date": "When are you planning to travel?",
+                    "days": "How many days are you planning for?",
+                    "origin_city": "Where will you be starting from?",
+                    "arrival": "What is your check-in date?",
+                    "departure": "What is your check-out date?",
+                    "nationality_country": "What passport or nationality should I check this for?",
+                }
+                options_map = {
+                    "travel_style": ["Beach", "Culture", "Wildlife", "Mixed"],
+                    "destination_city": ["Suggest a route", "Kandy", "Ella", "Galle"],
+                    "start_date": ["This weekend", "Next week", "Next month"],
+                    "days": ["2 days", "3 days", "5 days", "7 days"],
+                    "origin_city": ["Colombo", "Kandy", "Ella", "Galle"],
+                    "arrival": ["Tomorrow", "This weekend", "Next week"],
+                    "departure": ["2 nights later", "3 nights later", "Next week"],
+                    "nationality_country": ["Indian passport", "UK passport", "US passport", "Other"],
+                }
+                results["followup"] = {
+                    "question": question_map.get(first_missing, "I need one more detail to continue."),
+                    "options": options_map.get(first_missing, []),
+                }
+
+        formatted = self.response_formatter.format(
+            user_text=req.input_text or "",
+            parsed_intent=parsed_intent_dict,
+            results=results,
+            tasks=[t.model_dump(mode="json") if hasattr(t, "model_dump") else dict(t) for t in tasks],
+        )
+
+        final_text = (formatted.get("text") or "").strip()
+        final_followups = formatted.get("followups") or []
+
+        if not final_text:
+            final_text = (
+                "I can help with Sri Lanka travel planning, hotels, transport, weather, "
+                "attractions, restaurants, and visa guidance. What would you like to do next?"
+            )
+
+        if not final_followups:
+            final_followups = [
+                "Plan a trip",
+                "Find hotels",
+                "Check weather",
+                "Visa info",
+            ]
+
         return OrchestrateResponse(
             status="partial" if errors else "ok",
             message="Orchestration executed.",
@@ -3536,14 +3678,13 @@ class OrchestratorService:
             modify_result=results["modify_result"],
             visa_result=results["visa_result"],
             accommodation_result=results["accommodation_result"],
-            restaurant_result = results["restaurant_result"],
-            # "restaurant_result": None,
-            pois_result = results["pois_result"],
+            restaurant_result=results["restaurant_result"],
+            pois_result=results["pois_result"],
             transport_result=results["transport_result"],
             booking_result=results["booking_result"],
             attraction_result=results["attraction_result"],
-            final_message=formatted.get("text"),
-            followups=formatted.get("followups"),
+            final_message=final_text,
+            followups=final_followups,
             trip_id=trip_id,
             errors=errors,
             trace=trace,
@@ -3552,3 +3693,32 @@ class OrchestratorService:
             explainability_ui=formatted.get("explainability_ui"),
             sources=formatted.get("sources"),
         )
+        # return OrchestrateResponse(
+        #     status="partial" if errors else "ok",
+        #     message="Orchestration executed.",
+        #     parsed_intent=parsed_intent,
+        #     tasks=tasks,
+        #     protocol_mode=self.protocol_mode,
+        #     weather_result=results["weather_result"],
+        #     crowd_result=results["crowd_result"],
+        #     price_result=results["price_result"],
+        #     itinerary_result=results["itinerary_result"],
+        #     modify_result=results["modify_result"],
+        #     visa_result=results["visa_result"],
+        #     accommodation_result=results["accommodation_result"],
+        #     restaurant_result = results["restaurant_result"],
+        #     # "restaurant_result": None,
+        #     pois_result = results["pois_result"],
+        #     transport_result=results["transport_result"],
+        #     booking_result=results["booking_result"],
+        #     attraction_result=results["attraction_result"],
+        #     final_message=formatted.get("text"),
+        #     followups=formatted.get("followups"),
+        #     trip_id=trip_id,
+        #     errors=errors,
+        #     trace=trace,
+        #     agentic_meta=results.get("agentic_meta"),
+        #     explainability=results.get("explainability"),
+        #     explainability_ui=formatted.get("explainability_ui"),
+        #     sources=formatted.get("sources"),
+        # )

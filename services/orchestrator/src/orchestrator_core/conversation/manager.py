@@ -13,20 +13,25 @@ def _norm(text: str) -> str:
 
 class ConversationManager:
     """
-    Lightweight conversation-first layer.
-    It does NOT replace the DAG.
-    It only:
-      1) repairs vague / continuation turns using session context
-      2) merges session slots into current parsed entities/prefs
+    Conservative conversation layer.
+
+    Responsibilities:
+      1) Continue a pending follow-up when the user gives a short slot-like reply
+      2) Force modify_itinerary only for true edit-style turns on an active trip
+      3) Merge session slots into missing entities/prefs
+      4) NEVER hijack a strong explicit intent from the classifier/router
     """
 
     LOW_SIGNAL_INTENTS = {"smalltalk", "out_of_scope", "generic_fact_query"}
+    STRONG_INTENT_THRESHOLD = 0.80
+    WEAK_INTENT_THRESHOLD = 0.55
 
     EDIT_HINTS = [
         "make it", "change it", "update it", "edit it", "modify it",
         "cheaper", "more budget", "luxury", "with family", "solo",
         "add", "remove", "shorter", "longer", "2 days", "3 days", "4 days",
         "next week", "this weekend", "tomorrow", "next month",
+        "day 1", "day 2", "day 3",
     ]
 
     SLOTY_REPLY_PATTERNS = [
@@ -34,8 +39,28 @@ class ConversationManager:
         re.compile(r"^(kandy|ella|galle|sigiriya|nuwara eliya|colombo|south coast)$", re.I),
         re.compile(r"^(solo|family|friends|couple)$", re.I),
         re.compile(r"^(low|mid|medium|high|budget|luxury)$", re.I),
-        re.compile(r"^(this weekend|next week|tomorrow|next month|april 2026|may 2026)$", re.I),
+        re.compile(r"^(this weekend|next week|tomorrow|next month|april 2026|may 2026|june 2026)$", re.I),
+        re.compile(r"^\d{4}-\d{2}-\d{2}$", re.I),
     ]
+
+    CONTINUATION_HINTS = [
+        "there", "that", "that place", "that one", "same trip",
+        "same place", "same hotel", "same date", "same dates",
+        "continue", "go on",
+    ]
+
+    EXPLICIT_INTENT_KEYWORDS = {
+        "forecast_weather": ["weather", "forecast", "rain", "temperature", "climate"],
+        "info_transport": ["transport", "bus", "train", "taxi", "route", "how to go"],
+        "info_accommodation": ["hotel", "hotels", "stay", "accommodation", "room", "rooms"],
+        "book_hotel": ["book hotel", "reserve hotel", "booking", "check in", "check out"],
+        "info_visa_policy": ["visa", "eta", "entry requirement", "entry requirements"],
+        "recommend_restaurants": ["restaurant", "restaurants", "food", "eat", "dining", "where to eat"],
+        "recommend_pois": ["places to visit", "what to do", "recommend places", "things to do"],
+        "info_attraction": ["attraction", "attractions", "historical", "temple", "museum", "site", "sites"],
+        "plan_itinerary": ["plan a trip", "plan trip", "itinerary", "plan itinerary"],
+        "modify_itinerary": ["make it", "change it", "update it", "edit it", "modify it"],
+    }
 
     ENTITY_SLOT_KEYS = [
         "city",
@@ -114,22 +139,38 @@ class ConversationManager:
         pending_intent = slots.get("pending_intent")
         active_intent = slots.get("active_intent")
         active_trip_id = slots.get("active_trip_id")
+
         primary = (parsed_intent.intent or "").strip()
         conf = float(parsed_intent.confidence or 0.0)
 
-        # Case 1: user is answering a pending follow-up with a short slot-like reply
+        # 1) If the current turn clearly signals a real intent, trust the classifier/router.
+        #    Do NOT override with session context.
+        if self._has_explicit_intent_signal(raw, primary):
+            if active_trip_id and self._looks_like_modify(raw) and primary != "modify_itinerary":
+                return self._override_intent(parsed_intent, "modify_itinerary", active_trip_id=active_trip_id)
+            return parsed_intent
+
+        if primary not in self.LOW_SIGNAL_INTENTS and conf >= self.STRONG_INTENT_THRESHOLD:
+            if active_trip_id and self._looks_like_modify(raw) and primary != "modify_itinerary":
+                return self._override_intent(parsed_intent, "modify_itinerary", active_trip_id=active_trip_id)
+            return parsed_intent
+
+        # 2) Pending follow-up: only continue pending intent for short slot-like replies.
         if pending_intent and self._looks_like_slot_reply(raw):
             return self._override_intent(parsed_intent, pending_intent, active_trip_id=active_trip_id)
 
-        # Case 2: user says something vague, but we are already inside an active intent
-        if active_intent and (
-            primary in self.LOW_SIGNAL_INTENTS or conf < 0.72 or self._looks_like_continuation(raw)
-        ):
-            return self._override_intent(parsed_intent, active_intent, active_trip_id=active_trip_id)
-
-        # Case 3: active trip exists and user says a modifier -> force modify_itinerary
+        # 3) Active trip + edit-like text => modify itinerary.
         if active_trip_id and self._looks_like_modify(raw):
             return self._override_intent(parsed_intent, "modify_itinerary", active_trip_id=active_trip_id)
+
+        # 4) Only use active_intent for truly weak/vague continuation turns.
+        if active_intent and self._should_continue_active_intent(
+            raw=raw,
+            primary=primary,
+            conf=conf,
+            pending_intent=bool(pending_intent),
+        ):
+            return self._override_intent(parsed_intent, active_intent, active_trip_id=active_trip_id)
 
         return parsed_intent
 
@@ -234,16 +275,48 @@ class ConversationManager:
             }
         )
 
+    def _has_explicit_intent_signal(self, raw: str, primary: str) -> bool:
+        words = self.EXPLICIT_INTENT_KEYWORDS.get(primary, [])
+        return any(w in raw for w in words)
+
     def _looks_like_slot_reply(self, raw: str) -> bool:
-        if len(raw.split()) <= 5:
+        if len(raw.split()) <= 5 and not self._has_any_explicit_domain_keyword(raw):
             return True
         return any(p.match(raw) for p in self.SLOTY_REPLY_PATTERNS)
 
+    def _should_continue_active_intent(
+        self,
+        *,
+        raw: str,
+        primary: str,
+        conf: float,
+        pending_intent: bool,
+    ) -> bool:
+        # Never steal turns that already have explicit domain wording.
+        if self._has_any_explicit_domain_keyword(raw):
+            return False
+
+        # Only continue on truly vague/weak turns.
+        if primary in self.LOW_SIGNAL_INTENTS:
+            return True
+
+        if conf < self.WEAK_INTENT_THRESHOLD and self._looks_like_continuation(raw):
+            return True
+
+        # Short ambiguous continuations like "there?", "what about that one?"
+        if not pending_intent and len(raw.split()) <= 4 and self._looks_like_continuation(raw):
+            return True
+
+        return False
+
+    def _has_any_explicit_domain_keyword(self, raw: str) -> bool:
+        for words in self.EXPLICIT_INTENT_KEYWORDS.values():
+            if any(w in raw for w in words):
+                return True
+        return False
+
     def _looks_like_continuation(self, raw: str) -> bool:
-        return (
-            len(raw.split()) <= 8
-            or any(x in raw for x in ["instead", "also", "not that", "change", "update", "make it"])
-        )
+        return any(x in raw for x in self.CONTINUATION_HINTS)
 
     def _looks_like_modify(self, raw: str) -> bool:
         return any(x in raw for x in self.EDIT_HINTS)

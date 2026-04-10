@@ -211,24 +211,15 @@ class ResponseFormatter:
                 "sources": sources,  # Flutter renders these as tappable links
             }
 
-        if not has_any_result and intent in {"out_of_scope", "generic_fact_query"}:
-            if intent == "out_of_scope":
-                return {
-                    "text": "I specialize in Sri Lanka travel. I can help you with:\n• Trip planning & itineraries\n• Weather forecasts\n• Hotels & accommodation\n• Attractions & places to visit\n• Restaurants & dining\n• Visa & entry requirements\n\nWhat would you like to explore?",
-                    "followups": [
-                        "Plan a trip to Ella",
-                        "Weather in Kandy",
-                        "Hotels in Sigiriya",
-                        "Visa info for Sri Lanka",
-                    ],
-                    "explainability_ui": None,
-                    "sources": None,
-                }
+        if not has_any_result:
+            # ALWAYS use LLM for smooth conversation
             if self.llm_client is not None:
                 return self._answer_general_with_llm(user_text, parsed_intent)
+
+            # fallback only if LLM fails
             return {
-                "text": "I can help with Sri Lanka travel planning (places, routes, hotels, visa). What do you want to do?",
-                "followups": ["Plan an itinerary", "Recommend places", "Transport info", "Visa info"],
+                "text": "I can help you explore Sri Lanka, plan trips, find hotels, transport, and travel tips. What would you like to do?",
+                "followups": ["Plan a trip", "Find hotels", "Explore places", "Travel tips"],
             }
 
         if self.debug:
@@ -303,29 +294,36 @@ class ResponseFormatter:
             present.append(k)
 
         return present
-    def _answer_general_with_llm(self, user_text: str, parsed_intent: Dict[str, Any]) -> Dict[str, Any]:
+    def _answer_general_with_llm(self, user_text, parsed_intent):
         system = (
-            "You are GraphCeylon, a Sri Lanka travel assistant.\n"
-            "Answer the user's question helpfully and naturally.\n"
-            "Keep it short and friendly (max 40 words).\n"
-            "If the question is vague, ask ONE short clarifying question about their Sri Lanka trip.\n"
-            "OUTPUT FORMAT (strict): Return valid JSON with EXACTLY: text, followups.\n"
-            "- followups: always include 2-4 Sri Lanka travel suggestions.\n"
+            "You are GraphCeylon, a friendly Sri Lanka travel assistant.\n"
+            "Keep conversations natural and engaging.\n"
+            "Help with trips, hotels, transport, weather, food, and places.\n"
+            "If the user is vague, still respond helpfully and ask ONE follow-up.\n"
+            "Never say you failed. Never mention tools or intents.\n"
+            "Return ONLY JSON.\n"
+            "FORMAT:\n"
+            "{\n"
+            '  "text": "your answer",\n'
+            '  "followups": ["option1", "option2", "option3"]\n'
+            "}"
         )
 
         try:
             out = self.llm_client.chat_json(
                 system_prompt=system,
-                user_prompt=f"User: {user_text}\nReturn ONLY the JSON object."
+                user_prompt=f"User: {user_text}\nReturn JSON only."
             )
+
             return {
                 "text": str(out.get("text", "")).strip(),
                 "followups": out.get("followups", []) or [],
             }
+
         except Exception:
             return {
-                "text": "I can help with Sri Lanka travel planning. What would you like to do?",
-                "followups": ["Plan a trip", "Find hotels", "Check weather", "Visa info"],
+                "text": "I can help you plan trips, find places, hotels, transport, or travel tips in Sri Lanka. What would you like to do?",
+                "followups": ["Plan a trip", "Find hotels", "Explore places", "Travel tips"],
             }
 
     def _as_dict(self, obj: Any) -> Dict[str, Any]:
@@ -1222,6 +1220,20 @@ class ResponseFormatter:
 
             bus_items = bus_data.get("items", []) if isinstance(bus_data, dict) else []
             train_options = train_data.get("options", []) if isinstance(train_data, dict) else []
+            # graceful fallback when both modes have no results
+            if not train_options and not bus_items:
+                return {
+                    "text": (
+                        f"I couldn’t find direct train or bus options from {origin} to {destination} right now.\n\n"
+                        "You can try another date, check the reverse route, or ask for nearby transport hubs."
+                    ),
+                    "followups": [
+                        "Try another date",
+                        f"{destination} to {origin}",
+                        "Nearby transport hubs",
+                        "Plan a full trip",
+                    ],
+                }
 
             # ===== TRAIN SECTION =====
             train_section = "No train options available."
@@ -1284,30 +1296,50 @@ class ResponseFormatter:
 
 
             # ===== COMPARISON =====
-            # ===== COMPARISON =====
+            comparison_lines = []
+
             train_price = train_options[0].get("estimated_cost_lkr") if train_options else None
             bus_prices = [b.get("entry_fee_lkr") for b in bus_items if b.get("entry_fee_lkr")]
 
-            cheapest = "Train"
-            if train_price and bus_prices:
-                if min(bus_prices) < train_price:
+            if train_options and bus_items:
+                cheapest = "Train"
+                if train_price and bus_prices and min(bus_prices) < train_price:
                     cheapest = "Bus"
 
-            comparison = (
-                "Quick comparison\n"
-                f"• Cheapest: {cheapest}\n"
-                "• More departures: Bus\n"
-                "• Scenic option: Train\n"
-            )
+                comparison_lines = [
+                    "Quick comparison",
+                    f"• Cheapest: {cheapest}",
+                    "• More departures: Bus",
+                    "• Scenic option: Train",
+                ]
+            elif train_options:
+                comparison_lines = [
+                    "Quick comparison",
+                    "• Train option available",
+                    "• Scenic option: Train",
+                ]
+            elif bus_items:
+                comparison_lines = [
+                    "Quick comparison",
+                    "• Bus options available",
+                    "• More departures: Bus",
+                ]
+
+            comparison = "\n".join(comparison_lines)
 
             # ===== FINAL TEXT =====
-            text = (
-                f"Getting {route_str}\n\n"
-                f"{train_section}\n\n"
-                f"{bus_section}\n\n"
-                f"{comparison}\n"
-                f"What would you like next?"
-            )
+            text_parts = [
+                f"Getting {route_str}",
+                train_section,
+                bus_section,
+            ]
+
+            if comparison:
+                text_parts.append(comparison)
+
+            text_parts.append("What would you like next?")
+
+            text = "\n\n".join(text_parts)
 
             return {
                 "text": text,

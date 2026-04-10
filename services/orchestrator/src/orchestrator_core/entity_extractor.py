@@ -1108,7 +1108,34 @@ def _strip_unmentioned_city_destination_and_dates(data: Dict[str, Any], text: st
 
 
 # ---- 4. Public entrypoint used by IntentParserAgent ----
+DAY_MONTH_PATTERN = re.compile(
+    r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?"
+    r"(january|february|march|april|may|june|july|august|september|october|november|december)\b",
+    re.IGNORECASE,
+)
 
+def _normalize_partial_date_year(text: str, now: datetime) -> str:
+    m = DAY_MONTH_PATTERN.search(text)
+    if not m:
+        return text
+
+    day = int(m.group(1))
+    month_name = m.group(2).lower()
+    month_num = MONTH_NAME_TO_NUM.get(month_name)
+    if not month_num:
+        return text
+
+    year = now.year
+    try:
+        candidate = datetime(year, month_num, day)
+    except ValueError:
+        return text
+
+    if candidate.date() < now.date():
+        year += 1
+
+    normalized = f"{day} {month_name} {year}"
+    return DAY_MONTH_PATTERN.sub(normalized, text, count=1)
 def extract_entities_and_prefs(
     text: str,
     now: Optional[datetime] = None,
@@ -1123,6 +1150,7 @@ def extract_entities_and_prefs(
     """
     if now is None:
         now = datetime.now()
+    text = _normalize_partial_date_year(text, now)
 
     data = llm_extract_entities(text)
 

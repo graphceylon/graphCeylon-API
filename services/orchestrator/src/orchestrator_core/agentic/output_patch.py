@@ -2,15 +2,6 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 def patch_agentic_text(formatted: Dict[str, Any], results: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Adds agentic signals to the final UI text (safe, non-breaking).
-    Expects results["agentic_meta"] like:
-      {
-        "changed_summary": ["...", "..."],
-        "confidence": "high|medium|low",
-        "checks": ["...", "..."]   # optional
-      }
-    """
     if not isinstance(formatted, dict):
         return {"text": str(formatted), "followups": []}
 
@@ -24,16 +15,14 @@ def patch_agentic_text(formatted: Dict[str, Any], results: Dict[str, Any]) -> Di
     changed = meta.get("changed_summary") or []
     if isinstance(changed, list) and changed:
         bullets = "\n".join(f"- {str(x)}" for x in changed[:6])
-        blocks.append(" What I changed & why:\n" + bullets)
+        blocks.append("What I changed:\n" + bullets)
 
     checks = meta.get("checks") or []
     if isinstance(checks, list) and checks:
         bullets = "\n".join(f"- {str(x)}" for x in checks[:4])
-        blocks.append("Checks I ran:\n" + bullets)
+        blocks.append("Checks:\n" + bullets)
 
-    conf = meta.get("confidence")
-    if conf:
-        blocks.append(f" Confidence: {conf}")
+    # confidence kept internal, not shown to user
 
     if blocks:
         text = text + "\n\n" + "\n\n".join(blocks)
