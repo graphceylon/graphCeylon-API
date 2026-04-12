@@ -2,13 +2,15 @@ from typing import Any, Dict
 from .travel_mode import TravelMode
 
 def resolve_travel_mode(payload: Dict[str, Any]) -> TravelMode:
-    # Prefer explicit destination fields
-    dest = str(
+    # ✅ PRESERVE None for vector search mode (multi-city discovery)
+    # Only default to Colombo if explicitly needed later
+    dest_candidate = str(
         payload.get("destination")
         or payload.get("city")
         or payload.get("destination_city")
         or ""
-    ).strip() or "Colombo"
+    ).strip()
+    dest = dest_candidate if dest_candidate else None  # Keep None for vector search
 
     tm = payload.get("travel_mode") or {}
     geo_mode = (payload.get("geo_scope") or {}).get("mode")
@@ -32,7 +34,7 @@ def resolve_travel_mode(payload: Dict[str, Any]) -> TravelMode:
         return TravelMode(
             type="city",
             origin_city=origin_city,        # keep it for logging/debug if you want
-            destination_city=dest,
+            destination_city=dest,          # May be None for vector search
             include_stops=False,
             origin_confidence="explicit" if origin_city else "unknown",
             assumptions=[],
@@ -46,8 +48,8 @@ def resolve_travel_mode(payload: Dict[str, Any]) -> TravelMode:
 
     if origin_city:
         origin_conf = "explicit"
-        # ✅ if origin != dest -> corridor
-        if origin_city.lower() != dest.lower():
+        # ✅ Only compare if dest exists
+        if dest and origin_city.lower() != dest.lower():
             tm_type = "corridor"
             # default include_stops True unless explicitly false
             if tm.get("include_stops") is None:
@@ -58,15 +60,17 @@ def resolve_travel_mode(payload: Dict[str, Any]) -> TravelMode:
     wants_corridor = (tm_type == "corridor") or include_stops
 
     if not origin_city and not wants_corridor:
-        origin_city = dest
-        origin_conf = "assumed"
-        assumptions.append(f"Assumed you are already in {dest} (destination-only plan).")
+        # ✅ Only set origin_city = dest if dest exists
+        if dest:
+            origin_city = dest
+            origin_conf = "assumed"
+            assumptions.append(f"Assumed you are already in {dest} (destination-only plan).")
         tm_type = "city"
 
     return TravelMode(
         type="corridor" if wants_corridor else "city",
         origin_city=origin_city,
-        destination_city=dest,
+        destination_city=dest,             # May be None for vector search
         include_stops=bool(include_stops) if wants_corridor else False,
         origin_confidence=origin_conf,
         assumptions=assumptions,

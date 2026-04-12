@@ -1,0 +1,156 @@
+
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                   SARIMA/SARIMAX MODEL ASSUMPTIONS DOCUMENTATION              ║
+║                      (For Thesis Methodology Section)                          ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+1. STATIONARITY ASSUMPTIONS
+═══════════════════════════════════════════════════════════════════════════════
+✓ VALIDATED THROUGH:
+  - Augmented Dickey-Fuller (ADF) test: Tests if series has unit root
+    → Null hypothesis: Non-stationary
+    → Interpretation: p-value < 0.05 → Series is stationary
+
+  - KPSS test: Complements ADF test
+    → Null hypothesis: Stationary
+    → Interpretation: p-value > 0.05 → Series is stationary
+
+  - Visual inspection: Original series shows trend and seasonality
+    → Non-stationary series requires differencing
+
+  - Post-differencing: Series oscillates around zero (white noise-like)
+    → Indicates stationarity achieved (confirmed by ADF/KPSS)
+
+✓ DIFFERENCING ORDER:
+  - Temperature: d=1, D=1 (first difference + seasonal difference at lag 12)
+  - Rainfall: d=1, D=1 (handles trend + strong 12-month seasonality)
+  - Justification: ADF/KPSS tests confirm stationarity after differencing
+
+
+2. DATA PREPROCESSING ASSUMPTIONS
+═══════════════════════════════════════════════════════════════════════════════
+✓ Outlier Treatment:
+  - Temperature: Month-wise z-score capping (z > 3σ)
+    Assumption: Extreme values are measurement errors, not climate events
+    Impact: Preserves physical validity (hard clip: 5-32°C)
+
+  - Rainfall: 98th percentile capping per calendar month
+    Assumption: Values above 98th percentile are anomalies
+    Impact: Keeps 98% of data, removes 0.2% extremes
+
+  - Spike smoothing: Max temperature jump = 2.5°C month-to-month
+    Assumption: Larger jumps are data errors
+    Justification: Consistent with meteorological patterns
+
+✓ Missing Value Imputation:
+  - Linear interpolation (limit_direction='both')
+  - Assumption: Missing data is missing at random (MAR)
+  - Limitation: Does not work for large gaps (>3 consecutive months)
+
+✓ Log Transformation (Rainfall only):
+  - Transform: y' = log1p(rainfall)
+  - Assumption: Stabilizes variance, handles right-skewed distribution
+  - Justification: Rainfall is count-like, non-negative with heavy tail
+  - Reverse: y = expm1(y') to get original scale predictions
+
+
+3. SARIMA(p,d,q)(P,D,Q,m) ASSUMPTIONS
+═══════════════════════════════════════════════════════════════════════════════
+✓ Stationarity: Series becomes stationary after differencing (d,D)
+  - Verified via ADF/KPSS tests above
+
+✓ Linearity: Linear relationships between past and future values
+  - Limitation: Non-linear weather patterns not captured
+  - Example: Monsoon transitions (abrupt shifts)
+
+✓ Seasonality: Fixed 12-month pattern repeats annually
+  - Valid for Sri Lanka: Monsoon patterns are regular
+  - Limitation: Climate change may alter seasonal patterns
+
+✓ Residuals are White Noise:
+  - Mean = 0, Constant variance, No autocorrelation
+  - Check: ACF/PACF plots of residuals (negligible spikes beyond confidence band)
+  - Ljung-Box test: Low p-value → white noise (good fit)
+
+✓ Parameters Selected via:
+  - auto_arima: Stepwise search minimizing BIC (fewer parameters)
+  - BIC preferred over AIC for smaller sample sizes
+  - Trade-off: Model simplicity vs. fit quality
+
+
+4. SARIMAX ENHANCEMENTS (WITH EXOGENOUS VARIABLES)
+═══════════════════════════════════════════════════════════════════════════════
+✗ CURRENT LIMITATION (Univariate SARIMA):
+  → Temperature and rainfall forecasted independently
+  → Ignores causal relationships
+
+✓ SARIMAX IMPROVEMENT:
+  → Rainfall = Exogenous variable for temperature
+  → Assumption: Rainfall influences temperature (humidity, clouds, convection)
+  → Model: y_temp(t) = f(temp_history, rainfall_history)
+
+  ⚠️ Exogenous Variables NOT Currently Included:
+     - Atmospheric pressure (strong weather predictor)
+     - Relative humidity (implicit via rainfall)
+     - Elevation/geography (constant per location)
+     - El Niño Southern Oscillation (ENSO)
+     - Other external climate drivers
+
+✓ SARIMAX Validation:
+  - Compare AIC/BIC: SARIMAX vs SARIMA
+  - Compare RMSE/MAE on test set
+  - Residual diagnostics: Should still be white noise
+  - If SARIMAX significantly better → Exogenous variable is informative
+
+
+5. FORECAST LIMITATIONS & ASSUMPTIONS
+═══════════════════════════════════════════════════════════════════════════════
+✓ Short-term forecasts (12-24 months): More reliable
+✗ Long-term forecasts (>5 years): Confidence intervals widen
+
+⚠️ Key Assumptions About Future:
+  1. Patterns from past data persist into future
+     → Climate change may violate this
+
+  2. No structural breaks (regime changes)
+     → New monsoons patterns could alter model
+
+  3. Exogenous variables remain within training range
+     → Out-of-sample extremes less predictable
+
+  4. Measurement quality consistent over time
+     → Sensor drift or station relocation would affect model
+
+✓ Confidence Level: 95% (standard for meteorological forecasts)
+
+
+6. MODEL SELECTION CRITERIA (WHY BIC FOR PARAMETER SELECTION)
+═══════════════════════════════════════════════════════════════════════════════
+✓ AIC vs BIC Trade-off:
+  - AIC (Akaike): Prefers fit over simplicity (more parameters)
+  - BIC (Bayesian): Penalizes complexity more (fewer parameters) ✓ CHOSEN
+
+✓ Justification for BIC:
+  - Sample size: ~150 observations (monthly data)
+  - Smaller samples benefit from BIC's extra rigidity
+  - Avoids overfitting on limited data
+
+
+════════════════════════════════════════════════════════════════════════════════
+
+RECOMMENDED THESIS METHODOLOGY LANGUAGE:
+
+"We employ SARIMA(p,d,q)(P,D,Q,m) models for temperature and rainfall forecasting.
+Stationarity was verified via Augmented Dickey-Fuller (ADF) and KPSS tests.
+Data preprocessing included month-wise outlier capping, linear interpolation of
+missing values, and log-transformation (rainfall). Optimal parameters were selected
+via automated search minimizing the Bayesian Information Criterion (BIC). Model
+diagnostics confirmed residuals follow white noise patterns. We also developed a
+SARIMAX variant incorporating rainfall as an exogenous variable for temperature
+prediction, validating the relationship between weather variables.
+
+All models were evaluated on a held-out 12-month test set using RMSE, MAE, and MAPE
+metrics. Long-term forecasts beyond 24 months should be interpreted cautiously given
+inherent climate variability and potential structural shifts in weather patterns."
+
+════════════════════════════════════════════════════════════════════════════════

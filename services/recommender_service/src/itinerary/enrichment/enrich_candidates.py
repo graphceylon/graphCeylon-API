@@ -143,6 +143,7 @@ def enrich_and_rerank_candidates(
                 eco_preference=eco_pref,
                 country=country,
                 explicit_city=explicit_city,
+                category=a.get("category"),  # ✅ NEW: Pass category for attraction-specific signals
             )
             crowd_cache[key] = enrich
 
@@ -157,7 +158,10 @@ def enrich_and_rerank_candidates(
         rain_risk = float((enrich.get("weather") or {}).get("rain_risk_0_1", 0.5))
 
         sust_obj = enrich.get("sustainability") or {}
-        sust_score = sust_obj.get("score")
+        # ✅ Try to get the blended category-aware sustainability score
+        sust_score = sust_obj.get("score_0_1")  # ← Blended score (primary)
+        if sust_score is None:
+            sust_score = sust_obj.get("score")  # Fallback
         if sust_score is None:
             sust_score = sust_obj.get("sustainability_score")
         if sust_score is None:
@@ -167,21 +171,38 @@ def enrich_and_rerank_candidates(
         # ----- Base KG score -----
         base_score = float(a.get("_score", 0.0))
 
-        # ----- Final composite score -----
-        final_score = (
-            base_score
-            + (cfg.w_sustainability * sust_score)
-            + (cfg.w_crowd_avoid * (1.0 - _clamp01(crowd_risk)))
-            + (cfg.w_rain_avoid * (1.0 - _clamp01(rain_risk)))
-        )
+        # ----- Retrieval score (from CE + vector + base fusion) -----
+        retrieval_score = float(a.get("_retrieval_score", 0.0))
 
-        aa = dict(a)
+        # ----- Theme alignment bonus (0.3 .. 1.8) from payload context -----
+        # If not available, assume neutral 1.0
+        theme_multiplier = float(a.get("_theme_bonus_multiplier", 1.0))
+
+        # ----- Final composite score (FIXED: includes retrieval signal) -----
+        # Weight breakdown:
+        #   - retrieval (40%): CE + vector + base → most important for seed ranking
+        #   - sustainability (30%): eco scores from DB
+        #   - crowd avoid (20%): avoid busy times/places
+        #   - rain avoid (10%): weather-driven avoidance
+        final_score = (
+            (0.40 * retrieval_score)                                    # ← NEW: preserve CE ranking
+            + (0.30 * sust_score)
+            + (0.20 * (1.0 - _clamp01(crowd_risk)))
+            + (0.10 * (1.0 - _clamp01(rain_risk)))
+        ) * theme_multiplier  # ← Apply theme multiplier as final boost/penalty
+
+        aa = dict(a)  # Shallow copy of all fields
+        # Explicitly preserve retrieval score for downstream use
+        aa["_retrieval_score"] = retrieval_score
+        aa["_theme_bonus_multiplier"] = theme_multiplier
         aa["_enrichment"] = enrich
         aa["_dynamic"] = {
             "date": date_str,
             "crowd_risk_0_1": _clamp01(crowd_risk),
             "rain_risk_0_1": _clamp01(rain_risk),
             "sustainability_0_1": _clamp01(sust_score),
+            "retrieval_score": retrieval_score,
+            "theme_multiplier": theme_multiplier,
         }
         aa["_final_score"] = float(final_score)
         out.append(aa)

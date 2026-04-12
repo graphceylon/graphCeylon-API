@@ -197,7 +197,9 @@ def _fetch_vector_results(
     top_k: int = 80,
 ) -> List[Dict[str, Any]]:
     query = build_semantic_query(payload)
+    print(f"[VECTOR FETCH] START: query='{query[:70] if query else 'NONE'}...'")
     if not query:
+        print(f"[VECTOR FETCH] no query, returning empty")
         return []
 
     url = f"{KG_BASE_URL}{KG_VECTOR_SEARCH_PATH}"
@@ -206,13 +208,20 @@ def _fetch_vector_results(
         "limit": min(top_k, 50),      # endpoint max is 50
         "similarity_threshold": 0.5,  # 0.7 default is too strict, misses good matches
     }
+    print(f"[VECTOR FETCH] POST {url} with params: limit={params['limit']}, threshold={params['similarity_threshold']}")
 
-    with httpx.Client(timeout=timeout) as client:
-        r = client.post(url, params=params)  # POST + query params, no body
-        r.raise_for_status()
-        data = r.json()
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            r = client.post(url, params=params)  # POST + query params, no body
+            r.raise_for_status()
+            data = r.json()
+        print(f"[VECTOR FETCH] response OK, status={r.status_code}")
+    except Exception as e:
+        print(f"[VECTOR FETCH] ERROR: {e}")
+        raise
 
     items = data.get("results") or []  # endpoint uses "results" not "items"
+    print(f"[VECTOR FETCH] END: {len(items)} results returned")
     return [x for x in items if isinstance(x, dict)]
 
 
@@ -236,17 +245,20 @@ def attach_semantic_scores(candidates: List[Dict[str, Any]], payload: Dict[str, 
         c["_semantic_source"] = c.get("_semantic_source")
 
     query = build_semantic_query(payload)
+    print(f"[SEMANTIC] attach_semantic_scores() START: query='{query[:60] if query else 'NONE'}...' {len(candidates)} candidates")
     if not query:
+        print(f"[SEMANTIC] no query built, returning early")
         return
 
     try:
         semantic_items = _fetch_vector_results(payload=payload, timeout=20.0, top_k=80)
+        print(f"[SEMANTIC] _fetch_vector_results returned {len(semantic_items)} items")
     except Exception as exc:
-        print(f"[SEMANTIC] vector endpoint failed: {exc}")
+        print(f"[SEMANTIC] vector endpoint ERROR: {exc}")
         return
 
     if not semantic_items:
-        print("[SEMANTIC] vector endpoint returned 0 items")
+        print("[SEMANTIC] vector endpoint returned 0 items - no merge")
         return
 
     sem_map: Dict[str, float] = {}
@@ -256,22 +268,38 @@ def attach_semantic_scores(candidates: List[Dict[str, Any]], payload: Dict[str, 
         for key in _join_keys(s):
             sem_map[key] = max(sem_map.get(key, 0.0), sim)
 
+    print(f"[SEMANTIC] built sem_map with {len(sem_map)} keys from {len(semantic_items)} results")
+    if sem_map:
+        sample_keys = list(sem_map.items())[:3]
+        print(f"[SEMANTIC] sample sem_map entries: {sample_keys}")
+
     matched = 0
-    for c in candidates:
+    for i, c in enumerate(candidates[:5]):
+        candidate_keys = _join_keys(c)
+        before = float(c.get("_semantic_sim", 0.0) or 0.0)
+        best = before
+        for key in candidate_keys:
+            best = max(best, sem_map.get(key, 0.0))
+        matched_info = f" (matched from vector)" if best > before else f" (no vector match, kept {before:.3f})"
+        print(f"[SEMANTIC] sample cand[{i}] {c.get('title', '?')[:35]:35s} | keys={candidate_keys} | final={best:.3f}{matched_info}")
+        c["_semantic_sim"] = best
+
+    # process remaining candidates silently
+    for i, c in enumerate(candidates[5:], start=5):
         best = float(c.get("_semantic_sim", 0.0) or 0.0)
         for key in _join_keys(c):
             best = max(best, sem_map.get(key, 0.0))
-
         c["_semantic_sim"] = best
-        c["_semantic_source"] = "vector_endpoint" if best > 0 else None
+
+    # recount all matches
+    matched = sum(1 for c in candidates if float(c.get("_semantic_sim", 0.0) or 0.0) > 0)
+    for c in candidates:
+        c["_semantic_source"] = "vector_endpoint" if float(c.get("_semantic_sim", 0.0) or 0.0) > 0 else None
 
         # keep compatibility with any older planner logic using _pref_score
         # but do NOT overwrite if a stronger pref score already exists later
         if "_pref_score" not in c or not c["_pref_score"]:
-            c["_pref_score"] = best
-
-        if best > 0:
-            matched += 1
+            c["_pref_score"] = c.get("_semantic_sim", 0.0)
 
     print(
         f"[SEMANTIC] query={query!r} | "

@@ -171,9 +171,14 @@ def _build_one_plan(payload: Dict[str, Any], cfg: PlannerConfig, mode: PlanMode)
     payload = deepcopy(payload)
     payload["_plan_label"] = mode
     origin = str(payload.get("origin_city") or "").strip() or None
-    dest = str(payload.get("city") or payload.get("destination") or "").strip() or "Colombo"
+    
+    # ✅ IMPORTANT: Preserve None for vector search mode (multi-city discovery)
+    # Don't default to Colombo if city is not specified
+    dest_candidate = str(payload.get("city") or payload.get("destination") or "").strip()
+    dest = dest_candidate if dest_candidate else None  # Keep None if empty
+    
     payload["destination"] = dest
-    payload["city"] = dest  # keep destination city stored
+    payload["city"] = dest  # keep destination city stored (may be None for vector search)
     if mode == "city":
         payload["travel_mode"] = {"type": "city", "include_stops": False}
         payload["on_the_way"] = False
@@ -769,6 +774,132 @@ def fetch_city_attractions_from_kg(
 
     return candidates, debug
     # return candidates, debug
+
+# ============================================================
+# NEW: Vector search for multi-city attractions
+# ============================================================
+KG_VECTOR_SEARCH_PATH = "/sub-attractions/search/vector"
+
+def fetch_attractions_by_preferences_vector(
+    payload: Dict[str, Any],
+    country: str = "Sri Lanka",
+    limit: int = 60,
+    similarity_threshold: float = 0.5,
+    timeout: float = 40.0,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Fetch attractions from MULTIPLE cities using vector similarity search.
+    This is used when user has no specific city in mind.
+    
+    Query is built from:
+    - travel_style (e.g., ['beaches', 'mountains'])
+    - activity_preference (e.g., 'mixed')
+    - food_preferences (e.g., ['no_restrictions'])
+    - raw_text (user's natural language)
+    - tags
+    
+    Returns attraction candidates from all matching cities across the country.
+    """
+    # Build query from payload
+    query_parts = []
+    
+    # Priority 1: raw_text
+    raw_text = str(payload.get("raw_text") or "").strip()
+    if raw_text:
+        query_parts.append(raw_text)
+    
+    # Priority 2: travel_style
+    travel_style = payload.get("travel_style")
+    if isinstance(travel_style, list):
+        query_parts.extend([str(x).strip() for x in travel_style if str(x).strip()])
+    
+    # Priority 3: tags
+    tags = payload.get("tags")
+    if isinstance(tags, list):
+        query_parts.extend([str(x).strip() for x in tags if str(x).strip()])
+    
+    # Priority 4: activity_preference
+    activity_pref = payload.get("activity_preference")
+    if activity_pref:
+        query_parts.append(str(activity_pref).strip())
+    
+    # Priority 5: food_preferences
+    food_prefs = payload.get("food_preferences")
+    if isinstance(food_prefs, list):
+        query_parts.extend([str(x).strip() for x in food_prefs if str(x).strip()])
+    
+    # Priority 6: pace and adventure info
+    pace = payload.get("pace_preference")
+    if pace:
+        query_parts.append(str(pace).strip())
+    
+    adventure = payload.get("adventure_level")
+    if adventure:
+        query_parts.append(str(adventure).strip())
+    
+    # Build final query
+    seen = set()
+    unique_parts = []
+    for p in query_parts:
+        k = p.lower()
+        if k not in seen:
+            seen.add(k)
+            unique_parts.append(p)
+    
+    query = " ".join(unique_parts).strip()
+    if not query:
+        query = f"{country} attractions"
+    
+    # Limit query length
+    query = query[:300]
+    
+    # Call vector search endpoint
+    url = f"{KG_BASE_URL}{KG_VECTOR_SEARCH_PATH}"
+    params = {
+        "query": query,
+        "limit": min(int(limit), 50),  # endpoint max is 50
+        "similarity_threshold": float(similarity_threshold),
+    }
+    
+    print(f"[VECTOR SEARCH] Fetching attractions with query: '{query[:80]}...'")
+    print(f"[VECTOR SEARCH] URL: {url}")
+    print(f"[VECTOR SEARCH] Params: limit={params['limit']}, threshold={params['similarity_threshold']}")
+    
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            r = client.post(url, params=params)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        print(f"[VECTOR SEARCH] ERROR: {e}")
+        raise
+    
+    # Process results
+    items = data.get("results") or data.get("items") or []
+    print(f"[VECTOR SEARCH] Retrieved {len(items)} attraction items")
+    
+    candidates = []
+    for item in items:
+        if isinstance(item, dict):
+            c = _kg_item_to_candidate(item)
+            if c:
+                candidates.append(c)
+                # Log city info
+                city_info = c.get("city") or c.get("district") or "unknown"
+                print(f"[VECTOR SEARCH]   + {c.get('title')} ({city_info})")
+    
+    debug = {
+        "kg_url": url,
+        "kg_query": query,
+        "kg_params": params,
+        "kg_returned": len(items),
+        "candidates_returned": len(candidates),
+        "mode": "vector_search_multi_city",
+        "country": country,
+    }
+    
+    return candidates, debug
+
 KG_CORRIDOR_ATTRACTIONS_PATH = "/Recommender/call/attractions-on-route"
 def fetch_corridor_attractions_from_kg(
     origin_city: str,
@@ -2247,9 +2378,36 @@ def _geo_fit_score(rec: Dict[str, Any], destination_city: str, days: int) -> flo
         return 0.20
     return 0.50
 def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = PlannerConfig()) -> Dict[str, Any]:
-    city = str(payload.get("city") or payload.get("destination") or "").strip() or "Colombo"
+    city_input = str(payload.get("city") or payload.get("destination") or "").strip()
     country = str(payload.get("country") or "Sri Lanka").strip() or "Sri Lanka"
     eco_pref = float(payload.get("eco_preference") or 0.5)
+    
+    # ✅ NEW: Determine if we should use vector search mode (multi-city)
+    # This allows attraction discovery across all cities based on preferences
+    use_vector_search = False
+    if not city_input:
+        # Check if we have enough preference info to do meaningful search
+        has_travel_style = bool(payload.get("travel_style"))
+        has_tags = bool(payload.get("tags"))
+        has_activity_pref = bool(payload.get("activity_preference"))
+        has_raw_text = bool(str(payload.get("raw_text") or "").strip())
+        
+        print(f"[VECTOR SEARCH CHECK] city_input empty: travel_style={has_travel_style}, tags={has_tags}, activity_pref={has_activity_pref}, raw_text={has_raw_text}")
+        
+        if has_travel_style or has_tags or has_activity_pref or has_raw_text:
+            use_vector_search = True
+            city = None
+            payload["_use_vector_search"] = True
+            print(f"[PLAN MODE] ✅ Using VECTOR SEARCH (multi-city) because city=None + preferences present")
+        else:
+            # No preferences, default to Colombo
+            city = "Colombo"
+            payload["_use_vector_search"] = False
+            print(f"[PLAN MODE] No city and no preferences, defaulting to COLOMBO")
+    else:
+        city = city_input
+        payload["_use_vector_search"] = False
+    
     # days used multiple times
     days = int(payload.get("days") or 3)
     start_str = str(payload.get("start_date") or "").strip()
@@ -2408,21 +2566,29 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         res = CandidatesResult(candidates=route_candidates, debug=kg_corridor_dbg)
     else:
         # city mode: fetch from KG service
-        city_for_query = tm.destination_city or city
-
-        # candidates, kg_dbg = hybrid_fetch_city_attractions(
-        #     payload=payload,
-        #     city=city_for_query,
-        #     country=country,
-        #     limit=int(payload.get("max_candidates") or cfg.max_candidates),
-        # )
-        candidates, kg_dbg = fetch_city_attractions_from_kg(
-            city=city_for_query,
-            country=country,
-            limit=int(payload.get("max_candidates") or cfg.max_candidates),
-            timeout=40.0,
-            payload=payload,
-        )
+        # ✅ NEW: Check if we should use vector search mode (multi-city attractions)
+        if use_vector_search:
+            print(f"[FETCH MODE] ✅ VECTOR SEARCH (multi-city) - no specific city constraint")
+            candidates, kg_dbg = fetch_attractions_by_preferences_vector(
+                payload=payload,
+                country=country,
+                limit=int(payload.get("max_candidates") or cfg.max_candidates),
+                similarity_threshold=0.5,
+                timeout=40.0,
+            )
+            kg_dbg["mode"] = "vector_search"
+        else:
+            # Standard city-specific fetch
+            city_for_query = tm.destination_city or city
+            print(f"[FETCH MODE] City-specific - querying attractions for: {city_for_query}")
+            candidates, kg_dbg = fetch_city_attractions_from_kg(
+                city=city_for_query,
+                country=country,
+                limit=int(payload.get("max_candidates") or cfg.max_candidates),
+                timeout=40.0,
+                payload=payload,
+            )
+            kg_dbg["mode"] = "city_specific"
 
         candidates = dedupe_candidates_by_attraction_id(candidates)
         # _fetch_vector_scores(candidates, payload)  
