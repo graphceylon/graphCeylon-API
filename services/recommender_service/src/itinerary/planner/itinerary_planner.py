@@ -174,7 +174,7 @@ def _build_one_plan(payload: Dict[str, Any], cfg: PlannerConfig, mode: PlanMode)
     
     # ✅ IMPORTANT: Preserve None for vector search mode (multi-city discovery)
     # Don't default to Colombo if city is not specified
-    dest_candidate = str(payload.get("city") or payload.get("destination") or "").strip()
+    dest_candidate = str(payload.get("destination") or payload.get("city") or "").strip()
     dest = dest_candidate if dest_candidate else None  # Keep None if empty
     
     payload["destination"] = dest
@@ -371,7 +371,9 @@ def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) ->
     attractions + restaurants + hotel_options merged per day.
     """
     origin = str(payload.get("origin_city") or "").strip()
-    dest   = str(payload.get("city") or payload.get("destination") or "").strip()
+    dest = str(payload.get("destination") or payload.get("city") or "").strip()
+    
+   
 
     # =========================================================
     # PRECOMPUTE GRAPHHOPPER & KG CORRIDOR ONCE
@@ -472,7 +474,7 @@ def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) ->
     return {
         "status": "ok",
         "meta": {
-            "destination":  payload.get("city") or payload.get("destination"),
+            "destination": payload.get("destination") or payload.get("city"),
             "origin_city":  payload.get("origin_city"),
             "days":         payload.get("days"),
             "start_date":   payload.get("start_date"),

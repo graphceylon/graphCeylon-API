@@ -90,7 +90,7 @@ def map_itinerary_request(parsed_intent: ParsedIntent, req: OrchestrateRequest) 
     e = parsed_intent.entities
     p = parsed_intent.preference_overrides or {}
 
-    destination = e.city or e.destination or e.country
+    destination = e.destination or e.city or e.country
     scope = resolve_region_scope(
         city=e.city,
         region=getattr(e, "region", None),
@@ -104,11 +104,12 @@ def map_itinerary_request(parsed_intent: ParsedIntent, req: OrchestrateRequest) 
     end_date = e.end_date or str(date.fromisoformat(start_date) + timedelta(days=days - 1))
     waypoints = getattr(e, "waypoints", None) or []
     stop_durations_days = getattr(e, "stop_durations_days", None) or {}
+    resolved_destination = e.destination or e.city or e.country
 
     query: Dict[str, Any] = {
         "raw_text": req.input_text,
-        "city": e.city,
-        "destination": destination,
+        "city": resolved_destination,
+        "destination": resolved_destination,
         "region": getattr(e, "region", None),
         "country": e.country or "Sri Lanka",
         "days": days,

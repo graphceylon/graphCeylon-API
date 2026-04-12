@@ -43,9 +43,9 @@ app.include_router(benchmark_router, prefix="/benchmark")
 intent_parser_agent = IntentParserAgent(
 
     # model_dir=r"C:/Users/HP/OneDrive/Documents/graphCeylon-API/models/orchestrator/intent_multilabel_final_v4",
-    # model_dir=r"/Users/dev/Desktop/graphCeylon-API/models/orchestrator/intent_multilabel_final_v5",
+    model_dir=r"/Users/dev/Desktop/graphCeylon-API/models/orchestrator/intent_multilabel_final_v5",
 
-    model_dir=r"C:/Users/HP/OneDrive/Documents/graphCeylon-API/models/orchestrator/intent_multilabel_final_v4",
+    # model_dir=r"C:/Users/HP/OneDrive/Documents/graphCeylon-API/models/orchestrator/intent_multilabel_final_v4",
     #model_dir=r"/Users/dev/Desktop/graphCeylon-API/models/orchestrator/intent_multilabel_final_v4",
 
     threshold=0.2,
