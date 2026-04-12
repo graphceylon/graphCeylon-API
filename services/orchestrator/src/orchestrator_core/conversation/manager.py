@@ -56,7 +56,17 @@ class ConversationManager:
         "book_hotel": ["book hotel", "reserve hotel", "booking", "check in", "check out"],
         "info_visa_policy": ["visa", "eta", "entry requirement", "entry requirements"],
         "recommend_restaurants": ["restaurant", "restaurants", "food", "eat", "dining", "where to eat"],
-        "recommend_pois": ["places to visit", "what to do", "recommend places", "things to do"],
+        "recommend_pois": [
+            "places to visit",
+            "what to do",
+            "recommend places",
+            "things to do",
+            "where can i visit",
+            "where should i visit",
+            "what can i visit",
+            "places in",
+            "visit in"
+        ],
         "info_attraction": ["attraction", "attractions", "historical", "temple", "museum", "site", "sites"],
         "plan_itinerary": ["plan a trip", "plan trip", "itinerary", "plan itinerary"],
         "modify_itinerary": ["make it", "change it", "update it", "edit it", "modify it"],
@@ -145,11 +155,28 @@ class ConversationManager:
 
         # 1) If the current turn clearly signals a real intent, trust the classifier/router.
         #    Do NOT override with session context.
-        if self._has_explicit_intent_signal(raw, primary):
-            if active_trip_id and self._looks_like_modify(raw) and primary != "modify_itinerary":
-                return self._override_intent(parsed_intent, "modify_itinerary", active_trip_id=active_trip_id)
-            return parsed_intent
+        # if self._has_explicit_intent_signal(raw, primary):
+        #     if active_trip_id and self._looks_like_modify(raw) and primary != "modify_itinerary":
+        #         return self._override_intent(parsed_intent, "modify_itinerary", active_trip_id=active_trip_id)
+        #     return parsed_intent
 
+        # if primary not in self.LOW_SIGNAL_INTENTS and conf >= self.STRONG_INTENT_THRESHOLD:
+        #     if active_trip_id and self._looks_like_modify(raw) and primary != "modify_itinerary":
+        #         return self._override_intent(parsed_intent, "modify_itinerary", active_trip_id=active_trip_id)
+        #     return parsed_intent
+        # 1) Fresh explicit domain questions should break out of old context.
+        explicit_intents = self._detect_explicit_intents_from_text(raw)
+
+        # Fresh explicit domain question: break out of stale itinerary context
+        if explicit_intents and not self._looks_like_modify(raw):
+            primary_intent = explicit_intents[0]
+            patched = self._override_intent(parsed_intent, primary_intent, active_trip_id=None)
+
+            # attach secondaries for downstream multi-intent execution
+            secondaries = [i for i in explicit_intents[1:] if i != primary_intent]
+            return patched.model_copy(update={"secondary_intents": secondaries})
+
+        # 2) If classifier already has a strong non-low-signal intent, trust it.
         if primary not in self.LOW_SIGNAL_INTENTS and conf >= self.STRONG_INTENT_THRESHOLD:
             if active_trip_id and self._looks_like_modify(raw) and primary != "modify_itinerary":
                 return self._override_intent(parsed_intent, "modify_itinerary", active_trip_id=active_trip_id)
@@ -314,12 +341,73 @@ class ConversationManager:
             if any(w in raw for w in words):
                 return True
         return False
+    # def _detect_explicit_intent_from_text(self, raw: str) -> Optional[str]:
+    #     # Priority matters here
+    #     priority = [
+    #         "forecast_weather",
+    #         "info_transport",
+    #         "info_accommodation",
+    #         "book_hotel",
+    #         "info_visa_policy",
+    #         "recommend_restaurants",
+    #         "recommend_pois",
+    #         "info_attraction",
+    #         "plan_itinerary",
+    #         "modify_itinerary",
+    #     ]
+
+    #     for intent_name in priority:
+    #         words = self.EXPLICIT_INTENT_KEYWORDS.get(intent_name, [])
+    #         if any(w in raw for w in words):
+    #             return intent_name
+    #     return None
+
+    def _detect_explicit_intents_from_text(self, raw: str) -> list[str]:
+        priority = [
+            "forecast_weather",
+            "info_transport",
+            "info_accommodation",
+            "book_hotel",
+            "info_visa_policy",
+            "recommend_restaurants",
+            "recommend_pois",
+            "info_attraction",
+            "plan_itinerary",
+            "modify_itinerary",
+        ]
+
+        found = []
+        for intent_name in priority:
+            words = self.EXPLICIT_INTENT_KEYWORDS.get(intent_name, [])
+            if any(w in raw for w in words):
+                found.append(intent_name)
+
+        return found
 
     def _looks_like_continuation(self, raw: str) -> bool:
         return any(x in raw for x in self.CONTINUATION_HINTS)
 
     def _looks_like_modify(self, raw: str) -> bool:
-        return any(x in raw for x in self.EDIT_HINTS)
+        # Strong edit phrases only
+        strong_edit_phrases = [
+            "make it", "change it", "update it", "edit it", "modify it",
+            "add", "remove", "shorter", "longer",
+            "cheaper", "more budget", "luxury",
+            "with family", "solo",
+        ]
+
+        if any(x in raw for x in strong_edit_phrases):
+            return True
+
+        # Explicit day follow-ups still count as itinerary modification
+        if re.search(r"\bday\s*\d+\b", raw):
+            return True
+
+        # Duration changes only when phrased as a change
+        if re.search(r"\b(make it|change it|set|extend|shorten|reduce|increase)\s+\d+\s+days?\b", raw):
+            return True
+
+        return False
 
     def _is_empty(self, v: Any) -> bool:
         return v in (None, "", [], {}, "unknown")

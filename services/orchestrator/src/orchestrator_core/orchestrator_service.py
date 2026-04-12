@@ -822,7 +822,7 @@ class OrchestratorService:
                     agent_id="visa_kg",
                     base_url=VISA_KG_BASE_URL,
                     protocols=["a2a"],
-                    capabilities=["info_visa_policy", "info_accommodation", "info_attraction","recommend_restaurants","info_transport", "info_transport_bus", "info_transport_train",],
+                    capabilities=["info_visa_policy", "info_accommodation", "info_attraction","recommend_restaurants" "info_transport", "info_transport_bus", "info_transport_train",],
 
 
                     sla=SLA(p95_ms=1500, success_rate=0.98),
