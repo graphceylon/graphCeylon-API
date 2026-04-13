@@ -859,7 +859,19 @@ class ResponseFormatter:
                 out_lines.append("")
 
             # n = days or len(itinerary)
-            chips = [f"Day {i}" for i in range(1, min(n, 4) + 1)]
+            chips = []
+
+            days = n
+
+            if days > 1:
+                chips.append(f"Make it {days-1} day trip")
+
+            chips.append(f"Extend to {days+1} days")
+
+            if days >= 2:
+                chips.append("Swap day 1 and day 2")
+            else:
+                chips.append("Change activities for day 1")
             return {"text": "\n".join(out_lines).strip(), "followups": chips}
 
 
@@ -1037,8 +1049,19 @@ class ResponseFormatter:
                         out_lines.append(f"- {title} — {category}{rating_str}")
                     out_lines.append("")
 
-                chips = [f"Day {i}" for i in range(1, min(num_days_int, 4) + 1)]
-                chips += ["Show hotels", "Change destination"]
+                chips = []
+
+                days = num_days_int
+
+                if days > 1:
+                    chips.append(f"Make it {days-1} day trip")
+
+                chips.append(f"Extend to {days+1} days")
+
+                # ✅ Keep this instead of swap
+                chips.append("Show hotels")
+
+                chips = chips[:3]
 
                 return {
                     "text": "\n".join(out_lines).strip(),
