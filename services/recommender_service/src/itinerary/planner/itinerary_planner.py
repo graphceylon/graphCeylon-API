@@ -581,7 +581,7 @@ def recommend_city_pois_simple(payload: Dict[str, Any], cfg: PlannerConfig = Pla
         city=city,
         country=country,
         limit=int(payload.get("max_candidates") or cfg.max_candidates),
-        timeout=40.0,
+        timeout=90.0,
     )
 
     candidates = [c for c in candidates if _safe_city_match(c, city)]
@@ -738,7 +738,7 @@ def fetch_city_attractions_from_kg(
     city: str,
     country: str = "Sri Lanka",
     limit: int = 60,
-    timeout: float = 40.0,
+    timeout: float = 90.0,
     payload: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     url = f"{KG_BASE_URL}{KG_SUB_ATTRACTIONS_PATH}"
@@ -787,7 +787,7 @@ def fetch_attractions_by_preferences_vector(
     country: str = "Sri Lanka",
     limit: int = 60,
     similarity_threshold: float = 0.5,
-    timeout: float = 40.0,
+    timeout: float = 90.0,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Fetch attractions from MULTIPLE cities using vector similarity search.
@@ -911,7 +911,7 @@ def fetch_corridor_attractions_from_kg(
     country: str = "Sri Lanka",
     corridor_km: float = 15.0,
     limit: int = 80,
-    timeout: float = 40.0,
+    timeout: float = 90.0,
     payload: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
@@ -980,7 +980,7 @@ def fetch_origin_dest_coords_from_kg(
     origin_city: str,
     destination_city: str,
     country: str = "Sri Lanka",
-    timeout: float = 40.0,
+    timeout: float = 90.0,
 ) -> Dict[str, Any]:
     """
     Sends origin_city + destination_city to KG to resolve coords.
@@ -1563,7 +1563,7 @@ KG_HOTEL_SEARCH_PATH = "/hotels/orchestrator/call/hotels/search"
 def fetch_hotels_for_destination(
     payload: Dict[str, Any],
     *,
-    timeout: float = 40.0,
+    timeout: float = 90.0,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Fetch hotels from the KG hotel search endpoint for the destination city.
@@ -1625,7 +1625,7 @@ def fetch_shop_dine_on_route_from_kg(
     country: str = "Sri Lanka",
     corridor_km: float = 10.0,
     limit: int = 120,
-    timeout: float = 40.0,
+    timeout: float = 90.0,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     url = f"{KG_BASE_URL}{KG_SHOP_DINE_PATH}"
     body = {
@@ -2006,7 +2006,7 @@ def run_city_pipeline(city_name: str, payload: Dict[str, Any], cfg: PlannerConfi
         city=city_name,
         country=country,
         limit=int(payload.get("max_candidates", cfg.max_candidates)),
-        timeout=40.0,
+        timeout=90.0,
         payload=payload,
     )
     attach_semantic_scores(candidates, payload)
