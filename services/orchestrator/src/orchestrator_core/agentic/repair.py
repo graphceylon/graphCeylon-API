@@ -87,7 +87,10 @@ class RepairAgent:
 
             # ── REPAIR 1: destination contradiction ──────────────────
             if atype == "replan_destination":
-                requested_city = ameta.get("requested", "")
+                requested_city = (
+                    getattr(parsed_intent.entities, "destination", None)
+                    or ameta.get("requested")
+)
                 got_city       = ameta.get("got", "")
                 nli_score      = ameta.get("contradiction_score", 0.0)
 
@@ -100,8 +103,15 @@ class RepairAgent:
                     if hasattr(parsed_intent.entities, "model_dump")
                     else dict(getattr(parsed_intent, "entities", None) or {})
                 )
-                ents["city"]        = requested_city
-                ents["destination"] = requested_city
+                true_destination = getattr(parsed_intent.entities, "destination", None)
+
+                # Only fix if destination is actually missing or wrong
+                if true_destination:
+                    ents["destination"] = true_destination
+                    ents["city"]        = true_destination  # optional alignment
+                else:
+                    ents["destination"] = requested_city
+                    ents["city"]        = requested_city
 
                 # Build a patched intent so the mapper sends the right city
                 try:

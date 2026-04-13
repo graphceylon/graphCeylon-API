@@ -73,6 +73,7 @@ class TaskGraphBuilder:
             "forecast_weather", "crowd_forecast", "forecast_price",
             "recommend_pois", "info_transport", "info_accommodation",
             "info_attraction", "info_visa_policy", "recommend_restaurants",
+            "out_of_scope", "smalltalk",
         }
     @staticmethod
     def _hotel_missing_fields(parsed: ParsedIntent) -> List[str]:
@@ -103,15 +104,13 @@ class TaskGraphBuilder:
             "recommend_pois": {"forecast_weather", "info_attraction"},
         }
 
-    def _pick_secondary_intents(self, parsed: ParsedIntent, *, max_n: int = 2, min_score: float = 0.80) -> List[str]:
+    def _pick_secondary_intents(self, parsed: ParsedIntent, *, max_n: int = 2, min_score: float = 0.12) -> List[str]:
         primary = (parsed.intent or "").strip()
         scores = parsed.scores or {}
         secs = parsed.secondary_intents or []
 
         supported = self._supported_intents()
         disallow = self._disallow_secondary()
-        allow_map = self._multi_intent_allow()
-        allowed_set = allow_map.get(primary, set())
 
         candidates: List[str] = []
         for s in secs:
@@ -121,9 +120,6 @@ class TaskGraphBuilder:
             if s in disallow:
                 continue
             if s not in supported:
-                continue
-            # if allow set exists, enforce it (keeps demo deterministic)
-            if allowed_set and s not in allowed_set:
                 continue
             if float(scores.get(s, 0.0)) >= min_score:
                 candidates.append(s)
@@ -312,7 +308,7 @@ class TaskGraphBuilder:
                 # ---- Secondary tasks fan-out (parallel) ----
         secondary_ids: List[str] = []
 
-        picked_secondaries = self._pick_secondary_intents(parsed, max_n=2, min_score=0.80)
+        picked_secondaries = self._pick_secondary_intents(parsed, max_n=2, min_score=0.12)
 
         for sec_intent in picked_secondaries:
             sec_agent = INTENT_TO_AGENT.get(sec_intent, "OrchestratorAgent")

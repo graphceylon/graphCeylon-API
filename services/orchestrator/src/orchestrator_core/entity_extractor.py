@@ -13,18 +13,19 @@ from typing import Any, Dict, Optional
 from dotenv import load_dotenv
 import calendar
 from datetime import datetime, timedelta
+from .llm.factory import build_llm_client
 
 
 load_dotenv() 
 
 logger = logging.getLogger(__name__)
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-ENTITY_LLM_PROVIDER = os.getenv("ENTITY_LLM_PROVIDER", "groq")
-logger.warning(f"GROQ_API_KEY loaded? {bool(GROQ_API_KEY)}")
-logger.warning(f"ENTITY_LLM_PROVIDER={ENTITY_LLM_PROVIDER}")
-print("GROQ_API_KEY loaded?", bool(GROQ_API_KEY))
-print("GROQ_API_KEY repr:", repr(GROQ_API_KEY))
-print("ENTITY_LLM_PROVIDER:", ENTITY_LLM_PROVIDER)
+# GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# ENTITY_LLM_PROVIDER = os.getenv("ENTITY_LLM_PROVIDER", "groq")
+# logger.warning(f"GROQ_API_KEY loaded? {bool(GROQ_API_KEY)}")
+# logger.warning(f"ENTITY_LLM_PROVIDER={ENTITY_LLM_PROVIDER}")
+# print("GROQ_API_KEY loaded?", bool(GROQ_API_KEY))
+# print("GROQ_API_KEY repr:", repr(GROQ_API_KEY))
+# print("ENTITY_LLM_PROVIDER:", ENTITY_LLM_PROVIDER)
 
 
 
@@ -144,28 +145,28 @@ Rules:
 
 # ---- 2. Call Ollama (mistral) and parse JSON ----
 
-def _run_ollama_mistral(prompt: str, model: str = "mistral") -> str:
-    """
-    Low-level helper that calls `ollama run mistral` and returns raw stdout.
-    """
-    try:
-        proc = subprocess.run(
-            ["ollama", "run", model],
-            input=prompt.encode("utf-8"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-    except FileNotFoundError as e:
-        logger.error("ollama not found on PATH: %s", e)
-        raise
+# def _run_ollama_mistral(prompt: str, model: str = "mistral") -> str:
+#     """
+#     Low-level helper that calls `ollama run mistral` and returns raw stdout.
+#     """
+#     try:
+#         proc = subprocess.run(
+#             ["ollama", "run", model],
+#             input=prompt.encode("utf-8"),
+#             stdout=subprocess.PIPE,
+#             stderr=subprocess.PIPE,
+#             check=False,
+#         )
+#     except FileNotFoundError as e:
+#         logger.error("ollama not found on PATH: %s", e)
+#         raise
 
-    stdout = proc.stdout.decode("utf-8").strip()
-    stderr = proc.stderr.decode("utf-8").strip()
-    if stderr:
-        logger.debug("ollama stderr: %s", stderr)
+#     stdout = proc.stdout.decode("utf-8").strip()
+#     stderr = proc.stderr.decode("utf-8").strip()
+#     if stderr:
+#         logger.debug("ollama stderr: %s", stderr)
 
-    return stdout
+#     return stdout
 
 
 def _safe_json_extract(raw: str) -> Dict[str, Any]:
@@ -195,33 +196,33 @@ def _safe_json_extract(raw: str) -> Dict[str, Any]:
             "entities": {},
             "preference_overrides": {},
         }
-def _run_groq_chat_completion(prompt: str) -> str:
-    if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY is not set in environment")
+# def _run_groq_chat_completion(prompt: str) -> str:
+#     if not GROQ_API_KEY:
+#         raise RuntimeError("GROQ_API_KEY is not set in environment")
 
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json",   # <<< IMPORTANT
-    }
-    payload = {
-    "model": "llama-3.3-70b-versatile",  # ✅ updated model name
-    "messages": [{"role": "user", "content": prompt}],
-    "temperature": 0,
-}
+#     url = "https://api.groq.com/openai/v1/chat/completions"
+#     headers = {
+#         "Authorization": f"Bearer {GROQ_API_KEY}",
+#         "Content-Type": "application/json",   # <<< IMPORTANT
+#     }
+#     payload = {
+#     "model": "llama-3.3-70b-versatile",  # ✅ updated model name
+#     "messages": [{"role": "user", "content": prompt}],
+#     "temperature": 0,
+# }
 
-    r = requests.post(url, json=payload, headers=headers)
+#     r = requests.post(url, json=payload, headers=headers)
 
-    # temporary debug
-    if r.status_code != 200:
-        logger.error(
-            "Groq API error %s: %s",
-            r.status_code,
-            r.text,
-        )
+#     # temporary debug
+#     if r.status_code != 200:
+#         logger.error(
+#             "Groq API error %s: %s",
+#             r.status_code,
+#             r.text,
+#         )
 
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
+#     r.raise_for_status()
+#     return r.json()["choices"][0]["message"]["content"]
 
 CANON_BUDGET = {"low": "low", "mid": "mid", "medium": "mid", "high": "high"}
 ECO_MAP = {"high": 0.9, "medium": 0.6, "low": 0.3}
@@ -362,22 +363,44 @@ def normalize_preference_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def llm_extract_entities(text: str) -> Dict[str, Any]:
-    # if os.getenv("BENCHMARK_MODE") == "1":
-    #     return {}
-    prompt = f"{BASE_PROMPT}\n\nUser query:\n{text.strip()}"
+    llm_client = build_llm_client()
 
-    provider = ENTITY_LLM_PROVIDER.lower()
+    if llm_client is None:
+        logger.warning("No LLM client available for entity extraction.")
+        return {
+            "domain_category": None,
+            "entities": {},
+            "preference_overrides": {},
+        }
 
-    if provider == "ollama":
-        raw = _run_ollama_mistral(prompt)
-    elif provider == "groq":
-        raw = _run_groq_chat_completion(prompt)
-    elif provider == "openai":
-        raw = _run_openai_chat_completion(prompt)  # TODO
-    else:
-        raise ValueError(f"Unknown ENTITY_LLM_PROVIDER={ENTITY_LLM_PROVIDER}")
+    system_prompt = (
+        "You are a precise JSON information extractor for a Sri Lanka tourism assistant. "
+        "Return only valid JSON. No markdown, no explanations."
+    )
 
-    data = _safe_json_extract(raw)
+    user_prompt = f"{BASE_PROMPT}\n\nUser query:\n{text.strip()}"
+
+    try:
+        data = llm_client.chat_json(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+    except Exception as e:
+        logger.exception("Entity extraction failed: %s", e)
+        return {
+            "domain_category": None,
+            "entities": {},
+            "preference_overrides": {},
+        }
+
+    if not isinstance(data, dict):
+        logger.warning("LLM returned non-dict JSON.")
+        return {
+            "domain_category": None,
+            "entities": {},
+            "preference_overrides": {},
+        }
+
     data.setdefault("domain_category", None)
     data.setdefault("entities", {})
     data.setdefault("preference_overrides", {})
@@ -1085,7 +1108,34 @@ def _strip_unmentioned_city_destination_and_dates(data: Dict[str, Any], text: st
 
 
 # ---- 4. Public entrypoint used by IntentParserAgent ----
+DAY_MONTH_PATTERN = re.compile(
+    r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?"
+    r"(january|february|march|april|may|june|july|august|september|october|november|december)\b",
+    re.IGNORECASE,
+)
 
+def _normalize_partial_date_year(text: str, now: datetime) -> str:
+    m = DAY_MONTH_PATTERN.search(text)
+    if not m:
+        return text
+
+    day = int(m.group(1))
+    month_name = m.group(2).lower()
+    month_num = MONTH_NAME_TO_NUM.get(month_name)
+    if not month_num:
+        return text
+
+    year = now.year
+    try:
+        candidate = datetime(year, month_num, day)
+    except ValueError:
+        return text
+
+    if candidate.date() < now.date():
+        year += 1
+
+    normalized = f"{day} {month_name} {year}"
+    return DAY_MONTH_PATTERN.sub(normalized, text, count=1)
 def extract_entities_and_prefs(
     text: str,
     now: Optional[datetime] = None,
@@ -1100,6 +1150,7 @@ def extract_entities_and_prefs(
     """
     if now is None:
         now = datetime.now()
+    text = _normalize_partial_date_year(text, now)
 
     data = llm_extract_entities(text)
 

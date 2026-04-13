@@ -3,6 +3,8 @@
 from __future__ import annotations
 import json
 from pathlib import Path
+import os
+
 import psycopg
 from .context_resolver import resolve_context
 from ..api.schemas import Entities 
@@ -23,6 +25,7 @@ from .agentic.nli_wrapper import DebertaNLIWrapper as NLIWrapper
 from .tools.hotel_booking_tool import book_hotel_flow
 from .explainability import ExplainPacket
 from .explainability import merge_explain
+from .conversation.manager import ConversationManager
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -38,6 +41,7 @@ from .runtime.tools.router import ToolRouter
 from .runtime.tools.providers.a2a_provider import A2AToolProvider
 from .runtime.tools.providers.local_provider import LocalToolProvider
 from .core_contract import AgentResult, EvidenceItem, EvidenceSource, SafetyFlag, SafetySeverity
+from .llm.factory import build_llm_client
 # MCP optional
 # from .runtime.tools.providers.mcp_provider import MCPToolProvider
 
@@ -130,6 +134,7 @@ EXPLICIT_HOTEL = ["book hotel", "hotel booking", "reserve hotel", "find hotels",
 EXPLICIT_VISA  = ["visa", "eta", "entry requirements"]
 EXPLICIT_WEATHER = ["weather", "rain", "temperature", "forecast"]
 EXPLICIT_TRANSPORT = ["how to go", "bus", "train", "taxi", "transport", "route"]
+_SCHEDULE_DATE = os.getenv("RAILWAY_SCHEDULE_DATE", "2026-01-09")
 
 WRITE_INTENTS = {"booking_create", "booking_confirm", "cancel_booking", "modify_booking"}
 
@@ -648,7 +653,9 @@ class OrchestratorService:
         self.intent_parser = intent_parser
         TRACE_DSN = os.getenv("ORCH_DB_DSN", "").strip()
         self.trace_pg = PostgresTraceStore(TRACE_DSN) if TRACE_DSN else None
-        self.response_formatter = ResponseFormatter()
+        llm_client = build_llm_client()
+        self.response_formatter = ResponseFormatter(llm_client=llm_client)
+        self.conversation_manager = ConversationManager()
         self.task_graph_builder = task_graph_builder
         # self.agentic_loop = AgenticLoop()
         # self.agentic_loop.set_nli(self.nli) 
@@ -681,11 +688,25 @@ class OrchestratorService:
 
         # ✅ 1) capability handlers
         self.handlers: Dict[str, IntentHandler] = {
-            "info_transport": IntentHandler(
-                endpoint="/railway/schedules/orchestrator/call/transport",      # ✅ your KG endpoint here
+           "info_transport": IntentHandler(
+                endpoint="/railway/schedules/orchestrator/call/transport",
                 mapper=map_transport_request,
-                response_model=None,                # or TransportInfoResponse later
-                timeout=20,
+                response_model=None,
+                timeout=60,
+                result_field="transport_result",
+            ),
+            "info_transport_bus": IntentHandler(
+                endpoint="/bus/schedules/orchestrator/call/bus-schedules",
+                mapper=map_transport_request,
+                response_model=None,
+                timeout=60,
+                result_field="transport_result",
+            ),
+            "info_transport_train": IntentHandler(
+                endpoint="/railway/schedules/orchestrator/call/transport",
+                mapper=map_transport_request,
+                response_model=None,
+                timeout=60,
                 result_field="transport_result",
             ),
             "recommend_restaurants": IntentHandler(
@@ -784,7 +805,7 @@ class OrchestratorService:
                     agent_id="recommender",
                     base_url=RECOMMENDER_BASE_URL,
                     protocols=["a2a"],  # later: ["a2a", "mcp", "blackboard"]
-                    capabilities=[
+                     capabilities=[
                         "forecast_weather",
                         "crowd_forecast",
                         "forecast_price",
@@ -801,7 +822,7 @@ class OrchestratorService:
                     agent_id="visa_kg",
                     base_url=VISA_KG_BASE_URL,
                     protocols=["a2a"],
-                    capabilities=["info_visa_policy", "info_accommodation", "info_transport", "info_attraction","recommend_restaurants"],
+                    capabilities=["info_visa_policy", "info_accommodation", "info_attraction","recommend_restaurants" "info_transport", "info_transport_bus", "info_transport_train",],
 
 
                     sla=SLA(p95_ms=1500, success_rate=0.98),
@@ -891,6 +912,8 @@ class OrchestratorService:
                 "info_attraction":         "a2a",
                 "info_accommodation":      "a2a",
                 "info_transport":          "a2a",
+                "info_transport_bus": "a2a",
+                "info_transport_train": "a2a",
                 "plan_itinerary":          "a2a",
                 "modify_itinerary":        "a2a",
                 "info_visa_policy":        "a2a",
@@ -1345,6 +1368,17 @@ class OrchestratorService:
             cleaned.append(d)
 
         return {"session_id": session_id, "events": cleaned}
+    def _detect_transport_mode(self, text: str) -> str:
+        t = (text or "").lower()
+
+        has_train = any(w in t for w in ["train", "trains", "railway", "rail"])
+        has_bus = any(w in t for w in ["bus", "buses", "coach"])
+
+        if has_bus and not has_train:
+            return "bus"
+        if has_train and not has_bus:
+            return "train"
+        return "both"
     def _execute_intent(self, intent_name, parsed_intent, req, db_prefs, session_state=None, request_trace_id: str | None = None) -> Any:
 
 
@@ -1591,6 +1625,42 @@ class OrchestratorService:
 
         print(f"=== {contract_obj.__class__.__name__} payload ({intent_name}) ===")
         print(payload)
+        tool_name = intent_name
+
+        if intent_name == "info_transport":
+            mode = self._detect_transport_mode(req.input_text or "")
+
+            payload["origin"] = payload.get("origin") or payload.get("origin_city") or ""
+            payload["destination"] = payload.get("destination") or payload.get("city") or ""
+            payload["user_id"] = req.user_id or ""
+            payload["session_id"] = req.session_id or "no_session"
+            payload["query"] = req.input_text or ""
+
+            if mode == "bus":
+                tool_name = "info_transport_bus"
+                handler = self.handlers[tool_name]
+                payload["schedule_date"] = payload.get("schedule_date") or payload.get("start_date")
+                payload["_transport_mode"] = "bus"
+                print(f"[transport] BUS only → {payload['origin']} -> {payload['destination']}")
+
+            elif mode == "train":
+                tool_name = "info_transport_train"
+                handler = self.handlers[tool_name]
+                payload["_transport_mode"] = "train"
+                print(f"[transport] TRAIN only → {payload['origin']} -> {payload['destination']}")
+
+            else:
+                print(f"[transport] BOTH → {payload['origin']} -> {payload['destination']}")
+                return self._execute_transport_both(
+                    parsed_intent=parsed_intent,
+                    req=req,
+                    db_prefs=db_prefs,
+                    session_state=session_state,
+                    request_trace_id=request_trace_id,
+                    payload=payload,
+                )
+
+
 
         # 6) Invoke downstream agent/service
         is_write = intent_name in WRITE_INTENTS
@@ -1605,11 +1675,11 @@ class OrchestratorService:
             )
 
         call = ToolCall(
-            name=intent_name,
+            name=tool_name,
             args=payload,
             timeout_ms=handler.timeout * 1000,
-            retries=1 if not is_write else 0,   # ✅ safer: no auto retry for writes
-            trace_id=request_trace_id or str(uuid4()),  # ✅ stable per request
+            retries=1 if not is_write else 0,
+            trace_id=request_trace_id or str(uuid4()),
             session_id=req.session_id or "no_session",
             user_id=req.user_id,
             is_write=is_write,
@@ -1619,10 +1689,9 @@ class OrchestratorService:
         benchmark_transport = getattr(req, "benchmark_transport", None)
         print(f"[BENCHMARK DEBUG] benchmark_transport={benchmark_transport!r}, call.name before={intent_name!r}")
         if benchmark_transport == "mcp_streamable_http":
-            call = call.model_copy(update={"name": f"{intent_name}_mcp"})
-            print(f"[BENCHMARK DEBUG] call.name after={call.name!r}")
+            call = call.model_copy(update={"name": f"{tool_name}_mcp"})
         elif benchmark_transport == "mcp_stdio":
-            call = call.model_copy(update={"name": f"{intent_name}_stdio"})
+            call = call.model_copy(update={"name": f"{tool_name}_stdio"})
         print(
             "[phase4] trace_id=", call.trace_id,
             "intent=", call.name,
@@ -1633,6 +1702,10 @@ class OrchestratorService:
 
         # return parsed_obj
         tool_res = self.tool_router.call(call)
+        if intent_name == "info_transport":
+            print("[transport][debug] endpoint =", handler.endpoint)
+            print("[transport][debug] mode =", payload.get("_transport_mode"))
+            print("[transport][debug] raw tool response =", tool_res.raw if hasattr(tool_res, "raw") else tool_res.data)
 
         # ✅ Fix transport label for MCP benchmark variants
         transport_type = tool_res.transport_type or "a2a_http"
@@ -1745,7 +1818,25 @@ class OrchestratorService:
             )
 
         # --- Downstream explicitly ok:false -> AgentResult ---
+        # --- Downstream explicitly ok:false -> AgentResult ---
         if isinstance(raw, dict) and raw.get("ok") is False:
+            # ✅ For transport: keep data even on ok:false so formatter shows fallback
+            if intent_name == "info_transport":
+                return AgentResult(
+                    ok=True,
+                    answer="",
+                    data=raw,
+                    evidence=tool_evidence,
+                    missing_fields=[],
+                    next_actions=[],
+                    confidence=0.5,
+                    safety_flags=[],
+                    meta={
+                        "tool_name": call.name,
+                        "provider": tool_res.provider,
+                        "endpoint": handler.endpoint,
+                    },
+                )
             return AgentResult(
                 ok=False,
                 answer="",
@@ -1829,19 +1920,164 @@ class OrchestratorService:
                 "explainability": explain.__dict__,
             },
         )
+    def _execute_transport_both(
+        self,
+        *,
+        parsed_intent,
+        req,
+        db_prefs,
+        session_state,
+        request_trace_id,
+        payload: dict,
+    ):
+        origin = payload.get("origin") or payload.get("origin_city") or ""
+        destination = payload.get("destination") or payload.get("city") or ""
+        country = payload.get("country") or "Sri Lanka"
 
+        train_payload = {
+            "origin": origin,
+            "destination": destination,
+            "city": payload.get("city"),
+            "country": country,
+            "time_of_day": payload.get("time_of_day"),
+            "days": payload.get("days"),
+            "budget_level": payload.get("budget_level"),
+            "preferred_transport": payload.get("preferred_transport") or [],
+            "tags": payload.get("tags") or [],
+            "user_id": req.user_id or "",
+            "session_id": req.session_id or "no_session",
+            "query": req.input_text or "",
+            "_transport_mode": "train",
+        }
+
+        bus_payload = {
+            "origin": origin,
+            "destination": destination,
+            "city": payload.get("city"),
+            "country": country,
+            "schedule_date": payload.get("schedule_date") or payload.get("start_date"),
+            "budget_level": payload.get("budget_level"),
+            "tags": payload.get("tags") or [],
+            "user_id": req.user_id or "",
+            "session_id": req.session_id or "no_session",
+            "query": req.input_text or "",
+            "_transport_mode": "bus",
+        }
+
+        train_agent = self.registry.pick(capability="info_transport_train", protocol="a2a")
+        bus_agent = self.registry.pick(capability="info_transport_bus", protocol="a2a")
+
+        if not train_agent or not bus_agent:
+            return AgentResult(
+                ok=False,
+                answer="",
+                data=None,
+                evidence=[],
+                missing_fields=[],
+                next_actions=[],
+                confidence=0.0,
+                safety_flags=[
+                    SafetyFlag(
+                        code="TOOL_CALL_FAILED",
+                        severity=SafetySeverity.medium,
+                        message="Transport agents not found for both-mode routing",
+                        meta={
+                            "train_found": bool(train_agent),
+                            "bus_found": bool(bus_agent),
+                        },
+                    )
+                ],
+                meta={"tool_name": "info_transport_both"},
+            )
+
+        train_raw = self.a2a.invoke(
+            base_url=train_agent.base_url,
+            endpoint="/railway/schedules/orchestrator/call/transport",
+            payload=train_payload,
+            timeout=60,
+        )
+
+        bus_raw = self.a2a.invoke(
+            base_url=bus_agent.base_url,
+            endpoint="/bus/schedules/orchestrator/call/bus-schedules",
+            payload=bus_payload,
+            timeout=60,
+        )
+
+        return AgentResult(
+            ok=True,
+            answer="",
+            data={
+                "_transport_mode": "both",
+                "origin": origin,
+                "destination": destination,
+                "country": country,
+                "train": train_raw,
+                "bus": bus_raw,
+            },
+            evidence=[],
+            missing_fields=[],
+            next_actions=[],
+            confidence=0.9,
+            safety_flags=[],
+            meta={"tool_name": "info_transport_both"},
+        )
+    # def _run_intent_parser(self, req: OrchestrateRequest) -> ParsedIntent:
+    #     result = self.intent_parser.parse(req.input_text)
+
+    #     primary = result.get("primary_intent", "generic_fact_query")
+    #     secondary = result.get("secondary_intents", [])
+    #     scores = result.get("scores", {})
+    #     raw_text = result.get("raw_text", req.input_text)
+    #     entities = result.get("entities", {})
+    #     preference_overrides = result.get("preference_overrides", {}) or {}
+    #     domain_category = result.get("domain_category")
+
+    #     # ✅ normalize amenities safely (NO extra keys!)
+    #     if isinstance(preference_overrides, dict):
+    #         raw_list = preference_overrides.get("must_have_amenities") or []
+    #         normalized, unknown = normalize_amenities_with_unknown(raw_list)
+    #         preference_overrides["must_have_amenities"] = normalized
+    #     else:
+    #         unknown = []
+
+    #     confidence = float(scores.get(primary, 0.0))
+
+    #     parsed = ParsedIntent(
+    #         domain_category=domain_category,
+    #         intent=primary,
+    #         confidence=confidence,
+    #         secondary_intents=secondary,
+    #         scores=scores,
+    #         entities=entities,
+    #         raw_text=raw_text,
+    #         preference_overrides=preference_overrides,
+    #     )
+
+    #     # ✅ return parsed AND unknown via attribute on self (simple) OR store on req/session elsewhere
+    #     # easiest: attach to request-scope via a private attribute
+    #     setattr(parsed, "_unknown_amenities", unknown)
     def _run_intent_parser(self, req: OrchestrateRequest) -> ParsedIntent:
         result = self.intent_parser.parse(req.input_text)
 
         primary = result.get("primary_intent", "generic_fact_query")
         secondary = result.get("secondary_intents", [])
-        scores = result.get("scores", {})
+        scores = result.get("scores", {}) or {}
         raw_text = result.get("raw_text", req.input_text)
         entities = result.get("entities", {})
         preference_overrides = result.get("preference_overrides", {}) or {}
         domain_category = result.get("domain_category")
 
-        # ✅ normalize amenities safely (NO extra keys!)
+        if scores:
+            best_intent = max(scores, key=scores.get)
+            best_score = float(scores.get(best_intent, 0.0))
+            primary_score = float(scores.get(primary, 0.0))
+
+            if best_score > primary_score:
+                print(f"[intent-fix] overriding parser primary '{primary}' -> '{best_intent}' "
+                    f"(best_score={best_score:.4f}, primary_score={primary_score:.4f})")
+                primary = best_intent
+
         if isinstance(preference_overrides, dict):
             raw_list = preference_overrides.get("must_have_amenities") or []
             normalized, unknown = normalize_amenities_with_unknown(raw_list)
@@ -1862,12 +2098,182 @@ class OrchestratorService:
             preference_overrides=preference_overrides,
         )
 
-        # ✅ return parsed AND unknown via attribute on self (simple) OR store on req/session elsewhere
-        # easiest: attach to request-scope via a private attribute
         setattr(parsed, "_unknown_amenities", unknown)
-
         return parsed
 
+        
+    def _llm_routing_fallback(self, parsed_intent: ParsedIntent, input_text: str) -> ParsedIntent:
+        """
+        Use Groq to fix routing when DeBERTa gets it wrong.
+        Triggers when:
+        - confidence < 0.85, OR
+        - primary intent has no handler, OR
+        - secondary intents look wrong
+        """
+        import httpx
+
+        primary = parsed_intent.intent or ""
+        conf = float(parsed_intent.confidence or 0.0)
+
+        # Only trigger if conf is low OR primary has no handler
+        # Also trigger if query looks multi-intent but secondaries are all non-routable
+        _routable_secondaries = [
+            s for s in (parsed_intent.secondary_intents or [])
+            if s in self.handlers
+        ]
+        _has_eat_signal = any(w in input_text.lower() for w in [
+            "eat", "food", "restaurant", "where to eat", "dine", "dining", "hungry"
+        ])
+        _has_visit_signal = any(w in input_text.lower() for w in [
+            "visit", "historical", "sites", "places", "attractions", "what to do", "things to do"
+        ])
+        _needs_secondary_fix = (
+            len(_routable_secondaries) == 0
+            and (_has_eat_signal or _has_visit_signal)
+            and primary in self.handlers  # primary is fine, just missing secondary
+        )
+
+        # ✅ Pre-check: vague travel intent → recommend_pois (never transport)
+        _vague_travel = any(w in (input_text or "").lower() for w in [
+            "i want to travel", "suggest something", "help me plan",
+            "where should i go", "suggest a place", "i want to visit",
+            "where to go", "what to do in sri lanka",
+        ])
+        if _vague_travel:
+            print(f"[llm-routing] vague travel detected — routing to recommend_pois")
+            ents = (
+                parsed_intent.entities.model_dump(exclude_none=False)
+                if hasattr(parsed_intent.entities, "model_dump")
+                else dict(parsed_intent.entities or {})
+            )
+            if not ents.get("city"):
+                ents["city"] = "Colombo"
+                ents["country"] = "Sri Lanka"
+            return parsed_intent.model_copy(update={
+                "intent": "recommend_pois",
+                "confidence": 0.85,
+                "secondary_intents": [],
+                "scores": {**dict(parsed_intent.scores or {}), "recommend_pois": 0.85},
+                "entities": Entities(**ents),
+            })
+        # ✅ Never override when classifier is confident about smalltalk or out_of_scope
+        _out_of_scope_score = float((parsed_intent.scores or {}).get("out_of_scope", 0.0))
+        _smalltalk_score = float((parsed_intent.scores or {}).get("smalltalk", 0.0))
+        if _out_of_scope_score > 0.5 or _smalltalk_score > 0.5:
+            print(f"[llm-routing] smalltalk={_smalltalk_score:.2f} out_of_scope={_out_of_scope_score:.2f} — not overriding")
+            return parsed_intent
+
+        should_fallback = (conf < 0.85) or (primary not in self.handlers and primary not in {
+            "parse_intent", "extract_entities", "format_response",
+            "validate_required_fields", "ask_followup"
+        }) or _needs_secondary_fix
+
+        if not should_fallback:
+            return parsed_intent
+
+        GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+        if not GROQ_API_KEY:
+            return parsed_intent
+
+        VALID_INTENTS = list(self.handlers.keys())
+
+        system_prompt = f"""You are a travel assistant intent router for Sri Lanka.
+    Given a user message, return a JSON object with:
+    - "intent": the single best intent from this list: {VALID_INTENTS}
+    - "secondary_intents": list of up to 2 additional intents from the same list (empty list if none)
+    - "city": city name mentioned or null
+    - "country": country mentioned, default "Sri Lanka"
+
+    Rules:
+    - "what hotels" / "find hotels" / "hotels available" → info_accommodation
+    - "weather" / "rain" / "forecast" → forecast_weather  
+    - "historical sites" / "temples" / "attractions" / "places to visit" → info_attraction
+    - "restaurants" / "where to eat" / "food" → recommend_restaurants
+    - "plan a trip" / "itinerary" → plan_itinerary
+    - "places I can visit" / "what to do" / "POIs" → recommend_pois
+    - If message has TWO clear requests (weather + places), put both in intent + secondary_intents
+    - ONLY return valid JSON, no explanation."""
+
+        user_prompt = f'User message: "{input_text}"'
+
+        try:
+            resp = httpx.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "llama-3.1-8b-instant",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.0,
+                    "max_tokens": 200,
+                },
+                timeout=8.0,
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"].strip()
+
+            # Strip markdown if present
+            if content.startswith("```"):
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            content = content.strip()
+
+            llm_out = json.loads(content)
+
+            new_intent = (llm_out.get("intent") or "").strip()
+            new_secondary = [s for s in (llm_out.get("secondary_intents") or [])
+                            if s in self.handlers and s != new_intent]
+
+            if new_intent not in self.handlers:
+                print(f"[llm-routing] LLM returned unknown intent={new_intent}, keeping DeBERTa result")
+                return parsed_intent
+
+            # If out_of_scope scored high, don't override it
+            _out_of_scope_score = float((parsed_intent.scores or {}).get("out_of_scope", 0.0))
+            _smalltalk_score = float((parsed_intent.scores or {}).get("smalltalk", 0.0))
+            if _out_of_scope_score > 0.5:
+                print(f"[llm-routing] out_of_scope={_out_of_scope_score:.2f} — not overriding")
+                return parsed_intent
+            if _smalltalk_score > 0.5:
+                print(f"[llm-routing] smalltalk={_smalltalk_score:.2f} — not overriding")
+                return parsed_intent
+
+            print(f"[llm-routing] OVERRIDE: {primary}({conf:.2f}) → {new_intent} | secondary={new_secondary}")
+
+            # Patch entities if LLM extracted city
+            ents = (
+                parsed_intent.entities.model_dump(exclude_none=False)
+                if hasattr(parsed_intent.entities, "model_dump")
+                else dict(parsed_intent.entities or {})
+            )
+            if llm_out.get("city") and not ents.get("city"):
+                ents["city"] = llm_out["city"]
+            if llm_out.get("country") and not ents.get("country"):
+                ents["country"] = llm_out["country"]
+
+            # Build updated scores
+            scores = dict(parsed_intent.scores or {})
+            scores[new_intent] = max(scores.get(new_intent, 0.0), 0.90)
+            for s in new_secondary:
+                scores[s] = max(scores.get(s, 0.0), 0.35)
+
+            return parsed_intent.model_copy(update={
+                "intent": new_intent,
+                "confidence": 0.90,
+                "secondary_intents": new_secondary,
+                "scores": scores,
+                "entities": Entities(**ents),
+            })
+
+        except Exception as e:
+            print(f"[llm-routing] fallback failed: {e} — keeping DeBERTa result")
+            return parsed_intent
     def orchestrate(self, req: OrchestrateRequest) -> OrchestrateResponse:
         user_id = (req.user_id or "").strip()
         session_id = (req.session_id or "").strip() or "no_session"
@@ -1985,6 +2391,7 @@ class OrchestratorService:
                     session_state.slots.pop("pending_domain", None)
     
         parsed_intent: ParsedIntent = self._run_intent_parser(req)
+        parsed_intent = self._llm_routing_fallback(parsed_intent, req.input_text)  # ← ADD THIS LINE
         # ✅ INTENT LOCK: if we are waiting for follow-up fields, keep same intent/domain
         # if session_state and session_state.slots.get("pending_fields"):
         #     locked_intent = session_state.slots.get("pending_intent")
@@ -2200,6 +2607,22 @@ class OrchestratorService:
         parsed_intent = apply_domain_overrides(parsed_intent)
         # ✅ if edit context was passed (e.g. from booking edit sheet), merge into entities
         # ✅ if edit context was passed (e.g. from booking edit sheet), force book_hotel + merge entities
+        parsed_intent = self.conversation_manager.repair_intent_with_context(
+            parsed_intent=parsed_intent,
+            session_state=session_state,
+            user_text=req.input_text or "",
+        )
+
+        parsed_intent = self.conversation_manager.merge_session_slots_into_entities(
+            parsed_intent=parsed_intent,
+            session_state=session_state,
+        )
+        
+
+        self.conversation_manager.update_session_from_turn(
+            parsed_intent=parsed_intent,
+            session_state=session_state,
+)
         if request_context:
             parsed_intent = parsed_intent.model_copy(update={
                 "intent": "book_hotel",
@@ -2274,6 +2697,47 @@ class OrchestratorService:
                 parsed_intent = parsed_intent.model_copy(update={"entities": Entities(**ents)})
 
         tasks: List[TaskSummary] = self.task_graph_builder.build(parsed_intent)
+
+        # ── SECONDARY INTENT INJECTION ─────────────────────────────────────
+        # task_graph_builder only sees secondary_intents list from DeBERTa.
+        # But good secondaries can score high WITHOUT being in that list.
+        # Scan ALL scores here and inject anything we missed.
+        _sec_scores  = parsed_intent.scores or {}
+        _sec_primary = (parsed_intent.intent or "").strip()
+        _active_types = {t.type for t in tasks}
+
+        # Hard block: never run these as secondaries
+        _sec_hard_block = DISALLOW_SECONDARY | {"book_hotel"}
+
+        _sec_candidates: List[tuple] = []
+        for _sint, _sscore in _sec_scores.items():
+            _sscore = float(_sscore)
+            if _sint == _sec_primary:          continue  # already primary
+            if _sint in _sec_hard_block:       continue  # blocked
+            if _sint not in self.handlers:     continue  # not routable
+            if _sint in _active_types:         continue  # already in graph
+            if _sscore < 0.12:                 continue  # noise floor
+
+            _sec_candidates.append((_sint, _sscore))
+
+        # sort by score, cap at 2
+        _sec_candidates.sort(key=lambda x: -x[1])
+        _sec_candidates = _sec_candidates[:2]
+
+        _sec_next_num = len(tasks) + 1
+        _sec_injected: List[tuple] = []
+        for _sint, _sscore in _sec_candidates:
+            _new_tid = f"T{_sec_next_num}"
+            _sec_next_num += 1
+            tasks.append(TaskSummary(
+                id=_new_tid,
+                type=_sint,
+                status="pending",
+                assigned_agent="OrchestratorAgent",
+            ))
+            _sec_injected.append((_new_tid, _sint, _sscore))
+            print(f"[secondary-inject] {_new_tid} type={_sint} score={_sscore:.2f}")
+        # ──────────────────────────────────────────────────────────────────
         if self.trace_pg:
             self.trace_pg.update_run(
                 trace_id=request_trace_id,
@@ -2312,6 +2776,19 @@ class OrchestratorService:
         errors: List[AgentCallError] = []
 
         exec_tasks: List[ExecTask] = build_exec_tasks(self.task_graph_builder, parsed_intent)
+
+        # Wire injected secondaries into exec graph
+        _existing_exec_types = {et.type for et in exec_tasks}
+        for _new_tid, _sint, _sscore in _sec_injected:
+            if _sint in _existing_exec_types:
+                continue
+            exec_tasks.append(ExecTask(
+                id=_new_tid,
+                type=_sint,
+                assigned_agent="OrchestratorAgent",
+                depends_on=[],
+            ))
+            print(f"[secondary-exec] wired {_new_tid} type={_sint}")
 
         handlers: Dict[str, HandlerFn] = {}
 
@@ -2371,6 +2848,37 @@ class OrchestratorService:
                         meta={"task": "format_response"},
                     )
                 fn = _format
+            elif ttype == "out_of_scope":
+                async def _out_of_scope(task, ctx, results):
+                    return AgentResult(
+                        ok=True,
+                        answer="I'm GraphCeylon, a Sri Lanka travel assistant. I can help with trip planning, weather forecasts, hotels, attractions and restaurants across Sri Lanka. What would you like to explore?",
+                        data={"out_of_scope": True},
+                        evidence=[],
+                        missing_fields=[],
+                        next_actions=[],
+                        confidence=1.0,
+                        safety_flags=[],
+                        meta={"task": "out_of_scope"},
+                    )
+                fn = _out_of_scope
+
+            elif ttype == "smalltalk":
+                async def _smalltalk(task, ctx, results):
+                    return AgentResult(
+                        ok=True,
+                        answer="I'm GraphCeylon, your Sri Lanka travel assistant! I can help you plan trips, check weather, find hotels, discover attractions and restaurants. What would you like to know?",
+                        data={"smalltalk": True},
+                        evidence=[],
+                        missing_fields=[],
+                        next_actions=[],
+                        confidence=1.0,
+                        safety_flags=[],
+                        meta={"task": "smalltalk"},
+                    )
+                fn = _smalltalk
+
+            
             elif ttype == "forecast_weather":
                 async def _weather(task, ctx, results):
                     # Try to inherit from plan_itinerary output if available
@@ -2520,25 +3028,43 @@ class OrchestratorService:
                         # Build a single friendly follow-up question
                         parts = []
                         if missing:
-                            parts = []
-                            if "start_date" in missing:
-                                parts.append("When are you planning to travel?")
-                            if "days" in missing:                                          # ✅ NEW
-                                parts.append("How many days are you planning to stay?")
-                            if "destination_city" in missing:
-                                parts.append("Which city in Sri Lanka would you like to visit?")
-                            if "arrival" in missing or "departure" in missing:
-                                parts.append("What are your hotel dates? (check-in + check-out)")
-                                followup_options += ["2026-06-03 to 2026-06-06", "This weekend", "Next week"]
+                            primary_missing = missing[0]
 
-                            followup_question = "\n".join(f"- {p}" for p in parts)
+                            question_map = {
+                                "travel_style": "What kind of trip do you want in Sri Lanka?",
+                                "destination_city": "Do you already have a place in mind, or should I suggest a route?",
+                                "start_date": "When are you planning to travel?",
+                                "days": "How many days are you planning for?",
+                                "origin_city": "Where will you be starting from?",
+                                "arrival": "What is your check-in date?",
+                                "departure": "What is your check-out date?",
+                                "nationality_country": "What passport or nationality should I check this for?",
+                            }
 
-                            if "days" in missing:                                          # ✅ NEW
-                                followup_options += ["1 day", "2 days", "3 days", "5 days"]
-                            if "destination_city" in missing:
-                                followup_options += ["Kandy", "Ella", "Nuwara Eliya", "Sigiriya"]
-                            if "start_date" in missing:
-                                followup_options += ["This weekend", "Next week", "April 2026"]
+                            options_map = {
+                                "travel_style": ["Beach", "Culture", "Wildlife", "Mixed"],
+                                "destination_city": ["Suggest a route", "Kandy", "Ella", "Galle"],
+                                "start_date": ["This weekend", "Next week", "Next month"],
+                                "days": ["2 days", "3 days", "5 days", "7 days"],
+                                "origin_city": ["Colombo", "Kandy", "Ella", "Galle"],
+                                "arrival": ["Tomorrow", "This weekend", "Next week"],
+                                "departure": ["2 nights later", "3 nights later", "Next week"],
+                                "nationality_country": ["Indian passport", "UK passport", "US passport", "Other"],
+                            }
+
+                            followup_question = question_map.get(primary_missing, "I need one more detail to continue.")
+                            followup_options = options_map.get(primary_missing, [])
+
+                            results["missing_fields"] = [primary_missing]
+                            results["followup"] = {
+                                "question": followup_question,
+                                "options": followup_options,
+                            }
+
+                            if session_state:
+                                session_state.slots["pending_fields"] = [primary_missing]
+                                session_state.slots["pending_intent"] = pi.intent
+                                session_state.slots["pending_domain"] = pi.domain_category
 
                     # write into results so other tasks can see it
                     results["missing_fields"] = missing
@@ -2860,6 +3386,11 @@ class OrchestratorService:
 
             elif ttype == "recommend_restaurants":
                 results["restaurant_result"] = payload
+            elif ttype == "out_of_scope":
+                results["final_message_override"] = payload.get("answer") if isinstance(payload, dict) else str(payload)
+
+            elif ttype == "smalltalk":
+                results["final_message_override"] = payload.get("answer") if isinstance(payload, dict) else str(payload)
             elif ttype == "book_hotel":
                 results["booking_result"] = payload
 
@@ -2952,13 +3483,44 @@ class OrchestratorService:
                 print(f"[phase3] trigger failed: {e}")
         
         results["explainability"] = merge_explain(explain_packets)
+        # Override final message for out_of_scope and smalltalk
+        if results.get("final_message_override"):
+            formatted = {
+                "text": results["final_message_override"],
+                "followups": [
+                    "Weather in Colombo",
+                    "Hotels in Kandy",
+                    "Plan a trip to Ella",
+                    "Places to visit in Galle",
+                ],
+                "explainability_ui": "",
+                "sources": None,
+            }
+        else:
+            formatted = self.response_formatter.format(
+                user_text=req.input_text,
+                parsed_intent=parsed_intent.model_dump(mode="json"),
+                results=results,
+                tasks=[t.model_dump(mode="json") for t in tasks],
+            )
 
-        formatted = self.response_formatter.format(
-            user_text=req.input_text,
-            parsed_intent=parsed_intent.model_dump(mode="json"),
-            results=results,
-            tasks=[t.model_dump(mode="json") for t in tasks],
-        )
+            # ✅ Unwrap if final_message is still a JSON string
+            final_text = formatted.get("text", "")
+            if isinstance(final_text, str) and final_text.strip().startswith("{"):
+                try:
+                    inner = json.loads(final_text)
+                    if isinstance(inner, dict) and "text" in inner:
+                        formatted["text"] = inner["text"]
+                        if not formatted.get("followups") and inner.get("followups"):
+                            formatted["followups"] = inner["followups"]
+                except Exception:
+                    pass
+        # formatted = self.response_formatter.format(
+        #     user_text=req.input_text,
+        #     parsed_intent=parsed_intent.model_dump(mode="json"),
+        #     results=results,
+        #     tasks=[t.model_dump(mode="json") for t in tasks],
+        # )
         # -------------------------
         # ✅ AGENTIC CLOSED LOOP: observe -> verify -> repair -> decide
         # -------------------------
@@ -3040,6 +3602,69 @@ class OrchestratorService:
         it_dict = it.model_dump(mode="json") if hasattr(it, "model_dump") else dict(it)
         print("outbound_stops count:", len(it_dict.get("outbound_stops") or []))
         print("return_stops count:", len(it_dict.get("return_stops") or []))
+               # =========================================================
+        # FINAL RESPONSE ASSEMBLY (schema-safe)
+        # =========================================================
+
+        parsed_intent_dict = (
+            parsed_intent.model_dump(mode="json")
+            if hasattr(parsed_intent, "model_dump")
+            else dict(parsed_intent or {})
+        )
+
+        if results.get("missing_fields") and not results.get("followup"):
+            mf = results.get("missing_fields") or []
+            if mf:
+                first_missing = mf[0]
+                question_map = {
+                    "travel_style": "What kind of trip do you want in Sri Lanka?",
+                    "destination_city": "Do you already have a place in mind, or should I suggest a route?",
+                    "start_date": "When are you planning to travel?",
+                    "days": "How many days are you planning for?",
+                    "origin_city": "Where will you be starting from?",
+                    "arrival": "What is your check-in date?",
+                    "departure": "What is your check-out date?",
+                    "nationality_country": "What passport or nationality should I check this for?",
+                }
+                options_map = {
+                    "travel_style": ["Beach", "Culture", "Wildlife", "Mixed"],
+                    "destination_city": ["Suggest a route", "Kandy", "Ella", "Galle"],
+                    "start_date": ["This weekend", "Next week", "Next month"],
+                    "days": ["2 days", "3 days", "5 days", "7 days"],
+                    "origin_city": ["Colombo", "Kandy", "Ella", "Galle"],
+                    "arrival": ["Tomorrow", "This weekend", "Next week"],
+                    "departure": ["2 nights later", "3 nights later", "Next week"],
+                    "nationality_country": ["Indian passport", "UK passport", "US passport", "Other"],
+                }
+                results["followup"] = {
+                    "question": question_map.get(first_missing, "I need one more detail to continue."),
+                    "options": options_map.get(first_missing, []),
+                }
+
+        formatted = self.response_formatter.format(
+            user_text=req.input_text or "",
+            parsed_intent=parsed_intent_dict,
+            results=results,
+            tasks=[t.model_dump(mode="json") if hasattr(t, "model_dump") else dict(t) for t in tasks],
+        )
+
+        final_text = (formatted.get("text") or "").strip()
+        final_followups = formatted.get("followups") or []
+
+        if not final_text:
+            final_text = (
+                "I can help with Sri Lanka travel planning, hotels, transport, weather, "
+                "attractions, restaurants, and visa guidance. What would you like to do next?"
+            )
+
+        if not final_followups:
+            final_followups = [
+                "Plan a trip",
+                "Find hotels",
+                "Check weather",
+                "Visa info",
+            ]
+
         return OrchestrateResponse(
             status="partial" if errors else "ok",
             message="Orchestration executed.",
@@ -3053,14 +3678,13 @@ class OrchestratorService:
             modify_result=results["modify_result"],
             visa_result=results["visa_result"],
             accommodation_result=results["accommodation_result"],
-            restaurant_result = results["restaurant_result"],
-            # "restaurant_result": None,
-            pois_result = results["pois_result"],
+            restaurant_result=results["restaurant_result"],
+            pois_result=results["pois_result"],
             transport_result=results["transport_result"],
             booking_result=results["booking_result"],
             attraction_result=results["attraction_result"],
-            final_message=formatted.get("text"),
-            followups=formatted.get("followups"),
+            final_message=final_text,
+            followups=final_followups,
             trip_id=trip_id,
             errors=errors,
             trace=trace,
@@ -3069,3 +3693,32 @@ class OrchestratorService:
             explainability_ui=formatted.get("explainability_ui"),
             sources=formatted.get("sources"),
         )
+        # return OrchestrateResponse(
+        #     status="partial" if errors else "ok",
+        #     message="Orchestration executed.",
+        #     parsed_intent=parsed_intent,
+        #     tasks=tasks,
+        #     protocol_mode=self.protocol_mode,
+        #     weather_result=results["weather_result"],
+        #     crowd_result=results["crowd_result"],
+        #     price_result=results["price_result"],
+        #     itinerary_result=results["itinerary_result"],
+        #     modify_result=results["modify_result"],
+        #     visa_result=results["visa_result"],
+        #     accommodation_result=results["accommodation_result"],
+        #     restaurant_result = results["restaurant_result"],
+        #     # "restaurant_result": None,
+        #     pois_result = results["pois_result"],
+        #     transport_result=results["transport_result"],
+        #     booking_result=results["booking_result"],
+        #     attraction_result=results["attraction_result"],
+        #     final_message=formatted.get("text"),
+        #     followups=formatted.get("followups"),
+        #     trip_id=trip_id,
+        #     errors=errors,
+        #     trace=trace,
+        #     agentic_meta=results.get("agentic_meta"),
+        #     explainability=results.get("explainability"),
+        #     explainability_ui=formatted.get("explainability_ui"),
+        #     sources=formatted.get("sources"),
+        # )

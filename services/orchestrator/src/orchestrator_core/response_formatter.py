@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from asyncio import tasks
 from typing import Any, Dict, Optional, List
 import os
 import json
@@ -23,22 +24,25 @@ class ResponseFormatter:
       - Set FORMATTER_DEBUG=1 to print which path is used and Groq response snippets.
     """
 
-    def __init__(self) -> None:
-        self.provider = os.getenv("RESPONSE_LLM_PROVIDER", "template").lower().strip()
-        self.groq_key = os.getenv("GROQ_API_KEY", "").strip()
-        self.groq_model = os.getenv("RESPONSE_LLM_MODEL", "llama-3.1-8b-instant").strip()
+    # def __init__(self) -> None:
+    #     self.provider = os.getenv("RESPONSE_LLM_PROVIDER", "template").lower().strip()
+    #     self.groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    #     self.groq_model = os.getenv("RESPONSE_LLM_MODEL", "llama-3.1-8b-instant").strip()
 
-        # Debug flag
+    #     # Debug flag
+    #     self.debug = os.getenv("FORMATTER_DEBUG", "0").strip() == "1"
+
+    def __init__(self, llm_client=None) -> None:
+        self.llm_client = llm_client
+        self.provider = os.getenv("LLM_PROVIDER", "template").lower().strip()
         self.debug = os.getenv("FORMATTER_DEBUG", "0").strip() == "1"
 
-        # Which intents should use LLM formatting (if empty => all non-smalltalk)
         self.llm_intents = set(
             i.strip().lower()
             for i in os.getenv("RESPONSE_LLM_INTENTS", "").split(",")
             if i.strip()
         )
 
-        # smalltalk subtype detector (no training)
         self.smalltalk = SmalltalkSubtypeDetector(
             model_name=os.getenv("SMALLTALK_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
             threshold=float(os.getenv("SMALLTALK_THRESHOLD", "0.45")),
@@ -46,8 +50,7 @@ class ResponseFormatter:
 
         if self.debug:
             print("[ResponseFormatter:init] provider =", self.provider)
-            print("[ResponseFormatter:init] groq_key_set =", bool(self.groq_key))
-            print("[ResponseFormatter:init] groq_model =", self.groq_model)
+            print("[ResponseFormatter:init] llm_client_set =", self.llm_client is not None)
             print("[ResponseFormatter:init] llm_intents =", sorted(list(self.llm_intents)) if self.llm_intents else "(all non-smalltalk)")
     def _derive_activity_label(self, parsed_intent: Dict[str, Any]) -> str:
         ents = parsed_intent.get("entities") or {}
@@ -59,7 +62,7 @@ class ResponseFormatter:
             if isinstance(t, str) and t.strip():
                 return t.strip().lower()
         return "trip"
-    def _format_followup_with_groq(
+    def _format_followup_with_llm(
         self,
         *,
         user_text: str,
@@ -71,8 +74,8 @@ class ResponseFormatter:
             "You are a RESPONSE FORMATTER for a Sri Lanka travel assistant.\n"
             "You MUST NOT invent facts.\n"
             "You ONLY rewrite the follow-up question to sound natural.\n\n"
-            "You MAY adapt the trip type word using activity_label (e.g., outdoor/nature/culture),\n"
-            "but you MUST ask ONLY for the missing_fields provided.\n"
+            "You MAY adapt the trip type word using activity_label.\n"
+            "You MUST ask ONLY for the missing_fields provided.\n"
             "Do NOT add new questions beyond missing_fields.\n"
             "Do NOT add new options beyond the provided options list.\n\n"
             "OUTPUT FORMAT (strict): JSON with EXACT keys: text, followups.\n"
@@ -88,8 +91,6 @@ class ResponseFormatter:
             "user_text": user_text,
             "intent": (parsed_intent.get("intent") or ""),
             "missing_fields": missing_fields,
-
-            # NEW context:
             "activity_label": label,
             "tags": ents.get("tags") or [],
             "days": ents.get("days"),
@@ -100,35 +101,17 @@ class ResponseFormatter:
                 "adventure_level": prefs.get("adventure_level"),
                 "pace_preference": prefs.get("pace_preference"),
             },
-
-            # existing:
             "question": followup.get("question") or "",
             "options": followup.get("options") or [],
         }
 
-        prompt = f"{system}\nJSON:\n{json.dumps(payload, ensure_ascii=False)}\nReturn ONLY the JSON object."
-
         try:
-            resp = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.groq_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": self.groq_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.2,
-                },
-                timeout=15,
+            out = self.llm_client.chat_json(
+                system_prompt=system,
+                user_prompt=f"JSON:\n{json.dumps(payload, ensure_ascii=False)}\nReturn ONLY the JSON object."
             )
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"].strip()
-
-            out = json.loads(content)  # strict
             return {"text": out.get("text", ""), "followups": out.get("followups", [])}
         except Exception:
-            # fallback safely
             return {
                 "text": (followup.get("question") or "I need a bit more info to plan this.").strip(),
                 "followups": followup.get("options") or [],
@@ -157,14 +140,14 @@ class ResponseFormatter:
         missing_fields = (results or {}).get("missing_fields") or []
         if followup and missing_fields:
             # If Groq enabled, use it to rewrite/beautify the followup (NO hallucinations)
-            use_llm = (self.provider == "groq" and bool(self.groq_key))
+            use_llm = self.llm_client is not None
             if self.llm_intents:
                 # allow followup formatting when plan_itinerary is enabled
                 intent0 = (parsed_intent.get("intent") or "").strip().lower()
                 use_llm = use_llm and (intent0 in self.llm_intents)
 
             if use_llm:
-                out = self._format_followup_with_groq(
+                out = self._format_followup_with_llm(
                     user_text=user_text,
                     parsed_intent=parsed_intent,
                     followup=followup,
@@ -174,7 +157,7 @@ class ResponseFormatter:
                 section = "pois" if intent == "recommend_pois" else intent
                 out = self._append_why_to_text(out, results, section=section)
                 out = patch_agentic_text(out, results)
-                ui = self._format_explainability_ui_with_groq(results, effective_intent=intent)
+                ui = self._format_explainability_ui_with_llm(results, effective_intent=intent)
                 if not ui:
                     ui = self._build_explainability_ui(results, effective_intent=intent)
                 out["explainability_ui"] = ui
@@ -186,7 +169,7 @@ class ResponseFormatter:
             }
             out = self._sanitize_output(out)
             out = patch_agentic_text(out, results)
-            ui = self._format_explainability_ui_with_groq(results, effective_intent=intent)
+            ui = self._format_explainability_ui_with_llm(results, effective_intent=intent)
             if not ui:
                 ui = self._build_explainability_ui(results, effective_intent=intent)
             out["explainability_ui"] = ui
@@ -228,12 +211,15 @@ class ResponseFormatter:
                 "sources": sources,  # Flutter renders these as tappable links
             }
 
-        if not has_any_result and intent in {"out_of_scope", "generic_fact_query"}:
-            if self.provider == "groq" and self.groq_key:
-                return self._answer_general_with_groq(user_text, parsed_intent)
+        if not has_any_result:
+            # ALWAYS use LLM for smooth conversation
+            if self.llm_client is not None:
+                return self._answer_general_with_llm(user_text, parsed_intent)
+
+            # fallback only if LLM fails
             return {
-                "text": "I can help with Sri Lanka travel planning (places, routes, hotels, visa). What do you want to do?",
-                "followups": ["Plan an itinerary", "Recommend places", "Transport info", "Visa info"],
+                "text": "I can help you explore Sri Lanka, plan trips, find hotels, transport, and travel tips. What would you like to do?",
+                "followups": ["Plan a trip", "Find hotels", "Explore places", "Travel tips"],
             }
 
         if self.debug:
@@ -247,23 +233,23 @@ class ResponseFormatter:
             out = self._append_why_to_text(out, results, section=section)
 
             out = patch_agentic_text(out, results)
-            ui = self._format_explainability_ui_with_groq(results, effective_intent=intent)
+            ui = self._format_explainability_ui_with_llm(results, effective_intent=intent)
             if not ui:
                 ui = self._build_explainability_ui(results, effective_intent=intent)
             out["explainability_ui"] = ui
             return out
             # return patch_agentic_text(out, results)
 
-        use_llm = (self.provider == "groq" and bool(self.groq_key))
+        use_llm = self.llm_client is not None
         if self.llm_intents:
             use_llm = use_llm and (intent in self.llm_intents)
 
         if use_llm:
-            out = self._format_with_groq(user_text, parsed_intent, results, tasks, effective_intent=intent)
+            out = self._format_with_llm(user_text, parsed_intent, results, tasks, effective_intent=intent)
             out = self._sanitize_output(out)
             if out.get("text", "").strip():
                 out = patch_agentic_text(out, results)
-                ui = self._format_explainability_ui_with_groq(results, effective_intent=intent)
+                ui = self._format_explainability_ui_with_llm(results, effective_intent=intent)
                 if not ui:
                     ui = self._build_explainability_ui(results, effective_intent=intent)
                 out["explainability_ui"] = ui
@@ -272,7 +258,7 @@ class ResponseFormatter:
         out = self._format_with_templates(user_text, parsed_intent, results, tasks)
         out = self._sanitize_output(out)
         out = patch_agentic_text(out, results)
-        ui = self._format_explainability_ui_with_groq(results, effective_intent=intent)
+        ui = self._format_explainability_ui_with_llm(results, effective_intent=intent)
         if not ui:
             ui = self._build_explainability_ui(results, effective_intent=intent)
         out["explainability_ui"] = ui
@@ -308,45 +294,37 @@ class ResponseFormatter:
             present.append(k)
 
         return present
-    def _answer_general_with_groq(self, user_text: str, parsed_intent: Dict[str, Any]) -> Dict[str, Any]:
+    def _answer_general_with_llm(self, user_text, parsed_intent):
         system = (
-            "You are a helpful assistant.\n"
-            "Answer the user's question using general knowledge.\n"
-            "Keep it short and clear.\n"
-            "If the question is unclear, ask ONE short follow-up.\n"
-            "OUTPUT FORMAT (strict): Return valid JSON with EXACTLY: text, followups.\n"
-        )
-
-        prompt = (
-            f"{system}\n"
-            f"User: {user_text}\n\n"
-            "Return ONLY the JSON object."
+            "You are GraphCeylon, a friendly Sri Lanka travel assistant.\n"
+            "Keep conversations natural and engaging.\n"
+            "Help with trips, hotels, transport, weather, food, and places.\n"
+            "If the user is vague, still respond helpfully and ask ONE follow-up.\n"
+            "Never say you failed. Never mention tools or intents.\n"
+            "Return ONLY JSON.\n"
+            "FORMAT:\n"
+            "{\n"
+            '  "text": "your answer",\n'
+            '  "followups": ["option1", "option2", "option3"]\n'
+            "}"
         )
 
         try:
-            resp = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.groq_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": self.groq_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.2,
-                },
-                timeout=15,
+            out = self.llm_client.chat_json(
+                system_prompt=system,
+                user_prompt=f"User: {user_text}\nReturn JSON only."
             )
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"].strip()
-            out = json.loads(content)
+
             return {
                 "text": str(out.get("text", "")).strip(),
                 "followups": out.get("followups", []) or [],
             }
+
         except Exception:
-            # safe fallback if LLM fails
-            return {"text": "Sri Lanka’s capital is Sri Jayawardenepura Kotte.", "followups": []}
+            return {
+                "text": "I can help you plan trips, find places, hotels, transport, or travel tips in Sri Lanka. What would you like to do?",
+                "followups": ["Plan a trip", "Find hotels", "Explore places", "Travel tips"],
+            }
 
     def _as_dict(self, obj: Any) -> Dict[str, Any]:
         if obj is None:
@@ -539,8 +517,8 @@ class ResponseFormatter:
         }
 
 
-    def _format_explainability_ui_with_groq(self, results: Dict[str, Any], *, effective_intent: str) -> Optional[str]:
-        if not (self.provider == "groq" and self.groq_key):
+    def _format_explainability_ui_with_llm(self, results: Dict[str, Any], *, effective_intent: str) -> Optional[str]:
+        if self.llm_client is None:
             return None
 
         ctx = self._explainability_relevant_context(results, effective_intent=effective_intent)
@@ -550,34 +528,19 @@ class ResponseFormatter:
         system = (
             "You are generating ONE short explainability sentence for a travel assistant UI.\n"
             "RULES:\n"
-            "- Output MUST be a single sentence (no bullet points).\n"
+            "- Output MUST be a single sentence.\n"
             "- Use ONLY the provided JSON fields.\n"
             "- Do NOT invent facts.\n"
             "- Mention the city if present.\n"
             "- If relevant_prefs is empty, paraphrase summary.\n"
-            "Return ONLY plain text (no JSON).\n"
+            "Return ONLY plain text.\n"
         )
 
-        prompt = f"{system}\nJSON:\n{json.dumps(ctx, ensure_ascii=False)}\n"
-
         try:
-            resp = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.groq_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": self.groq_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.2,
-                },
-                timeout=12,
+            s = self.llm_client.chat_text(
+                system_prompt=system,
+                user_prompt=f"JSON:\n{json.dumps(ctx, ensure_ascii=False)}\n"
             )
-            resp.raise_for_status()
-            s = resp.json()["choices"][0]["message"]["content"].strip()
-
-            # keep it strictly one line / one sentence-ish
             s = re.sub(r"\s+", " ", s).strip()
             return s if s else None
         except Exception:
@@ -896,8 +859,54 @@ class ResponseFormatter:
                 out_lines.append("")
 
             # n = days or len(itinerary)
-            chips = [f"Day {i}" for i in range(1, min(n, 4) + 1)]
+            chips = []
+
+            days = n
+
+            if days > 1:
+                chips.append(f"Make it {days-1} day trip")
+
+            chips.append(f"Extend to {days+1} days")
+
+            if days >= 2:
+                chips.append("Swap day 1 and day 2")
+            else:
+                chips.append("Change activities for day 1")
             return {"text": "\n".join(out_lines).strip(), "followups": chips}
+
+
+        # ---- smalltalk ----
+        # if intent == "smalltalk":
+        #     st = self.smalltalk.predict(user_text)
+
+        #     if st.subtype == "greeting":
+        #         if stage != "idle":
+        #             return {
+        #                 "text": "Hi 👋 Want to continue from where we left off?",
+        #                 "followups": ["Continue", "Change days", "Change budget"],
+        #             }
+        #         return {
+        #             "text": "Hi 👋 What would you like to do?",
+        #             "followups": ["Plan an itinerary", "Recommend places", "Visa info", "Find hotels"],
+        #         }
+
+        #     if st.subtype == "how_are_you":
+        #         if stage != "idle":
+        #             return {"text": "I’m doing well, thanks 😊 Want to continue?", "followups": ["Continue", "Adjust itinerary"]}
+        #         return {"text": "I’m doing great 😊 How can I help with Sri Lanka travel?", "followups": ["Plan an itinerary", "Recommend places"]}
+
+        #     if st.subtype == "thanks":
+        #         if stage != "idle":
+        #             return {"text": "You’re welcome 😊 Want me to tweak anything?", "followups": ["Budget", "Days", "Pace", "Avoid crowds"]}
+        #         return {"text": "You’re welcome 😊", "followups": []}
+
+        #     if st.subtype == "farewell":
+        #         return {"text": "Bye 👋 Come back anytime!", "followups": []}
+
+        #     if st.subtype == "ack":
+        #         if stage != "idle":
+        #             return {"text": "Got it 👍 What do you want to change next?", "followups": ["Change dates", "Change budget", "Add activities"]}
+        #         return {"text": "Got it 👍 What would you like to do?", "followups": []}
 
 
         # ---- smalltalk ----
@@ -907,33 +916,33 @@ class ResponseFormatter:
             if st.subtype == "greeting":
                 if stage != "idle":
                     return {
-                        "text": "Hi 👋 Want to continue from where we left off?",
-                        "followups": ["Continue", "Change days", "Change budget"],
+                        "text": "Welcome back! Want to continue planning your trip?",
+                        "followups": ["Continue", "Change days", "Change destination", "Change budget"],
                     }
                 return {
-                    "text": "Hi 👋 What would you like to do?",
-                    "followups": ["Plan an itinerary", "Recommend places", "Visa info", "Find hotels"],
+                    "text": "Hi! I'm GraphCeylon, your Sri Lanka travel assistant. How can I help you today?",
+                    "followups": ["Plan a trip", "Find hotels", "Check weather", "Visa info"],
                 }
 
             if st.subtype == "how_are_you":
                 if stage != "idle":
-                    return {"text": "I’m doing well, thanks 😊 Want to continue?", "followups": ["Continue", "Adjust itinerary"]}
-                return {"text": "I’m doing great 😊 How can I help with Sri Lanka travel?", "followups": ["Plan an itinerary", "Recommend places"]}
+                    return {"text": "Doing well, thanks for asking! Want to continue with your trip plan?", "followups": ["Continue", "Adjust itinerary"]}
+                return {"text": "Doing well! Ready to help you plan your Sri Lanka trip. Where would you like to go?", "followups": ["Plan a trip", "Recommend places"]}
 
             if st.subtype == "thanks":
                 if stage != "idle":
-                    return {"text": "You’re welcome 😊 Want me to tweak anything?", "followups": ["Budget", "Days", "Pace", "Avoid crowds"]}
-                return {"text": "You’re welcome 😊", "followups": []}
+                    return {"text": "Happy to help! Would you like to adjust anything?", "followups": ["Change budget", "Change days", "Change pace", "Avoid crowds"]}
+                return {"text": "Happy to help!", "followups": []}
 
             if st.subtype == "farewell":
-                return {"text": "Bye 👋 Come back anytime!", "followups": []}
+                return {"text": "Goodbye! Have a great trip to Sri Lanka. Come back anytime.", "followups": []}
 
             if st.subtype == "ack":
                 if stage != "idle":
-                    return {"text": "Got it 👍 What do you want to change next?", "followups": ["Change dates", "Change budget", "Add activities"]}
-                return {"text": "Got it 👍 What would you like to do?", "followups": []}
+                    return {"text": "Got it. What would you like to change?", "followups": ["Change dates", "Change budget", "Add activities"]}
+                return {"text": "Got it. What would you like to do?", "followups": []}
 
-            return {"text": "😊 How can I help?", "followups": ["Plan an itinerary", "Recommend places"]}
+            return {"text": "How can I help you with your Sri Lanka trip?", "followups": ["Plan a trip", "Find hotels", "Check weather", "Visa info"]}
 
         # ---- info_attraction template fallback (cleaner) ----
         if intent == "modify_itinerary":
@@ -1040,8 +1049,19 @@ class ResponseFormatter:
                         out_lines.append(f"- {title} — {category}{rating_str}")
                     out_lines.append("")
 
-                chips = [f"Day {i}" for i in range(1, min(num_days_int, 4) + 1)]
-                chips += ["Show hotels", "Change destination"]
+                chips = []
+
+                days = num_days_int
+
+                if days > 1:
+                    chips.append(f"Make it {days-1} day trip")
+
+                chips.append(f"Extend to {days+1} days")
+
+                # ✅ Keep this instead of swap
+                chips.append("Show hotels")
+
+                chips = chips[:3]
 
                 return {
                     "text": "\n".join(out_lines).strip(),
@@ -1050,6 +1070,318 @@ class ResponseFormatter:
 
                 # generic fallback
                 return {"text": "I got your request. What would you like to do next?", "followups": []}
+        # if intent == "info_transport":
+        #     ents = (parsed_intent.get("entities") or {})
+        #     origin = ents.get("origin") or ents.get("city") or "your starting point"
+        #     destination = ents.get("destination") or "your destination"
+        #     route_str = f"from {origin} to {destination}" if origin and destination and origin != destination else "around Sri Lanka"
+        #     return {
+        #         "text": f"Getting {route_str}:\n• Train — scenic and affordable, book at eservices.railway.gov.lk\n• Bus — frequent departures, most budget-friendly option\n• Taxi — approximately LKR 5,000-8,000 depending on distance\n• Private hire — most comfortable for families and groups\n\nWould you like to plan a full trip?",
+        #         "followups": ["Plan a trip", "Hotels in Kandy", "Places to visit", "Weather forecast"],
+        #     }
+        if intent == "info_transport":
+            ents = (parsed_intent.get("entities") or {})
+            origin      = ents.get("origin") or ents.get("city") or "your starting point"
+            destination = ents.get("destination") or "your destination"
+            route_str   = f"from {origin} to {destination}" if origin != destination else f"around {origin}"
+
+            transport_result = results.get("transport_result") or {}
+
+            # ── Normalize to dict immediately — used by ALL branches below ───
+            transport_dict = (
+                transport_result.model_dump(mode="json")
+                if hasattr(transport_result, "model_dump")
+                else dict(transport_result) if transport_result else {}
+            )
+
+            transport_mode = transport_dict.get("_transport_mode")
+
+            # ── ok:false from downstream — give a useful human answer ────────
+            if transport_dict.get("ok") is False:
+                scenic_note = ""
+                if "colombo" in origin.lower() and "galle" in destination.lower():
+                    scenic_note = " This is a popular 2.5-hour coastal scenic route."
+                elif "colombo" in origin.lower() and any(
+                    x in destination.lower() for x in ["kandy", "ella", "badulla", "nuwara"]
+                ):
+                    scenic_note = " This is a scenic hill country route."
+
+                return {
+                    "text": (
+                        f"Trains from {origin} to {destination}:{scenic_note}\n\n"
+                        "• Several express trains run daily on this route.\n"
+                        "• Book tickets at eservices.railway.gov.lk or at the Colombo Fort station counter.\n"
+                        "• Call 0112 421 281 for live schedule info.\n"
+                        "• 2nd class reserved seats recommended for longer journeys."
+                    ),
+                    "followups": [
+                        "Bus instead",
+                        "How long does it take?",
+                        "Plan a full trip",
+                        f"Hotels in {destination}",
+                    ],
+                }
+
+            # ── BUS ONLY ─────────────────────────────────────────────────
+            # ── BUS ONLY ─────────────────────────────────────────────────
+            if transport_mode == "bus" or (
+                isinstance(transport_dict, dict)
+                and transport_dict.get("ok") is True
+                and "items" in transport_dict
+                and "_transport_mode" not in transport_dict
+            ):
+                schedules = transport_dict.get("items") or []
+                lines = [f"Buses from {origin} to {destination}:\n"]
+
+                if schedules:
+                    for i, s in enumerate(schedules[:5]):
+                        if hasattr(s, "model_dump"):
+                            s = s.model_dump()
+                        open_hours = s.get("open_hours") or ""
+                        parts_time = open_hours.split("→") if "→" in open_hours else []
+                        dep  = parts_time[0].strip() if parts_time else ""
+                        arr  = parts_time[1].strip() if len(parts_time) > 1 else ""
+                        fare = s.get("entry_fee_lkr")
+                        desc = s.get("description") or ""
+                        link = s.get("website") or ""
+
+                        fare_str = f" | LKR {int(fare)}" if fare else ""
+                        time_str = f"departs {dep} → arrives {arr}" if dep and arr else dep or ""
+                        lines.append(f"• {time_str}{fare_str}")
+
+                        # Extract seats note from description
+                        if "seats available" in desc:
+                            for part in desc.split("."):
+                                if "seats available" in part:
+                                    lines.append(f"  ↳ {part.strip()}")
+                                    break
+
+                        # Show booking link
+                        if link:
+                            lines.append(f"  ↳ Book: {link}")
+
+                    # Fare summary
+                    fares = [s.get("entry_fee_lkr") for s in schedules if s.get("entry_fee_lkr")]
+                    if fares:
+                        lines.append(f"\nFares from LKR {int(min(fares))} – LKR {int(max(fares))}")
+                    lines.append("Book at sltb.eseat.lk or Central Bus Stand, Colombo.")
+                else:
+                    lines.append("• Frequent SLTB buses on this route — buy tickets at the terminal.")
+                    lines.append("• Book online at sltb.eseat.lk")
+
+                return {
+                    "text": "\n".join(lines),
+                    "followups": [
+                        "Train instead",
+                        f"Hotels in {destination}",
+                        f"Plan a full trip to {destination}",
+                        "What time is the first bus?",
+                    ],
+                }
+
+            # ── TRAIN ONLY ───────────────────────────────────────────────
+            # ── TRAIN ONLY ───────────────────────────────────────────────
+            # Inside _format_with_templates, the TRAIN ONLY section:
+
+            if transport_mode == "train" or (
+                isinstance(transport_dict, dict)
+                and "options" in transport_dict
+                and "_transport_mode" not in transport_dict
+            ):
+                train_options = transport_dict.get("options") or []
+                lines = [f"Trains from {origin} to {destination}:\n"]
+
+                if train_options:
+                    for i, t in enumerate(train_options):
+                        if hasattr(t, "model_dump"):
+                            t = t.model_dump()
+                        summary  = t.get("summary") or ""
+                        cost     = t.get("estimated_cost_lkr")
+                        duration = t.get("estimated_time_min")
+                        tips     = (t.get("tips") or "").strip()
+
+                        cost_str = f" | LKR {int(cost)}" if cost else ""
+                        dur_str  = f" | ~{int(duration//60)}h {int(duration%60)}m" if duration else ""
+                        lines.append(f"• {summary}{dur_str}{cost_str}")
+
+                        # Only show first/last train info on first and last items
+                        if tips and i == 0:
+                            for part in tips.split("."):
+                                part = part.strip()
+                                if "first train" in part.lower():
+                                    lines.append(f"  ↳ {part}")
+                                    break
+                        elif tips and i == len(train_options) - 1:
+                            for part in tips.split("."):
+                                part = part.strip()
+                                if "last train" in part.lower():
+                                    lines.append(f"  ↳ {part}")
+                                    break
+
+                    # Add booking note once at the bottom
+                    lines.append("\nBook at eservices.railway.gov.lk or Colombo Fort station counter.")
+                    lines.append("Call 0112 421 281 for schedule info.")
+                else:
+                    lines.append("• Several trains run daily on this coastal route.")
+                    lines.append("• Book at eservices.railway.gov.lk")
+
+                return {
+                    "text": "\n".join(lines),
+                    "followups": [
+                        "Bus instead",
+                        f"How long is the journey?",
+                        "Plan a full trip to Galle",
+                        f"Hotels in {destination}",
+                    ],
+                }
+
+            # ── BOTH (generic query) ──────────────────────────────────────
+            # ── BOTH ──────────────────────────────────────────────────────────
+            # ── BOTH (IMPROVED UX FORMAT) ──────────────────────────────────────
+            bus_data   = transport_dict.get("bus")   or {}
+            train_data = transport_dict.get("train") or {}
+
+            bus_items = bus_data.get("items", []) if isinstance(bus_data, dict) else []
+            train_options = train_data.get("options", []) if isinstance(train_data, dict) else []
+            # graceful fallback when both modes have no results
+            if not train_options and not bus_items:
+                return {
+                    "text": (
+                        f"I couldn’t find direct train or bus options from {origin} to {destination} right now.\n\n"
+                        "You can try another date, check the reverse route, or ask for nearby transport hubs."
+                    ),
+                    "followups": [
+                        "Try another date",
+                        f"{destination} to {origin}",
+                        "Nearby transport hubs",
+                        "Plan a full trip",
+                    ],
+                }
+
+            # ===== TRAIN SECTION =====
+            train_section = "No train options available."
+
+            if train_options:
+                t = train_options[0]
+
+                train_section = (
+                    f"Best train option\n"
+                    f"• {t.get('summary', 'Colombo → Kandy')} "
+                )
+
+                if t.get("estimated_time_min"):
+                    duration = t["estimated_time_min"]
+                    train_section += f"| ~{int(duration//60)}h {int(duration%60)}m "
+
+                if t.get("estimated_cost_lkr"):
+                    train_section += f"| from LKR {int(t['estimated_cost_lkr'])}"
+
+                train_section += "\n"
+
+                tips = t.get("tips", "")
+
+                for part in tips.split("."):
+                    part = part.strip()
+
+                    if "first train" in part.lower():
+                        cleaned = part.replace("the first train is at", "").strip()
+                        cleaned = cleaned.replace("am", "AM").replace("pm", "PM")
+                        train_section += f"  ↳ First train: {cleaned}\n"
+                        break
+                if "eservices.railway.gov.lk" in tips.lower():
+                    train_section += "  ↳ Book at eservices.railway.gov.lk\n"
+
+
+
+            # ===== BUS SECTION =====
+            bus_section = "No bus options available."
+
+            if bus_items:
+                lines = []
+                for b in bus_items[:3]:
+                    dep = b.get("departure_time") or b.get("open_hours") or ""
+                    fare = b.get("entry_fee_lkr") or b.get("fare")
+
+                    line = f"• {dep}"
+                    if fare:
+                        line += f" | LKR {int(fare)}"
+
+                    desc = (b.get("description") or "").lower()
+                    if "seats available" in desc:
+                        for part in desc.split("."):
+                            if "seats available" in part:
+                                line += f"\n  ↳ {part.strip()}"
+                                break
+
+                    lines.append(line)
+
+                bus_section = "Best bus options\n" + "\n".join(lines)
+
+
+            # ===== COMPARISON =====
+            comparison_lines = []
+
+            train_price = train_options[0].get("estimated_cost_lkr") if train_options else None
+            bus_prices = [b.get("entry_fee_lkr") for b in bus_items if b.get("entry_fee_lkr")]
+
+            if train_options and bus_items:
+                cheapest = "Train"
+                if train_price and bus_prices and min(bus_prices) < train_price:
+                    cheapest = "Bus"
+
+                comparison_lines = [
+                    "Quick comparison",
+                    f"• Cheapest: {cheapest}",
+                    "• More departures: Bus",
+                    "• Scenic option: Train",
+                ]
+            elif train_options:
+                comparison_lines = [
+                    "Quick comparison",
+                    "• Train option available",
+                    "• Scenic option: Train",
+                ]
+            elif bus_items:
+                comparison_lines = [
+                    "Quick comparison",
+                    "• Bus options available",
+                    "• More departures: Bus",
+                ]
+
+            comparison = "\n".join(comparison_lines)
+
+            # ===== FINAL TEXT =====
+            text_parts = [
+                f"Getting {route_str}",
+                train_section,
+                bus_section,
+            ]
+
+            if comparison:
+                text_parts.append(comparison)
+
+            text_parts.append("What would you like next?")
+
+            text = "\n\n".join(text_parts)
+
+            return {
+                "text": text,
+                "followups": [
+                    "Cheapest option",
+                    "Fastest option",
+                    "Show more buses",
+                    "Train booking link"
+                ],
+            }
+
+            # # ---- catch-all: use Groq for anything unhandled ----
+            # if self.provider == "groq" and self.groq_key:
+            #     return self._answer_general_with_groq(user_text, parsed_intent)
+
+            # return {
+            #     "text": "I can help you plan your Sri Lanka trip. What would you like to know?",
+            #     "followups": ["Plan a trip", "Find hotels", "Check weather", "Visa info"],
+            # }
         # return {"text": "I got your request. What would you like to do next?", "followups": []}
     def _format_visa(self, visa_result: Any) -> str:
         if not visa_result:
@@ -1138,13 +1470,13 @@ class ResponseFormatter:
         #         lines.append(f"    {url}")
 
         return "\n".join(lines)
-    def _format_with_groq(self, user_text, parsed_intent, results, tasks, *, effective_intent: str):
-        # If key missing, fallback safely
-        if effective_intent in {"plan_itinerary", "modify_itinerary"}:
+    def _format_with_llm(self, user_text, parsed_intent, results, tasks, *, effective_intent: str):
+        if effective_intent in {"plan_itinerary", "modify_itinerary", "info_transport"}:
             return self._format_with_templates(user_text, parsed_intent, results, tasks)
-        if not self.groq_key:
+
+        if self.llm_client is None:
             if self.debug:
-                print("[ResponseFormatter:groq] groq_key missing -> templates")
+                print("[ResponseFormatter:llm] llm_client missing -> templates")
             out = self._format_with_templates(user_text, parsed_intent, results, tasks)
             return self._sanitize_output(out)
 
@@ -1271,49 +1603,20 @@ class ResponseFormatter:
         )
 
         if self.debug:
-            print("[ResponseFormatter:groq] >>> ENTERING GROQ FORMATTER")
-            print(f"[ResponseFormatter:groq] model={self.groq_model}")
+            print("[ResponseFormatter:llm] >>> ENTERING LLM FORMATTER")
+            print(f"[ResponseFormatter:llm] provider={self.provider}")
+            print(f"[ResponseFormatter:llm] client={type(self.llm_client).__name__ if self.llm_client else 'None'}")
+            print(f"[ResponseFormatter:llm] model={getattr(self.llm_client, 'model', 'unknown')}")
 
         try:
-            resp = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.groq_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": self.groq_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.2,
-                },
-                timeout=20,
+            out = self.llm_client.chat_json(
+                system_prompt=system,
+                user_prompt=f"JSON:\n{json.dumps(compact, ensure_ascii=False, default=str)}\n\nReturn ONLY the JSON object."
             )
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"].strip()
-
-            if self.debug:
-                print("[ResponseFormatter:groq] raw_content_preview =", content[:300].replace("\n", "\\n"))
-
         except Exception as e:
             if self.debug:
-                print("[ResponseFormatter:groq] request failed:", repr(e))
+                print("[ResponseFormatter:llm] request failed:", repr(e))
             return self._format_with_templates(user_text, parsed_intent, results, tasks)
-
-        # Try strict JSON parse
-                # Try strict JSON parse
-                # Try strict JSON parse
-        try:
-            out = json.loads(content)
-        except Exception:
-            # Try to extract the first JSON object from the text
-            m = re.search(r"\{.*\}", content, re.DOTALL)
-            if not m:
-                return self._sanitize_output({"text": content.strip(), "followups": []})
-                
-            try:
-                out = json.loads(m.group(0))
-            except Exception:
-                return self._sanitize_output({"text": content.strip(), "followups": []})
 
         if isinstance(out, dict) and "text" in out:
             return {
@@ -1321,11 +1624,7 @@ class ResponseFormatter:
                 "followups": out.get("followups", []) or [],
             }
 
-        # Soft fallback: if model returned something unexpected, still show it
-        if content:
-            return self._sanitize_output({"text": content.strip(), "followups": []})
-
         return self._format_with_templates(user_text, parsed_intent, results, tasks)
 
 
-        
+            
