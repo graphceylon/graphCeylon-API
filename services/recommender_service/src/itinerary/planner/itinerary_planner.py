@@ -174,7 +174,7 @@ def _build_one_plan(payload: Dict[str, Any], cfg: PlannerConfig, mode: PlanMode)
     
     # ✅ IMPORTANT: Preserve None for vector search mode (multi-city discovery)
     # Don't default to Colombo if city is not specified
-    dest_candidate = str(payload.get("destination") or payload.get("city") or "").strip()
+    dest_candidate = str(payload.get("city") or payload.get("destination") or "").strip()
     dest = dest_candidate if dest_candidate else None  # Keep None if empty
     
     payload["destination"] = dest
@@ -371,7 +371,7 @@ def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) ->
     attractions + restaurants + hotel_options merged per day.
     """
     origin = str(payload.get("origin_city") or "").strip()
-    dest = str(payload.get("destination") or payload.get("city") or "").strip()
+    dest = str (payload.get("city") or payload.get("destination") or "").strip()
     
    
 
@@ -474,7 +474,7 @@ def build_two_plans_from_payload(payload: Dict[str, Any], cfg: PlannerConfig) ->
     return {
         "status": "ok",
         "meta": {
-            "destination": payload.get("destination") or payload.get("city"),
+            "destination": payload.get("city") or payload.get("destination"),
             "origin_city":  payload.get("origin_city"),
             "days":         payload.get("days"),
             "start_date":   payload.get("start_date"),
@@ -1579,7 +1579,7 @@ def fetch_hotels_for_destination(
 
     # ✅ KEY MAPPING: "destination" from orchestrator payload -> "city" in hotel search
     destination = str(
-        payload.get("destination") or payload.get("city") or ""
+        payload.get("city") or payload.get("destination") or ""
     ).strip()
 
     body: Dict[str, Any] = {
@@ -2427,7 +2427,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
     is_corridor_plan = plan_label in ("corridor_outbound", "corridor_return")
     cities_path = _cities_json_path()
     origin_city_pf = (tm.origin_city or payload.get("origin_city") or "").strip()
-    dest_city_pf   = (tm.destination_city or payload.get("destination") or payload.get("city") or "").strip()
+    dest_city_pf   = (tm.destination_city or payload.get("city") or payload.get("destination") or "").strip()
     waypoints = payload.get("waypoints") or []
     stop_days_map = payload.get("stop_durations_days") or {}
     print(
@@ -2502,7 +2502,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         dbg = kg_corridor_dbg
         kg_mode = "corridor_kg_points"
         origin_city = (payload.get("origin_city") or tm.origin_city or "").strip()
-        dest_city   = (payload.get("destination") or payload.get("city") or "").strip()
+        dest_city   = (payload.get("city") or payload.get("destination") or "").strip()
         exclude_city = origin_city
         route_candidates = list(corridor_candidates)
         # ✅ filter ONCE (if attraction-focused)
@@ -2714,7 +2714,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         #         - title_penalty
         #     )
             
-        dest_city = str(payload.get("destination") or payload.get("city") or "").strip()
+        dest_city = str(payload.get("city") or payload.get("destination") or "").strip()
         dest_reranked = [c for c in reranked if _is_destination_candidate(c, dest_city)]
         for c in dest_reranked:
             retrieval = float(c.get("_retrieval_score", 0.0))

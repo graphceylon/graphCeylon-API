@@ -713,28 +713,28 @@ class OrchestratorService:
                 endpoint="/restaurants/orchestrator/call/restaurants",  # ✅ your KG endpoint
                 mapper=map_restaurant_request,                                 # ✅ you will create this mapper
                 response_model=None,                                           # keep None until you define a contract
-                timeout=20,
+                timeout=60,
                 result_field="restaurant_result",                              # ✅ you’ll also add this to results dict
             ),
             "info_attraction": IntentHandler(
                 endpoint="/sub-attractions/orchestrator/call/sub-attractions",
                 mapper=map_attraction_request,
                 response_model=None,
-                timeout=20,
+                timeout=60,
                 result_field="attraction_result",
             ),
             "book_hotel": IntentHandler(
                 endpoint="/hotel/booking/flow",   # placeholder if you route to a service OR keep local for now
                 mapper=map_book_hotel_request,    # you will create this
                 response_model=None,              # keep None for now
-                timeout=30,
+                timeout=60,
                 result_field="booking_result",
             ),
                         "info_accommodation": IntentHandler(
                 endpoint="/hotels/orchestrator/call/hotels/search",
                 mapper=map_accommodation_request,
                 response_model= AccommodationSearchResponse,
-                timeout=20,
+                timeout=60,
                 result_field="accommodation_result",
             ),
 
@@ -742,14 +742,14 @@ class OrchestratorService:
                 endpoint="/forecast/weather",
                 mapper=map_weather_request,
                 response_model=WeatherForecastResponse,
-                timeout=20,
+                timeout=60,
                 result_field="weather_result",
             ),
             "crowd_forecast": IntentHandler(
                 endpoint="/forecast/crowd",
                 mapper=map_crowd_request,
                 response_model=CrowdForecastResponse,
-                timeout=20,
+                timeout=60,
                 result_field="crowd_result",
             ),
             "forecast_price": IntentHandler(
@@ -763,14 +763,14 @@ class OrchestratorService:
                 endpoint="/itinerary/plan",
                 mapper=map_itinerary_request,
                 response_model=ItineraryPlanResponse,
-                timeout=60,
+                timeout=120,
                 result_field="itinerary_result",
             ),
             "modify_itinerary": IntentHandler(
                 endpoint="/itinerary/modify",
                 mapper=map_itinerary_modify_request,
                 response_model=ItineraryModifyResponse,
-                timeout=30,
+                timeout=120,
                 result_field="modify_result",
             ),
             # You can keep these without response models for now.
@@ -822,7 +822,7 @@ class OrchestratorService:
                     agent_id="visa_kg",
                     base_url=VISA_KG_BASE_URL,
                     protocols=["a2a"],
-                    capabilities=["info_visa_policy", "info_accommodation", "info_attraction","recommend_restaurants" "info_transport", "info_transport_bus", "info_transport_train",],
+                    capabilities=["info_visa_policy", "info_accommodation", "info_attraction","recommend_restaurants" ,"info_transport", "info_transport_bus", "info_transport_train",],
 
 
                     sla=SLA(p95_ms=1500, success_rate=0.98),
@@ -1933,36 +1933,38 @@ class OrchestratorService:
         origin = payload.get("origin") or payload.get("origin_city") or ""
         destination = payload.get("destination") or payload.get("city") or ""
         country = payload.get("country") or "Sri Lanka"
+        schedule_date = payload.get("schedule_date") or payload.get("start_date")
 
         train_payload = {
-            "origin": origin,
-            "destination": destination,
+            "origin": payload.get("origin"),
+            "destination": payload.get("destination"),
             "city": payload.get("city"),
-            "country": country,
+            "country": payload.get("country") or "Sri Lanka",
             "time_of_day": payload.get("time_of_day"),
-            "days": payload.get("days"),
+            "days": payload.get("days") if isinstance(payload.get("days"), list) else None,
             "budget_level": payload.get("budget_level"),
             "preferred_transport": payload.get("preferred_transport") or [],
             "tags": payload.get("tags") or [],
-            "user_id": req.user_id or "",
-            "session_id": req.session_id or "no_session",
-            "query": req.input_text or "",
-            "_transport_mode": "train",
+            "user_id": payload.get("user_id"),
+            "session_id": payload.get("session_id"),
+            "query": payload.get("query"),
         }
 
         bus_payload = {
-            "origin": origin,
-            "destination": destination,
+            "origin": payload.get("origin"),
+            "destination": payload.get("destination"),
             "city": payload.get("city"),
-            "country": country,
-            "schedule_date": payload.get("schedule_date") or payload.get("start_date"),
+            "country": payload.get("country") or "Sri Lanka",
+            "schedule_date": payload.get("start_date") or payload.get("schedule_date"),
             "budget_level": payload.get("budget_level"),
             "tags": payload.get("tags") or [],
-            "user_id": req.user_id or "",
-            "session_id": req.session_id or "no_session",
-            "query": req.input_text or "",
-            "_transport_mode": "bus",
+            "user_id": payload.get("user_id"),
+            "session_id": payload.get("session_id"),
+            "query": payload.get("query"),
         }
+
+        print("[transport][train] payload =", train_payload)
+        print("[transport][bus] payload =", bus_payload)
 
         train_agent = self.registry.pick(capability="info_transport_train", protocol="a2a")
         bus_agent = self.registry.pick(capability="info_transport_bus", protocol="a2a")

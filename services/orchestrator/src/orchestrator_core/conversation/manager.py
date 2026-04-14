@@ -53,7 +53,15 @@ class ConversationManager:
         "forecast_weather": ["weather", "forecast", "rain", "temperature", "climate"],
         "info_transport": ["transport", "bus", "train", "taxi", "route", "how to go"],
         "info_accommodation": ["hotel", "hotels", "stay", "accommodation", "room", "rooms"],
-        "book_hotel": ["book hotel", "reserve hotel", "booking", "check in", "check out"],
+        "book_hotel": [
+            "book hotel",
+            "book a hotel",
+            "reserve hotel",
+            "hotel booking",
+            "booking",
+            "check in",
+            "check out"
+        ],
         "info_visa_policy": ["visa", "eta", "entry requirement", "entry requirements"],
         "recommend_restaurants": ["restaurant", "restaurants", "food", "eat", "dining", "where to eat"],
         "recommend_pois": [
@@ -366,8 +374,8 @@ class ConversationManager:
         priority = [
             "forecast_weather",
             "info_transport",
-            "info_accommodation",
             "book_hotel",
+            "info_accommodation",
             "info_visa_policy",
             "recommend_restaurants",
             "recommend_pois",
