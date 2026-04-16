@@ -384,6 +384,27 @@ def itinerary_modify(req: ItineraryModifyRequest) -> Dict[str, Any]:
             "after_itinerary": _day_summaries(mod_itin),
         }
 
+        # ==============================================================
+        # Rebuild top-level itinerary from modified destination_plan
+        # for response formatter (expects either top-level or nested)
+        # ==============================================================
+        mod_dest_plan = (safe.get("plans", {}) or {}).get("destination_plan") or {}
+        mod_itin_raw = mod_dest_plan.get("itinerary", []) or []
+        
+        top_level_itinerary = []
+        for day_data in mod_itin_raw:
+            top_level_itinerary.append({
+                "date": day_data.get("date"),
+                "city": day_data.get("city"),
+                "district": day_data.get("district"),
+                "attractions": day_data.get("items") or day_data.get("attractions") or [],
+                "hotel_options": day_data.get("hotel_options") or [],
+                "restaurants": day_data.get("restaurants") or [],
+            })
+        
+        safe["itinerary"] = top_level_itinerary
+        print(f"[REBUILD] Rebuilt top-level itinerary: {len(top_level_itinerary)} days")
+
         response = {
             "status": "ok",
             "trip_id": getattr(req, "trip_id", None),

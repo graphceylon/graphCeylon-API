@@ -2976,6 +2976,30 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
             warnings.append(f"Hotel fetch failed: {exc}")
             print(f"[HOTELS] Error: {exc}")
 
+    # ==========================
+    # ✅ Extract unscheduled but ranked candidates for the modifier
+    # ==========================
+    # When users expand days, the modifier can use these instead of "Free Time" placeholders
+    per_day = int(payload.get("per_day_attractions") or cfg.per_day_attractions)
+    total_scheduled = days * per_day
+    unscheduled_candidates = dest_pool[total_scheduled:] if (not is_corridor_plan and dest_pool) else []
+    
+    # Clean up unscheduled candidates (remove internal _ fields)
+    cleaned_unscheduled = []
+    for c in unscheduled_candidates:
+        cleaned_unscheduled.append({
+            "attraction_id": c.get("attraction_id"),
+            "title": c.get("title"),
+            "category": c.get("category"),
+            "city": c.get("city"),
+            "district": c.get("district"),
+            "description": c.get("description"),
+            "rank_score": float(c.get("_planner_final", c.get("_final_score", c.get("_score", 0.0)))),
+        })
+    
+    if cleaned_unscheduled:
+        print(f"[UNSCHEDULED] Stored {len(cleaned_unscheduled)} candidates for modifier expansion")
+
     return {
         "status": "ok",
         "city": city,
@@ -2983,6 +3007,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         "start_date": start_dt.isoformat(),
         "days": days,
         "travel_mode_used": tm.__dict__,
+        "_available_candidates": dest_pool[len(itinerary_days) * per_day:],  # Ranked but unscheduled
         "priorities": [
             {"key": p.key, "weight": p.weight, "source": p.source, "matched_phrase": p.matched_phrase}
             for p in priorities
@@ -3000,6 +3025,7 @@ def build_itinerary_from_payload(payload: Dict[str, Any], cfg: PlannerConfig = P
         "shopping_dining_on_route": payload.get("_shopping_dining_on_route") or {},
         "waypoint_plans": waypoint_plans,
         "way_out_stop_plans": payload.get("_way_out_stop_plans") or [],
+        "_available_candidates": cleaned_unscheduled,
         "debug": {
             "route_anchor_coords": route_start_coords,
             "kg_mode": kg_mode,
