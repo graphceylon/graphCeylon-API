@@ -28,13 +28,18 @@ def _get_store():
 def get_stats(
     capability: Optional[str] = Query(None, description="Filter by intent name e.g. forecast_weather"),
     since_hours: int = Query(24, description="Look back window in hours"),
+    date: Optional[str] = Query(None, description="Fixed date filter in YYYY-MM-DD format"),
 ):
     """
     Returns p50/p95/p99/avg/min/max per transport_type per capability.
     """
     store = _get_store()
-    rows = store.get_benchmark_stats(capability=capability, since_hours=since_hours)
-    return {"ok": True, "stats": rows, "since_hours": since_hours}
+    rows = store.get_benchmark_stats(
+        capability=capability,
+        since_hours=since_hours,
+        date=date,
+    )
+    return {"ok": True, "stats": rows, "since_hours": since_hours, "date": date}
 
 
 @router.get("/series")
@@ -42,6 +47,7 @@ def get_series(
     capability: str = Query(..., description="Intent name e.g. forecast_weather"),
     transport: str = Query(..., description="Transport type e.g. a2a_http"),
     limit: int = Query(100, description="Max data points"),
+    date: Optional[str] = Query(None, description="Fixed date filter in YYYY-MM-DD format"),
 ):
     """
     Returns ordered latency series for a given tool + transport.
@@ -52,20 +58,28 @@ def get_series(
         capability=capability,
         transport_type=transport,
         limit=limit,
+        date=date,
     )
-    return {"ok": True, "series": rows, "capability": capability, "transport": transport}
+    return {
+        "ok": True,
+        "series": rows,
+        "capability": capability,
+        "transport": transport,
+        "date": date,
+    }
 
 
 @router.get("/summary")
 def get_summary(
     since_hours: int = Query(24, description="Look back window in hours"),
+    date: Optional[str] = Query(None, description="Fixed date filter in YYYY-MM-DD format"),
 ):
     """
     Returns all stats for all intents + transports grouped by capability.
     Used by the full benchmark dashboard.
     """
     store = _get_store()
-    rows = store.get_benchmark_stats(since_hours=since_hours)
+    rows = store.get_benchmark_stats(since_hours=since_hours, date=date)
 
     grouped: dict = {}
     for row in rows:
@@ -81,6 +95,7 @@ def get_summary(
         "ok": True,
         "summary": grouped,
         "since_hours": since_hours,
+        "date": date,
         "transport_types": list({r["transport_type"] for r in rows}),
         "capabilities": list(grouped.keys()),
     }

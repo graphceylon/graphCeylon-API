@@ -130,6 +130,7 @@ class PostgresTraceStore:
         *,
         capability: Optional[str] = None,
         since_hours: int = 24,
+        date: Optional[str] = None,
     ) -> list[Dict[str, Any]]:
         """
         Returns p50/p95/p99/avg/min/max per transport_type per capability.
@@ -139,8 +140,13 @@ class PostgresTraceStore:
             "event_type = 'tool_end'",
             "latency_ms IS NOT NULL",
             "transport_type IS NOT NULL",
-            f"created_at > NOW() - INTERVAL '{since_hours} hours'",
         ]
+
+        if date:
+            where_parts.append("DATE(created_at) = %(date)s")
+        else:
+            where_parts.append(f"created_at > NOW() - INTERVAL '{since_hours} hours'")
+
         if capability:
             where_parts.append("capability = %(capability)s")
 
@@ -166,7 +172,10 @@ class PostgresTraceStore:
         ORDER BY capability, transport_type
         """
         with psycopg.connect(self.dsn) as conn:
-            rows = conn.execute(sql, {"capability": capability}).fetchall()
+            rows = conn.execute(sql, {
+                "capability": capability,
+                "date": date,
+            }).fetchall()
             cols = [
                 "transport_type", "capability", "call_count",
                 "avg_ms", "p50_ms", "p95_ms", "p99_ms",
@@ -180,27 +189,43 @@ class PostgresTraceStore:
         capability: str,
         transport_type: str,
         limit: int = 100,
+        date: Optional[str] = None,
     ) -> list[Dict[str, Any]]:
         """
         Returns ordered latency series for a given tool + transport.
         Used for the call-sequence warmup chart.
         """
-        sql = """
+        where_parts = [
+            "event_type = 'tool_start'",
+            "capability = %(capability)s",
+            "transport_type = %(transport_type)s",
+            "latency_ms IS NOT NULL",
+        ]
+
+        if date:
+            where_parts.append("DATE(created_at) = %(date)s")
+
+        where_clause = " AND ".join(where_parts)
+
+        sql = f"""
         SELECT
             ROW_NUMBER() OVER (ORDER BY created_at) AS call_num,
             latency_ms,
             status,
             created_at
         FROM trace_events
-        WHERE event_type = 'tool_start'
-          AND capability = %s
-          AND transport_type = %s
-          AND latency_ms IS NOT NULL
+        WHERE {where_clause}
         ORDER BY created_at DESC
-        LIMIT %s
+        LIMIT %(limit)s
         """
+
         with psycopg.connect(self.dsn) as conn:
-            rows = conn.execute(sql, (capability, transport_type, limit)).fetchall()
+            rows = conn.execute(sql, {
+                "capability": capability,
+                "transport_type": transport_type,
+                "limit": limit,
+                "date": date,
+            }).fetchall()
             return [
                 {
                     "call_num": r[0],

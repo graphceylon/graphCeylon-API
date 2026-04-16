@@ -118,13 +118,18 @@
       const [selCap, setSelCap]     = useState(null);
       const [selMetric, setSelMetric] = useState("p95_ms");
       const [hours, setHours]       = useState(24);
+      const [fixedDate, setFixedDate] = useState(null); // "2026-03-26" when active
       const [lastAt, setLastAt]     = useState(null);
       const selCapRef               = useRef(null);
       selCapRef.current             = selCap;
 
       const fetchSummary = useCallback(async () => {
         try {
-          const r = await fetch(`${API_BASE}/benchmark/summary?since_hours=${hours}`);
+          const qs = fixedDate
+            ? `since_hours=${hours}&date=${fixedDate}`
+            : `since_hours=${hours}`;
+
+          const r = await fetch(`${API_BASE}/benchmark/summary?${qs}`);
           const d = await r.json();
           if (d.ok) {
             setSummary(d);
@@ -138,15 +143,19 @@
         } finally {
           setLoading(false);
         }
-      }, [hours]);
+      }, [hours, fixedDate]);
 
       const fetchSeries = useCallback(async (cap, transport) => {
         try {
-          const r = await fetch(`${API_BASE}/benchmark/series?capability=${cap}&transport=${transport}&limit=60`);
+          const qs = fixedDate
+            ? `capability=${cap}&transport=${transport}&limit=60&date=${fixedDate}`
+            : `capability=${cap}&transport=${transport}&limit=60`;
+
+          const r = await fetch(`${API_BASE}/benchmark/series?${qs}`);
           const d = await r.json();
           if (d.ok) setSeries(prev => ({ ...prev, [`${cap}__${transport}`]: d.series }));
         } catch (_) {}
-      }, []);
+      }, [fixedDate]);
 
       useEffect(() => { fetchSummary(); const t = setInterval(fetchSummary, 15000); return () => clearInterval(t); }, [fetchSummary]);
 
@@ -225,7 +234,15 @@
                 React.createElement("h1", { style: { fontSize: 30, fontWeight: 800, letterSpacing: "-0.02em", lineHeight: 1.1 } },
                   "MCP Latency ", React.createElement("span", { style: { color: "#00E5FF" } }, "Analysis")
                 ),
-                React.createElement("p", { style: { marginTop: 6, fontSize: 12, color: "rgba(255,255,255,0.28)", fontFamily: "'JetBrains Mono',monospace" } }, "A2A HTTP · MCP stdio · MCP Streamable HTTP")
+                React.createElement("p", { style: { marginTop: 6, fontSize: 12, color: "rgba(255,255,255,0.28)", fontFamily: "'JetBrains Mono',monospace" } }, "A2A HTTP · MCP stdio · MCP Streamable HTTP"),
+                  fixedDate && React.createElement("p", {
+                    style: {
+                      marginTop: 4,
+                      fontSize: 11,
+                      color: "#69FF47",
+                      fontFamily: "'JetBrains Mono',monospace"
+                    }
+                  }, `📅 Filtered Date: ${fixedDate}`)
               ),
               React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 7 } },
                 React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: 5, background: error ? "rgba(255,71,87,0.07)" : "rgba(105,255,71,0.06)", border: `1px solid ${error ? "rgba(255,71,87,0.25)" : "rgba(105,255,71,0.2)"}` } },
@@ -233,13 +250,41 @@
                   React.createElement("span", { style: { fontSize: 10, color: error ? "#FF4757" : "#69FF47", fontFamily: "'JetBrains Mono',monospace" } }, error ? "offline" : loading ? "connecting…" : "live · 15s refresh")
                 ),
                 lastAt && React.createElement("span", { style: { fontSize: 9, color: "rgba(255,255,255,0.18)", fontFamily: "'JetBrains Mono',monospace" } }, `last: ${lastAt.toLocaleTimeString()}`),
-                React.createElement("div", { style: { display: "flex", gap: 3 } },
+                React.createElement("div", { style: { display: "flex", gap: 3, flexWrap: "wrap" } },
                   ...[6, 24, 48].map(h =>
                     React.createElement("button", {
-                      key: h, onClick: () => setHours(h),
-                      style: { padding: "3px 9px", borderRadius: 4, fontSize: 10, cursor: "pointer", fontFamily: "'JetBrains Mono',monospace", background: hours === h ? "rgba(0,229,255,0.12)" : "transparent", border: hours === h ? "1px solid rgba(0,229,255,0.35)" : "1px solid rgba(255,255,255,0.07)", color: hours === h ? "#00E5FF" : "rgba(255,255,255,0.28)", transition: "all 0.15s" }
+                      key: h,
+                      onClick: () => setHours(h),
+                      style: {
+                        padding: "3px 9px",
+                        borderRadius: 4,
+                        fontSize: 10,
+                        cursor: "pointer",
+                        fontFamily: "'JetBrains Mono',monospace",
+                        background: hours === h ? "rgba(0,229,255,0.12)" : "transparent",
+                        border: hours === h ? "1px solid rgba(0,229,255,0.35)" : "1px solid rgba(255,255,255,0.07)",
+                        color: hours === h ? "#00E5FF" : "rgba(255,255,255,0.28)",
+                        transition: "all 0.15s"
+                      }
                     }, `${h}h`)
-                  )
+                  ),
+
+                  React.createElement("button", {
+                    onClick: () => setFixedDate(fixedDate === "2026-03-26" ? null : "2026-03-26"),
+                    style: {
+                      padding: "3px 9px",
+                      borderRadius: 4,
+                      fontSize: 10,
+                      cursor: "pointer",
+                      fontFamily: "'JetBrains Mono',monospace",
+                      background: fixedDate === "2026-03-26" ? "rgba(105,255,71,0.12)" : "transparent",
+                      border: fixedDate === "2026-03-26"
+                        ? "1px solid rgba(105,255,71,0.35)"
+                        : "1px solid rgba(255,255,255,0.07)",
+                      color: fixedDate === "2026-03-26" ? "#69FF47" : "rgba(255,255,255,0.28)",
+                      transition: "all 0.15s"
+                    }
+                  }, fixedDate === "2026-03-26" ? "26/03/26 ON" : "26/03/26")
                 )
               )
             )
@@ -409,7 +454,7 @@
             // footer
             React.createElement("div", { style: { marginTop: 28, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6 } },
               React.createElement("span", { style: { fontSize: 9, color: "rgba(255,255,255,0.13)", fontFamily: "'JetBrains Mono',monospace" } }, `graphceylon · transport benchmark · ${new Date().getFullYear()}`),
-              React.createElement("span", { style: { fontSize: 9, color: "rgba(255,255,255,0.13)", fontFamily: "'JetBrains Mono',monospace" } }, `window: ${hours}h · auto-refresh: 15s`)
+              fixedDate ? `date: ${fixedDate} · auto-refresh: 15s` : `window: ${hours}h · auto-refresh: 15s`
             )
           ),
 
