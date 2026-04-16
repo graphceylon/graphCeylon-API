@@ -82,9 +82,13 @@ class ItineraryModifyRequest(BaseModel):
     trip_id: Optional[str] = Field(default=None)
     preference_sources: Optional[Dict[str, Any]] = Field(default=None, exclude=True)
     semantic_context: Optional[Dict[str, Any]] = Field(default=None, exclude=True)
+    current_itinerary: Optional[Dict[str, Any]] = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
     def _normalise_orchestrator_shape(self):
+        # ✅ ADD THIS — Flutter sends current_itinerary
+        if not self.existing_itinerary and self.current_itinerary:
+            self.existing_itinerary = self.current_itinerary
         # existing_plan -> existing_itinerary
         if not self.existing_itinerary and self.existing_plan:
             self.existing_itinerary = self.existing_plan

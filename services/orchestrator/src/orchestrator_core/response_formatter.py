@@ -133,6 +133,7 @@ class ResponseFormatter:
         }
         """
         intent = self._pick_effective_intent_with_results(parsed_intent, results)
+        
         present_keys = self._collect_present_result_keys(results)
 
         # ✅ NEW: Follow-up short-circuit (MUST be early)
