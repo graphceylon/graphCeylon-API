@@ -70,12 +70,27 @@ def confirm_booking(req: BookingConfirmRequest):
     )
 @router.patch("/draft/{draft_id}", response_model=BookingDraftResponse)
 def update_draft(draft_id: UUID, req: BookingDraftCreate):
+    print("\n========== [BOOKING UPDATE] PATCH /booking/draft ==========")
+    print(f"[update_draft] draft_id={draft_id}")
+    print(f"[update_draft] incoming payload={req.model_dump()}")
+
     st = repo.get_status(draft_id)
+    print(f"[update_draft] current_status={st}")
+
     if not st:
+        print(f"[update_draft] draft not found for draft_id={draft_id}")
         raise HTTPException(404, "Draft not found.")
+
     if st not in ("DRAFT", "REJECTED"):
+        print(f"[update_draft] blocked because status={st}")
         raise HTTPException(409, f"Cannot update draft in status={st}.")
+
     repo.update_draft(draft_id, req.model_dump())
+
+    new_status = repo.get_status(draft_id)
+    print(f"[update_draft] update finished. new_status={new_status}")
+    print("========== [BOOKING UPDATE END] ==========\n")
+
     return BookingDraftResponse(
         draft_id=draft_id,
         status="DRAFT",
@@ -145,6 +160,8 @@ def approve_hitl(req: BookingHITLApprove):
 def submit_booking_request(draft_id: str):
     # 1) fetch raw_payload using existing repo method
     raw = repo.fetch_draft_payload(draft_id)
+    print(f"[booking/request] draft_id={draft_id}")
+    print(f"[booking/request] raw={raw}")
     if not raw:
         raise HTTPException(status_code=404, detail="Draft not found")
 
@@ -152,6 +169,10 @@ def submit_booking_request(draft_id: str):
     hotel_data = raw.get("hotel") or {}
     search_data = raw.get("search") or {}
     rooms_list = draft_data.get("rooms") or []
+    print(f"[booking/request] draft_data={draft_data}")
+    print(f"[booking/request] hotel_data={hotel_data}")
+    print(f"[booking/request] search_data={search_data}")
+    print(f"[booking/request] rooms_list={rooms_list}")
 
     # 2) build createreservationforai payload
     reservation_payload = {
@@ -192,6 +213,10 @@ def submit_booking_request(draft_id: str):
             token = token_resp.json().get("access_token")
             if not token:
                 raise HTTPException(status_code=502, detail="Failed to get hotel API token")
+            
+            print(f"[booking/request] base_url={base_url}")
+            print(f"[booking/request] final hotel url={base_url}/api/external/createreservationforai")
+            print(f"[booking/request] reservation_payload={reservation_payload}")
 
             res = client.post(
                 f"{base_url}/api/external/createreservationforai",

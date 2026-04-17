@@ -58,6 +58,17 @@ class BookingDraftRepo:
                 )
         return draft_id
     def update_draft(self, draft_id: UUID, payload: Dict[str, Any]) -> None:
+        print("\n----- [REPO update_draft] START -----")
+        print(f"[repo.update_draft] draft_id={draft_id}")
+        print(f"[repo.update_draft] payload keys={list(payload.keys())}")
+        print(f"[repo.update_draft] arrival={payload.get('arrival')}")
+        print(f"[repo.update_draft] departure={payload.get('departure')}")
+        print(f"[repo.update_draft] adults={payload.get('adults')}")
+        print(f"[repo.update_draft] property_code={payload.get('property_code')}")
+        print(f"[repo.update_draft] room_category_id={payload.get('room_category_id')}")
+        print(f"[repo.update_draft] room_type_id={payload.get('room_type_id')}")
+        print(f"[repo.update_draft] meal_plan_id={payload.get('meal_plan_id')}")
+
         with psycopg.connect(self.dsn) as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -101,11 +112,19 @@ class BookingDraftRepo:
                         "raw_payload": _json(payload.get("raw_payload") or {}),
                     },
                 )
+                print(f"[repo.update_draft] rows_affected={cur.rowcount}")
+
+            conn.commit()
+            print("[repo.update_draft] commit done")
+
+    print("----- [REPO update_draft] END -----\n")
     def get_status(self, draft_id: UUID) -> Optional[str]:
+        print(f"[repo.get_status] checking draft_id={draft_id}")
         with psycopg.connect(self.dsn) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT status FROM booking_drafts WHERE draft_id=%s", (str(draft_id),))
                 row = cur.fetchone()
+                print(f"[repo.get_status] row={row}")
                 return row[0] if row else None
 
     def set_status(self, draft_id: UUID, status: str, **fields: Any) -> None:

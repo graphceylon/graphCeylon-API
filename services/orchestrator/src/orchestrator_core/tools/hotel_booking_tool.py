@@ -285,7 +285,7 @@ def _build_booking_draft_from_pick(
         "RoomTypeId": int(picked["RoomTypeId"]),
         "MealPlanId": int(picked["MealPlanId"]),
         "RateCodeHeaderId": int(rate_code_header_id or 1),
-        "Adults": adults
+        "NoOfRooms": 1
     }]
 
     return {
@@ -320,6 +320,13 @@ def book_hotel_flow(call: ToolCall) -> Dict[str, Any]:
     selected_room_type_id = args.get("room_type_id")
     selected_meal_plan_id = args.get("meal_plan_id")
     selected_rate_code_id = args.get("rate_code_id")  # optional, but useful
+    print("\n========== [EDIT FLOW INPUT] ==========")
+    print(f"[book_hotel_flow] selected_room_category_id={selected_room_category_id}")
+    print(f"[book_hotel_flow] selected_room_type_id={selected_room_type_id}")
+    print(f"[book_hotel_flow] selected_meal_plan_id={selected_meal_plan_id}")
+    print(f"[book_hotel_flow] selected_rate_code_id={selected_rate_code_id}")
+    print(f"[book_hotel_flow] full args={args}")
+    print("=======================================\n")
     currency_id = args.get("currency_id")             # optional future use
 
     # if not arrival or not departure:
@@ -507,13 +514,51 @@ def book_hotel_flow(call: ToolCall) -> Dict[str, Any]:
                 }
 
             # 2) pick best combo (or cheapest and flag if exceeds budget)
-            picked = _pick_rate_combo_from_roomrates(rates, budget_lkr=budget_lkr)
-            if not picked:
-                return {
-                    "ok": False,
-                    "status": "no_rates",
-                    "message": f"{property_name} returned rates but none usable.",
-                }
+            # 2) preserve manual selection if user explicitly edited the booking
+            if selected_room_category_id and selected_room_type_id and selected_meal_plan_id:
+                picked = next(
+                    (
+                        r for r in rates
+                        if int(r.get("RoomCategoryId") or -1) == int(selected_room_category_id)
+                        and int(r.get("RoomTypeId") or -1) == int(selected_room_type_id)
+                        and int(r.get("MealPlanId") or -1) == int(selected_meal_plan_id)
+                    ),
+                    None,
+                )
+
+                print("\n========== [MANUAL SELECTION MATCH] ==========")
+                print(f"[book_hotel_flow] selected_room_category_id={selected_room_category_id}")
+                print(f"[book_hotel_flow] selected_room_type_id={selected_room_type_id}")
+                print(f"[book_hotel_flow] selected_meal_plan_id={selected_meal_plan_id}")
+                print(f"[book_hotel_flow] matched picked={picked}")
+                print("=============================================\n")
+
+                if picked:
+                    picked["_adult_rate"] = float(picked.get("AdultRate") or 0.0)
+                    picked["_exceeds_budget"] = False
+                    picked["_budget_lkr"] = budget_lkr
+                else:
+                    return {
+                        "ok": False,
+                        "status": "selected_option_not_available",
+                        "message": "The room option you selected is not available for these dates.",
+                    }
+            else:
+                picked = _pick_rate_combo_from_roomrates(rates, budget_lkr=budget_lkr)
+                if not picked:
+                    return {
+                        "ok": False,
+                        "status": "no_rates",
+                        "message": f"{property_name} returned rates but none usable.",
+        }
+                
+            print("\n========== [EDIT FLOW PICKED RESULT] ==========")
+            print(f"[book_hotel_flow] picked={picked}")
+            print(f"[book_hotel_flow] picked RoomCategoryId={picked.get('RoomCategoryId')}")
+            print(f"[book_hotel_flow] picked RoomTypeId={picked.get('RoomTypeId')}")
+            print(f"[book_hotel_flow] picked MealPlanId={picked.get('MealPlanId')}")
+            print(f"[book_hotel_flow] budget_lkr={budget_lkr}")
+            print("===============================================\n")
 
             exceeds_budget = bool(picked.get("_exceeds_budget", False))
             used_budget = picked.get("_budget_lkr", budget_lkr)
@@ -617,6 +662,16 @@ def book_hotel_flow(call: ToolCall) -> Dict[str, Any]:
             "room_types": room_types,
             "meal_plans": meal_plans,
             "rate_codes": rate_codes,
+            "valid_combos": [
+                {
+                    "RoomCategoryId": r.get("RoomCategoryId"),
+                    "RoomTypeId": r.get("RoomTypeId"),
+                    "MealPlanId": r.get("MealPlanId"),
+                    "RateCodeId": rate_code_header_id,
+                    "AdultRate": r.get("AdultRate"),
+                }
+                for r in rates
+            ],
         },
         "selected": {
             "property_id": property_id,
