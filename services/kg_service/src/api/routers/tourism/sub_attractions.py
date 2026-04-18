@@ -38,6 +38,7 @@ router = APIRouter(prefix="/sub-attractions", tags=["sub-attractions"])
 REJECTED_POI_CATEGORIES: list[str] = [
     "Shopping & City",
     "Food & Markets",
+    "Food & Dining"
 ]
 
 
