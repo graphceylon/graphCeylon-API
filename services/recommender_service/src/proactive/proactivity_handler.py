@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 KG_BASE_URL = os.getenv("KG_BASE_URL", "http://localhost:8000").rstrip("/")
 KG_HOTEL_SEARCH_PATH = "/hotels/orchestrator/call/hotels/search"
+KG_RESTAURANT_SEARCH_PATH = "/restaurants/orchestrator/call/restaurants"
 
 
 # ━━━━━━━━━━━━━ sunrise / sunset calculation ━━━━━━━━━━━━━━━━━━━
@@ -261,6 +262,46 @@ def _fetch_nearby_hotels(
         return []
 
 
+def _fetch_nearby_restaurants(
+    city: str | None,
+    *,
+    limit: int = 10,
+    timeout: float = 15.0,
+) -> List[Dict[str, Any]]:
+    """
+    Best-effort fetch of restaurants in the resolved city from the
+    restaurant search endpoint.  Returns an empty list on failure so
+    the handler degrades gracefully.
+    """
+    if not city:
+        return []
+    try:
+        import httpx
+
+        url = f"{KG_BASE_URL}{KG_RESTAURANT_SEARCH_PATH}"
+        body = {
+            "city": city,
+            "country": "Sri Lanka",
+            "poi_name": None,
+            "days": 1,
+            "tags": [],
+            "user_id": "proactive-system",
+            "session_id": "proactive-heartbeat",
+            "query": f"What are the best restaurants in {city}?",
+        }
+        with httpx.Client(timeout=timeout) as client:
+            r = client.post(url, json=body)
+            r.raise_for_status()
+            data = r.json()
+
+        items = data.get("items") or data.get("restaurants") or []
+        logger.info("Fetched %d restaurants for city=%s", len(items), city)
+        return items
+    except Exception as exc:
+        logger.warning("Restaurant fetch for '%s' failed: %s", city, exc)
+        return []
+
+
 def _fetch_crowd_environment(
     poi_ids: List[str] | None,
 ) -> Dict[str, Any]:
@@ -341,7 +382,7 @@ def build_environment(ctx: UserContextPayload) -> Dict[str, Any]:
     except Exception as exc:
         logger.warning("Sun-time computation failed: %s", exc)
 
-    # Nearby hotels — only during meal and golden-hour windows
+    # Nearby hotels & restaurants — only during meal and golden-hour windows
     # Breakfast 6-9, Lunch 11-14, Sunset 16-19, Dinner 18-21
     from zoneinfo import ZoneInfo
     local_hour = ctx.timestamp.astimezone(ZoneInfo("Asia/Colombo")).hour
@@ -355,8 +396,16 @@ def build_environment(ctx: UserContextPayload) -> Dict[str, Any]:
         except Exception as exc:
             logger.warning("Hotel environment fetch failed: %s", exc)
             env["nearby_hotels"] = []
+        
+        try:
+            restaurants = _fetch_nearby_restaurants(ctx.location.city)
+            env["nearby_restaurants"] = restaurants
+        except Exception as exc:
+            logger.warning("Restaurant environment fetch failed: %s", exc)
+            env["nearby_restaurants"] = []
     else:
         env["nearby_hotels"] = []
+        env["nearby_restaurants"] = []
 
     # Clients may attach extra environment keys directly
     # (e.g., nearby_events, sunset_utc, next_activity_at)
