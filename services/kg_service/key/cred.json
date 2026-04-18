@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "graphceylon",
+  "private_key_id": "c1415bc457ee4ffa0a89341529b108b55ad05a7b",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC0MM9S6GmD9/bJ\nPKjv0CsjduqkpFFE8nJRD15nGD1tMAN15nu5dIHhgjmrSvEShhhd9XfVNQGBAHY3\nFvvrQXB9hIt00LzuWU5+K1nTduBg57nUVUgMsP8d4UxNlr1UT62/ecmU3Rhv4ZK+\nbzLEbSnVxI/1zIFiG86WTeGxOekoH9FGRTnV4wgIeHaoirbqrB4ZnoZxfQeflKZV\nhEq2dQrFInj5kwyX6jb+VZtBqhSrY7A2zhS0dWXmx8EmYZFuXQoF1twqEFRJ163K\nVgN6BRP6o1MSpyKJhJVQ06rxuEy+2I7vYIbsHN6A+KN2UCMsdQd0aWApk4SGNX/v\na6kXxG3/AgMBAAECggEABkpt8ocKqADQLNZhT34FA4fzSSwzaiTMuOfAc/j0rAsx\nE7yoNSFMJ4NUYBaNtAface1P8bGYC9joR6QVx3DRbJBkDf/7mJalluIMkMVlr/xn\nEHKpwUesoG5tK4hHs9nURwsJbpkJcV5+sQdQzmrBOyVRoVMycSpnW/f8GSPcb/od\nYq7ibhGuCaqu5+tCLLZ9hJGJx30w5/oGLN/+oWDU2syuPf46L9V6cLkxYl9Ucho+\n0/uYmOnqWLab7tZ30ean8HkfYcMYBJW9E4+2tJeCbZ1vFaa9ulAvmsVwukk2JA3J\nxqdaaJm29wEmKyWhr9EiQ3q3cyDqoJQISVOOoSFOgQKBgQDenhg0ueUULjtByOWL\nNrsUzmWpXGnS+2AjUm8q/LPMNTRzU9Bnq1Mz3eOZk2EnoZX+uqoAyKhr8lu/KQf+\n/IJnULnaPr0A7rO0mbrLh19Ra+cJlQ5Oyftkk9vTcC+61JRqXTr5FHoRFRaNOmKC\nHJ7ECy1oWoHrPzqgqyMF3bhJiwKBgQDPNgUQMQPCP04mQsJ5lInZgtMBqqw5bxDq\nEoEKFufufdsbudkAcRpWkpy8W9r11D5fVWFT3TKnT52dIOKsXIrD7H2x7qEAJa9s\ng1Cr1GnlydPt2D7wRgj5zk5Gh5UNvtyNsj5/hp16/cXCgjdhy35PbScNiFCB1ljC\n6z0BlVrz3QKBgQC38ribsNOaZk0uoZsS+omBur6EQEltPauF5FLZmW/UGE6b0TDO\nyOF6ZSnxN7e68KkpkAJznVqVv/CRt4zU5L+4MRsxPFAemh9B5xlTnitj8x44a8Mj\n1YB17jthrjyyS3/Ll/fn40SuIte8oPbO/mkuIvJFXSwnP9ro8iCBc2EY2wKBgH//\nK4OD84FzH3As/vqhUcHFuVgnOHnF7NnaklFMMvq0TbvDwpMuSom9yQnlZ81AzUKQ\neC2YzuhhGshr/vlftOwv0rkt4dA4dzN9rkBmVv/1+27JjJ9Zc8Pzt5CDwgQaqRzy\nRP77hZ3q0tVDILjNPfoMP/pxAOIjKPNG4olu3B8VAoGAZE5Uadpd1M37f/DsN/Vn\nwzylvOJgYyfeRBd4jPP0ImiPwp3EitIXysiC59btv1moLKXg4mO8ScyuhwMFu+ZP\nnKd+Tiy4Diq+TNRjU6daQSv5X5Sit6NWQ0wnOnR5NgOvYJUCu/sZLXomTOM6f2jg\nXc70+19AYqcvW/2i/+tCUyE=\n-----END PRIVATE KEY-----\n",
+  "client_email": "tourism-pipeline-uploader@graphceylon.iam.gserviceaccount.com",
+  "client_id": "116910949379383106830",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/tourism-pipeline-uploader%40graphceylon.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

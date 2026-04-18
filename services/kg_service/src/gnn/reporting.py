@@ -1096,8 +1096,18 @@ The heterogeneous GNN uses the following key components:
 
 ### 8.2 Loss Function
 
-- **Rating Prediction**: Mean Squared Error (MSE) loss
-- **Route Optimization**: Margin Ranking Loss with margin=1.0
+**Hotel Recommender** uses a multi-objective loss with three components:
+
+$$\\mathcal{{L}}_{{total}} = 0.1 \\cdot \\mathcal{{L}}_{{rating}} + 0.3 \\cdot \\mathcal{{L}}_{{contrastive}} + 0.6 \\cdot \\mathcal{{L}}_{{uniformity}}$$
+
+- **Rating Loss** ($\\mathcal{{L}}_{{rating}}$): MSE between predicted and ground-truth hotel ratings
+- **Contrastive Loss** ($\\mathcal{{L}}_{{contrastive}}$): Margin Ranking Loss (margin=0.5) on positive pairs (hotels sharing amenities, attractions, districts) vs. negative pairs (random). Ensures structurally related hotels have more similar embeddings.
+- **Uniformity Loss** ($\\mathcal{{L}}_{{uniformity}}$): VICReg-inspired regularization combining:
+  - *Similarity penalty*: Pushes random hotel pairs apart
+  - *Variance regularization*: Ensures each embedding dimension has non-trivial variance
+  - *Covariance regularization*: Decorrelates embedding dimensions to prevent redundancy
+
+**Route Optimizer** uses Margin Ranking Loss with margin=1.0 on connected vs. unconnected station pairs.
 
 ### 8.3 Optimization
 

@@ -50,6 +50,8 @@ _model_cache = {
     'route_data': None,
     'hotel_mappings': None,
     'route_mappings': None,
+    'hotel_names': None,
+    'route_names': None,
 }
 
 
@@ -128,9 +130,10 @@ def load_hotel_model():
         if not data_path.exists():
             raise HTTPException(status_code=503, detail=f"Hotel data not found. Run 'python run_gnn.py export' first.")
         
-        data, node_mappings, cat_encodings = GraphExporter.load(str(data_path))
+        data, node_mappings, cat_encodings, name_mappings = GraphExporter.load(str(data_path))
         _model_cache['hotel_data'] = data
         _model_cache['hotel_mappings'] = node_mappings
+        _model_cache['hotel_names'] = name_mappings
         
         metadata = (list(data.node_types), list(data.edge_types))
         in_channels_dict = {}
@@ -152,7 +155,7 @@ def load_hotel_model():
         model.eval()
         _model_cache['hotel'] = model
     
-    return _model_cache['hotel'], _model_cache['hotel_data'], _model_cache['hotel_mappings']
+    return _model_cache['hotel'], _model_cache['hotel_data'], _model_cache['hotel_mappings'], _model_cache['hotel_names']
 
 
 def load_route_model():
@@ -162,9 +165,10 @@ def load_route_model():
         if not data_path.exists():
             raise HTTPException(status_code=503, detail=f"Train data not found. Run 'python run_gnn.py export' first.")
         
-        data, node_mappings, cat_encodings = GraphExporter.load(str(data_path))
+        data, node_mappings, cat_encodings, name_mappings = GraphExporter.load(str(data_path))
         _model_cache['route_data'] = data
         _model_cache['route_mappings'] = node_mappings
+        _model_cache['route_names'] = name_mappings
         
         metadata = (list(data.node_types), list(data.edge_types))
         in_channels_dict = {}
@@ -186,7 +190,7 @@ def load_route_model():
         model.eval()
         _model_cache['route'] = model
     
-    return _model_cache['route'], _model_cache['route_data'], _model_cache['route_mappings']
+    return _model_cache['route'], _model_cache['route_data'], _model_cache['route_mappings'], _model_cache['route_names']
 
 
 def find_node_index(node_type: str, identifier: str, mappings: dict, data) -> Optional[int]:
@@ -205,8 +209,8 @@ def find_node_index(node_type: str, identifier: str, mappings: dict, data) -> Op
     return None
 
 
-def get_node_info(node_type: str, idx: int, mappings: dict, data) -> Dict[str, Any]:
-    """Get node information from index"""
+def get_node_info(node_type: str, idx: int, mappings: dict, data, name_mappings: dict = None) -> Dict[str, Any]:
+    """Get node information from index, including human-readable name"""
     node_id = f"node_{idx}"
     if node_type in mappings:
         type_mapping = mappings[node_type]
@@ -215,6 +219,12 @@ def get_node_info(node_type: str, idx: int, mappings: dict, data) -> Dict[str, A
         node_id = idx_to_id.get(idx, f"node_{idx}")
     
     info = {'id': node_id, 'index': idx, 'type': node_type}
+    
+    # Add human-readable name
+    if name_mappings and node_type in name_mappings:
+        name = name_mappings[node_type].get(idx, node_id)
+        info['name'] = name
+    
     if hasattr(data[node_type], 'x'):
         info['features'] = data[node_type].x[idx].tolist()
     return info
@@ -257,7 +267,7 @@ async def get_gnn_status():
 async def get_hotel_model_info():
     """Get information about the Hotel Recommender GNN model."""
     try:
-        model, data, mappings = load_hotel_model()
+        model, data, mappings = load_hotel_model()[:3]
         checkpoint_info = getattr(model, '_checkpoint_info', {})
         config = model.config
         
@@ -282,7 +292,7 @@ async def get_hotel_model_info():
 async def get_route_model_info():
     """Get information about the Route Optimizer GNN model."""
     try:
-        model, data, mappings = load_route_model()
+        model, data, mappings = load_route_model()[:3]
         checkpoint_info = getattr(model, '_checkpoint_info', {})
         config = model.config
         
@@ -303,7 +313,7 @@ async def get_route_model_info():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/hotels/recommend", response_model=HotelRecommendationResponse, summary="Get Hotel Recommendations")
+@router.post("/hotels/similarity", response_model=HotelRecommendationResponse, summary="Get Hotel Recommendations")
 async def get_hotel_recommendations(request: HotelRecommendationRequest):
     """
     Get hotel recommendations based on GNN embeddings.
@@ -314,7 +324,7 @@ async def get_hotel_recommendations(request: HotelRecommendationRequest):
     start_time = time.time()
     
     try:
-        model, data, mappings = load_hotel_model()
+        model, data, mappings, name_maps = load_hotel_model()
         
         with torch.no_grad():
             embeddings = model.encode(data)
@@ -335,7 +345,7 @@ async def get_hotel_recommendations(request: HotelRecommendationRequest):
             if query_idx is None:
                 raise HTTPException(status_code=404, detail=f"Hotel not found: {identifier}")
             
-            query_hotel = get_node_info('Hotel', query_idx, mappings, data)
+            query_hotel = get_node_info('Hotel', query_idx, mappings, data, name_maps)
             
             query_emb = hotel_emb_norm[query_idx].unsqueeze(0)
             similarities = torch.mm(query_emb, hotel_emb_norm.t()).squeeze(0)
@@ -347,7 +357,7 @@ async def get_hotel_recommendations(request: HotelRecommendationRequest):
                 idx = idx.item()
                 sim = similarities[idx].item()
                 if sim >= request.min_similarity:
-                    hotel_info = get_node_info('Hotel', idx, mappings, data)
+                    hotel_info = get_node_info('Hotel', idx, mappings, data, name_maps)
                     hotel_info['similarity_score'] = round(sim, 4)
                     recommendations.append(hotel_info)
         else:
@@ -360,7 +370,7 @@ async def get_hotel_recommendations(request: HotelRecommendationRequest):
             for idx in top_k_indices:
                 idx = idx.item()
                 rating = predicted_ratings[idx].item()
-                hotel_info = get_node_info('Hotel', idx, mappings, data)
+                hotel_info = get_node_info('Hotel', idx, mappings, data, name_maps)
                 hotel_info['predicted_rating'] = round(rating, 2)
                 recommendations.append(hotel_info)
         
@@ -403,7 +413,7 @@ async def score_route(request: RouteScoreRequest):
     start_time = time.time()
     
     try:
-        model, data, mappings = load_route_model()
+        model, data, mappings, name_maps = load_route_model()
         
         with torch.no_grad():
             embeddings = model.encode(data)
@@ -420,8 +430,8 @@ async def score_route(request: RouteScoreRequest):
         if dst_idx is None:
             raise HTTPException(status_code=404, detail=f"Destination station not found: {request.destination_station}")
         
-        src_info = get_node_info('RailwayStation', src_idx, mappings, data)
-        dst_info = get_node_info('RailwayStation', dst_idx, mappings, data)
+        src_info = get_node_info('RailwayStation', src_idx, mappings, data, name_maps)
+        dst_info = get_node_info('RailwayStation', dst_idx, mappings, data, name_maps)
         
         src_emb = station_emb[src_idx].unsqueeze(0)
         dst_emb = station_emb[dst_idx].unsqueeze(0)
@@ -460,7 +470,7 @@ async def find_similar_stations(
     start_time = time.time()
     
     try:
-        model, data, mappings = load_route_model()
+        model, data, mappings, name_maps = load_route_model()
         
         with torch.no_grad():
             embeddings = model.encode(data)
@@ -473,7 +483,7 @@ async def find_similar_stations(
         if query_idx is None:
             raise HTTPException(status_code=404, detail=f"Station not found: {station_name}")
         
-        query_info = get_node_info('RailwayStation', query_idx, mappings, data)
+        query_info = get_node_info('RailwayStation', query_idx, mappings, data, name_maps)
         
         station_emb_norm = F.normalize(station_emb, dim=1)
         query_emb = station_emb_norm[query_idx].unsqueeze(0)
@@ -487,7 +497,7 @@ async def find_similar_stations(
         for idx in top_k_indices:
             idx = idx.item()
             sim = similarities[idx].item()
-            station_info = get_node_info('RailwayStation', idx, mappings, data)
+            station_info = get_node_info('RailwayStation', idx, mappings, data, name_maps)
             station_info['similarity_score'] = round(sim, 4)
             similar_stations.append(station_info)
         
@@ -513,15 +523,17 @@ async def find_similar_stations(
 async def get_node_embedding(node_type: str, node_id: str):
     """Get the GNN embedding for a specific node."""
     try:
-        hotel_types = {'Hotel', 'PointOfInterest', 'Attraction', 'Amenity', 'Province', 'District'}
-        route_types = {'RailwayStation', 'TrainSchedule', 'District'}
+        hotel_types = {'Hotel', 'PointOfInterest', 'Attraction', 'Amenity', 'Province', 'District',
+                       'SubAttraction', 'POIGroup', 'Event', 'Venue', 'Organizer', 'EventType'}
+        route_types = {'RailwayStation', 'TrainSchedule', 'District',
+                       'TransportationInfrastructure', 'TransportationService', 'BusDepot'}
         
         if node_type in hotel_types:
-            model, data, mappings = load_hotel_model()
+            model, data, mappings, name_maps = load_hotel_model()
             with torch.no_grad():
                 embeddings = model.encode(data)
         elif node_type in route_types:
-            model, data, mappings = load_route_model()
+            model, data, mappings, name_maps = load_route_model()
             with torch.no_grad():
                 embeddings = model.encode(data)
         else:
@@ -563,5 +575,100 @@ async def reload_models():
         'hotel': None, 'route': None,
         'hotel_data': None, 'route_data': None,
         'hotel_mappings': None, 'route_mappings': None,
+        'hotel_names': None, 'route_names': None,
     }
     return {'status': 'success', 'message': 'Model cache cleared. Models will be reloaded on next request.'}
+
+
+@router.get("/hotels/list", summary="List All Hotels")
+async def list_all_hotels():
+    """List all hotels available in the GNN model with their IDs and names."""
+    try:
+        model, data, mappings, name_maps = load_hotel_model()
+        
+        hotel_mapping = mappings.get('Hotel')
+        if not hotel_mapping:
+            raise HTTPException(status_code=500, detail="No hotel mappings found")
+        
+        hotels = []
+        hotel_names = name_maps.get('Hotel', {})
+        for idx, node_id in hotel_mapping.idx_to_neo4j.items():
+            hotels.append({
+                'id': node_id,
+                'name': hotel_names.get(idx, node_id),
+                'index': idx,
+            })
+        
+        return {
+            'total': len(hotels),
+            'hotels': sorted(hotels, key=lambda x: x['name']),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/stations/list", summary="List All Stations")
+async def list_all_stations():
+    """List all railway stations available in the GNN model."""
+    try:
+        model, data, mappings, name_maps = load_route_model()
+        
+        station_mapping = mappings.get('RailwayStation')
+        if not station_mapping:
+            raise HTTPException(status_code=500, detail="No station mappings found")
+        
+        stations = []
+        station_names = name_maps.get('RailwayStation', {})
+        for idx, node_id in station_mapping.idx_to_neo4j.items():
+            stations.append({
+                'id': node_id,
+                'name': station_names.get(idx, node_id),
+                'index': idx,
+            })
+        
+        return {
+            'total': len(stations),
+            'stations': sorted(stations, key=lambda x: x['name']),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/graph/stats", summary="Graph Statistics")
+async def get_graph_stats():
+    """Get statistics about the exported graph data."""
+    stats = {}
+    
+    try:
+        _, hotel_data, _, hotel_names = load_hotel_model()
+        stats['hotel_graph'] = {
+            'node_types': {nt: hotel_data[nt].num_nodes for nt in hotel_data.node_types},
+            'edge_types': {
+                f"{s}-[{r}]->{d}": hotel_data[s, r, d].edge_index.shape[1]
+                for s, r, d in hotel_data.edge_types
+            },
+            'total_nodes': sum(hotel_data[nt].num_nodes for nt in hotel_data.node_types),
+            'total_edges': sum(hotel_data[s, r, d].edge_index.shape[1] for s, r, d in hotel_data.edge_types),
+        }
+    except:
+        stats['hotel_graph'] = 'not loaded'
+    
+    try:
+        _, route_data, _, route_names = load_route_model()
+        stats['route_graph'] = {
+            'node_types': {nt: route_data[nt].num_nodes for nt in route_data.node_types},
+            'edge_types': {
+                f"{s}-[{r}]->{d}": route_data[s, r, d].edge_index.shape[1]
+                for s, r, d in route_data.edge_types
+            },
+            'total_nodes': sum(route_data[nt].num_nodes for nt in route_data.node_types),
+            'total_edges': sum(route_data[s, r, d].edge_index.shape[1] for s, r, d in route_data.edge_types),
+        }
+    except:
+        stats['route_graph'] = 'not loaded'
+    
+    return stats

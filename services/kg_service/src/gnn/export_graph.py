@@ -49,14 +49,63 @@ class GraphExporter:
     ):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
         self.node_mappings: Dict[str, NodeMapping] = {}
+        self.name_mappings: Dict[str, Dict[int, str]] = {}  # node_type -> {idx: readable_name}
         
         # Feature configuration for each node type
         self.node_feature_config = {
+            # === Tourism Core ===
             'Hotel': {
                 'numerical': ['rating', 'reviews_count', 'latitude', 'longitude', 'distance_to_attraction_km'],
                 'categorical': ['price_tier', 'proximity_level'],
                 'binary': ['eco_certified'],
             },
+            'Attraction': {
+                'numerical': ['latitude', 'longitude'],
+                'categorical': ['province', 'district'],
+                'binary': [],
+            },
+            'SubAttraction': {
+                'numerical': ['rating', 'userRatingsTotal', 'latitude', 'longitude'],
+                'categorical': ['primaryType', 'naturalType', 'district', 'province'],
+                'binary': [],
+            },
+            'PointOfInterest': {
+                'numerical': ['latitude', 'longitude', 'rating', 'reviews'],
+                'categorical': ['category'],
+                'binary': [],
+            },
+            'Amenity': {
+                'numerical': [],
+                'categorical': ['category'],
+                'binary': [],
+            },
+            'POIGroup': {
+                'numerical': [],
+                'categorical': [],
+                'binary': [],
+            },
+            # === Events ===
+            'Event': {
+                'numerical': [],
+                'categorical': ['visibility'],
+                'binary': [],
+            },
+            'Venue': {
+                'numerical': [],
+                'categorical': [],
+                'binary': [],
+            },
+            'Organizer': {
+                'numerical': [],
+                'categorical': [],
+                'binary': [],
+            },
+            'EventType': {
+                'numerical': [],
+                'categorical': [],
+                'binary': [],
+            },
+            # === Transportation - Rail ===
             'RailwayStation': {
                 'numerical': ['latitude', 'longitude', 'google_rating', 'google_ratings_total'],
                 'categorical': ['province', 'district'],
@@ -67,21 +116,23 @@ class GraphExporter:
                 'categorical': ['train_type'],
                 'binary': [],
             },
-            'PointOfInterest': {
-                'numerical': ['latitude', 'longitude', 'rating', 'reviews'],
-                'categorical': ['category'],
+            # === Transportation - Bus ===
+            'TransportationInfrastructure': {
+                'numerical': ['latitude', 'longitude', 'google_rating', 'google_ratings_total'],
+                'categorical': ['province', 'district', 'city'],
+                'binary': ['is_major_station'],
+            },
+            'TransportationService': {
+                'numerical': ['distance_km', 'daily_train_count'],
+                'categorical': ['train_type'],
                 'binary': [],
             },
-            'Attraction': {
-                'numerical': ['latitude', 'longitude'],
-                'categorical': ['province', 'district'],
-                'binary': [],
-            },
-            'Amenity': {
+            'BusDepot': {
                 'numerical': [],
-                'categorical': ['category'],
+                'categorical': [],
                 'binary': [],
             },
+            # === Geography ===
             'District': {
                 'numerical': [],
                 'categorical': ['provinceCode'],
@@ -97,34 +148,71 @@ class GraphExporter:
                 'categorical': [],
                 'binary': [],
             },
+            # === Temporal ===
+            'Month': {
+                'numerical': [],
+                'categorical': [],
+                'binary': [],
+            },
             'Holiday': {
                 'numerical': ['duration_days', 'day', 'month', 'year'],
                 'categorical': ['holiday_type', 'category'],
                 'binary': ['isPublicHoliday'],
             },
+            'Year': {
+                'numerical': ['year'],
+                'categorical': [],
+                'binary': [],
+            },
         }
         
-        # Edge types to export
+        # Complete edge types from Neo4j knowledge graph
         self.edge_types = [
+            # --- Hotel Edges ---
             ('Hotel', 'OFFERS_AMENITY', 'Amenity'),
             ('Hotel', 'NEARBY_POI', 'PointOfInterest'),
             ('Hotel', 'ACCESSIBLE_VIA', 'PointOfInterest'),
             ('Hotel', 'NEAR_ATTRACTION', 'Attraction'),
             ('Hotel', 'LOCATED_IN_DISTRICT', 'District'),
-            ('Hotel', 'LOCATED_IN_PROVINCE', 'Province'),
             ('Hotel', 'BELONGS_TO_DOMAIN', 'Domain'),
+            # --- SubAttraction Edges (connects sub-attractions to hotels!) ---
+            ('SubAttraction', 'NEAR_HOTEL', 'Hotel'),
+            ('SubAttraction', 'SUB_ATTRACTION_OF', 'Attraction'),
+            ('SubAttraction', 'BELONGS_TO_GROUP', 'POIGroup'),
+            ('SubAttraction', 'LOCATED_IN', 'District'),
+            # --- Attraction Edges ---
+            ('Attraction', 'LOCATED_IN', 'District'),
+            ('Attraction', 'IN_PROVINCE', 'Province'),
+            ('Attraction', 'BELONGS_TO_DOMAIN', 'Domain'),
+            # --- Event Edges ---
+            ('Event', 'IN_MONTH', 'Month'),
+            ('Event', 'ORGANIZED_BY', 'Organizer'),
+            ('Event', 'HELD_AT', 'Venue'),
+            ('Event', 'HAS_TYPE', 'EventType'),
+            ('Event', 'IN_YEAR', 'Year'),
+            ('Event', 'BELONGS_TO_DOMAIN', 'Domain'),
+            # --- Train Transport Edges ---
             ('TrainSchedule', 'DEPARTS_FROM', 'RailwayStation'),
             ('TrainSchedule', 'ARRIVES_AT', 'RailwayStation'),
             ('TrainSchedule', 'BELONGS_TO_DOMAIN', 'Domain'),
             ('RailwayStation', 'CONNECTED_BY_TRAIN', 'RailwayStation'),
             ('RailwayStation', 'LOCATED_IN_DISTRICT', 'District'),
             ('RailwayStation', 'BELONGS_TO_DOMAIN', 'Domain'),
-            ('Attraction', 'LOCATED_IN', 'District'),
-            ('Attraction', 'IN_PROVINCE', 'Province'),
-            ('Attraction', 'BEST_SEASON', 'Month'),
-            ('Attraction', 'SIMILAR_TO', 'Attraction'),
+            # --- Bus Transport Edges ---
+            ('TransportationInfrastructure', 'BELONGS_TO_DOMAIN', 'Domain'),
+            ('TransportationInfrastructure', 'LOCATED_IN_DISTRICT', 'District'),
+            ('TransportationInfrastructure', 'CONNECTED_BY_BUS', 'TransportationInfrastructure'),
+            ('TransportationService', 'DEPARTS_FROM', 'TransportationInfrastructure'),
+            ('TransportationService', 'ARRIVES_AT', 'TransportationInfrastructure'),
+            ('TransportationService', 'OPERATED_BY_DEPOT', 'BusDepot'),
+            ('TransportationService', 'BELONGS_TO_DOMAIN', 'Domain'),
+            # --- Geography Edges ---
             ('District', 'IN_PROVINCE', 'Province'),
-            ('District', 'SIMILAR_TO', 'District'),
+            ('Domain', 'HAS_DISTRICT', 'District'),
+            # --- Temporal Edges ---
+            ('Month', 'IN_YEAR', 'Year'),
+            ('Year', 'HAS_MONTH', 'Month'),
+            ('Month', 'HAS_HOLIDAY', 'Holiday'),
         ]
         
         # Categorical encodings (populated during export)
@@ -216,13 +304,14 @@ class GraphExporter:
             - metadata dict
         """
         with self.driver.session() as session:
-            # Get ID field based on node type
+            # Get ID and name fields based on node type
             id_field = self._get_id_field(node_type)
+            name_field = self._get_name_field(node_type)
             
             # Query all nodes of this type
             result = session.run(f"""
                 MATCH (n:{node_type})
-                RETURN n, {id_field} as node_id
+                RETURN n, {id_field} as node_id, {name_field} as node_name
             """)
             
             records = list(result)
@@ -234,6 +323,12 @@ class GraphExporter:
             node_ids = [str(r['node_id']) for r in records]
             mapping = NodeMapping.from_ids(node_ids)
             self.node_mappings[node_type] = mapping
+            
+            # Store human-readable names
+            self.name_mappings[node_type] = {}
+            for i, record in enumerate(records):
+                name = record.get('node_name')
+                self.name_mappings[node_type][i] = str(name) if name else node_ids[i]
             
             # Extract features
             config = self.node_feature_config.get(node_type, {
@@ -255,7 +350,10 @@ class GraphExporter:
                         value = self._parse_duration(value)
                     elif field == 'distance':
                         value = self._parse_distance(value)
-                    node_features.append(float(value) if value is not None else 0.0)
+                    try:
+                        node_features.append(float(value) if value is not None else 0.0)
+                    except (ValueError, TypeError):
+                        node_features.append(0.0)
                 
                 # Categorical features (as indices for later embedding)
                 for field in config.get('categorical', []):
@@ -310,9 +408,47 @@ class GraphExporter:
             'Domain': 'n.code',
             'Holiday': 'n.id',
             'Month': 'n.name',
-            'Year': 'n.name',
+            'Year': 'n.year',
+            'SubAttraction': 'n.name',
+            'Event': 'n.eventId',
+            'Venue': 'n.name',
+            'Organizer': 'n.name',
+            'EventType': 'n.name',
+            'TransportationInfrastructure': 'n.station_id',
+            'TransportationService': 'n.schedule_id',
+            'BusDepot': 'n.name',
+            'POIGroup': 'n.name',
+            'Country': 'n.name',
         }
         return id_fields.get(node_type, 'id(n)')
+    
+    def _get_name_field(self, node_type: str) -> str:
+        """Get the human-readable name field for a node type"""
+        name_fields = {
+            'Hotel': 'n.name',
+            'RailwayStation': 'n.name',
+            'TrainSchedule': 'n.train_number',
+            'PointOfInterest': 'n.name',
+            'Attraction': 'n.title',
+            'SubAttraction': 'n.name',
+            'Amenity': 'n.name',
+            'District': 'n.name',
+            'Province': 'n.name',
+            'Domain': 'n.name',
+            'Holiday': 'n.name',
+            'Month': 'n.name',
+            'Year': 'n.year',
+            'Event': 'n.title',
+            'Venue': 'n.name',
+            'Organizer': 'n.name',
+            'EventType': 'n.name',
+            'TransportationInfrastructure': 'n.name',
+            'TransportationService': 'n.train_number',
+            'BusDepot': 'n.name',
+            'POIGroup': 'n.name',
+            'Country': 'n.name',
+        }
+        return name_fields.get(node_type, 'n.name')
     
     def export_edges(
         self, 
@@ -463,12 +599,17 @@ class GraphExporter:
             'data': data,
             'node_mappings': {k: (v.neo4j_to_idx, v.idx_to_neo4j) for k, v in self.node_mappings.items()},
             'categorical_encodings': self.categorical_encodings,
+            'name_mappings': self.name_mappings,
         }, path)
         print(f"💾 Saved to {path}")
     
     @staticmethod
-    def load(path: str) -> Tuple['HeteroData', Dict, Dict]:
-        """Load HeteroData from disk"""
+    def load(path: str) -> Tuple['HeteroData', Dict, Dict, Dict]:
+        """Load HeteroData from disk
+        
+        Returns:
+            (data, node_mappings, categorical_encodings, name_mappings)
+        """
         checkpoint = torch.load(path, weights_only=False)
         data = checkpoint['data']
         node_mappings = {
@@ -476,7 +617,8 @@ class GraphExporter:
             for k, v in checkpoint['node_mappings'].items()
         }
         categorical_encodings = checkpoint['categorical_encodings']
-        return data, node_mappings, categorical_encodings
+        name_mappings = checkpoint.get('name_mappings', {})
+        return data, node_mappings, categorical_encodings, name_mappings
 
 
 class TrainScheduleGraphExporter(GraphExporter):
@@ -555,20 +697,130 @@ class TrainScheduleGraphExporter(GraphExporter):
 class HotelGraphExporter(GraphExporter):
     """
     Specialized exporter for hotel recommendation subgraph.
+    Includes SubAttraction→NEAR_HOTEL→Hotel edges (1,423 edges)
+    for enriched hotel context from nearby attractions.
     """
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
-        # Focus on hotel-related nodes/edges
+        # Hotel-focused nodes/edges including SubAttraction connections
         self.edge_types = [
+            # Hotel direct edges
             ('Hotel', 'OFFERS_AMENITY', 'Amenity'),
             ('Hotel', 'NEARBY_POI', 'PointOfInterest'),
             ('Hotel', 'NEAR_ATTRACTION', 'Attraction'),
             ('Hotel', 'LOCATED_IN_DISTRICT', 'District'),
-            ('Hotel', 'LOCATED_IN_PROVINCE', 'Province'),
-            ('Attraction', 'SIMILAR_TO', 'Attraction'),
+            ('Hotel', 'BELONGS_TO_DOMAIN', 'Domain'),
+            # SubAttraction→Hotel (enriches hotel context with nearby sub-attractions)
+            ('SubAttraction', 'NEAR_HOTEL', 'Hotel'),
+            ('SubAttraction', 'SUB_ATTRACTION_OF', 'Attraction'),
+            ('SubAttraction', 'BELONGS_TO_GROUP', 'POIGroup'),
+            ('SubAttraction', 'LOCATED_IN', 'District'),
+            # Attraction context
+            ('Attraction', 'LOCATED_IN', 'District'),
+            ('Attraction', 'IN_PROVINCE', 'Province'),
+            # Geography
             ('District', 'IN_PROVINCE', 'Province'),
+        ]
+
+
+class TransportGraphExporter(GraphExporter):
+    """
+    Specialized exporter for transport subgraph (trains + buses).
+    Combines railway and bus networks into a unified transport graph.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        self.edge_types = [
+            # Train network
+            ('TrainSchedule', 'DEPARTS_FROM', 'RailwayStation'),
+            ('TrainSchedule', 'ARRIVES_AT', 'RailwayStation'),
+            ('RailwayStation', 'CONNECTED_BY_TRAIN', 'RailwayStation'),
+            ('RailwayStation', 'LOCATED_IN_DISTRICT', 'District'),
+            # Bus network
+            ('TransportationService', 'DEPARTS_FROM', 'TransportationInfrastructure'),
+            ('TransportationService', 'ARRIVES_AT', 'TransportationInfrastructure'),
+            ('TransportationInfrastructure', 'CONNECTED_BY_BUS', 'TransportationInfrastructure'),
+            ('TransportationInfrastructure', 'LOCATED_IN_DISTRICT', 'District'),
+            ('TransportationService', 'OPERATED_BY_DEPOT', 'BusDepot'),
+        ]
+    
+    def export_with_temporal_features(self) -> 'HeteroData':
+        """Export with temporal encoding for train schedules"""
+        data = self.export()
+        
+        # Add temporal features to train schedules
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (t:TrainSchedule)
+                RETURN t.schedule_id as id, t.departure_time as dep, t.arrival_time as arr
+            """)
+            
+            temporal_features = []
+            for record in result:
+                dep_hour = self._parse_time_to_hour(record['dep'])
+                arr_hour = self._parse_time_to_hour(record['arr'])
+                
+                # Cyclical encoding for time
+                temporal_features.append([
+                    np.sin(2 * np.pi * dep_hour / 24),
+                    np.cos(2 * np.pi * dep_hour / 24),
+                    np.sin(2 * np.pi * arr_hour / 24),
+                    np.cos(2 * np.pi * arr_hour / 24),
+                ])
+            
+            if temporal_features:
+                temporal_tensor = torch.tensor(temporal_features, dtype=torch.float32)
+                if 'TrainSchedule' in data.node_types:
+                    data['TrainSchedule'].temporal_x = temporal_tensor
+        
+        return data
+    
+    def _parse_time_to_hour(self, time_str: str) -> float:
+        """Parse time string to hour (0-24)"""
+        if not time_str:
+            return 12.0
+        
+        try:
+            time_str = time_str.upper().strip()
+            is_pm = 'PM' in time_str
+            time_str = time_str.replace('AM', '').replace('PM', '').strip()
+            
+            parts = time_str.split(':')
+            hour = int(parts[0])
+            minute = int(parts[1]) if len(parts) > 1 else 0
+            
+            if is_pm and hour != 12:
+                hour += 12
+            elif not is_pm and hour == 12:
+                hour = 0
+            
+            return hour + minute / 60
+        except:
+            return 12.0
+
+
+class EventGraphExporter(GraphExporter):
+    """
+    Specialized exporter for event subgraph.
+    Captures event relationships with venues, organizers, and temporal data.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        self.edge_types = [
+            ('Event', 'IN_MONTH', 'Month'),
+            ('Event', 'ORGANIZED_BY', 'Organizer'),
+            ('Event', 'HELD_AT', 'Venue'),
+            ('Event', 'HAS_TYPE', 'EventType'),
+            ('Event', 'IN_YEAR', 'Year'),
+            ('Event', 'BELONGS_TO_DOMAIN', 'Domain'),
+            ('Month', 'IN_YEAR', 'Year'),
+            ('Month', 'HAS_HOLIDAY', 'Holiday'),
         ]
 
 
@@ -589,5 +841,13 @@ if __name__ == "__main__":
     with HotelGraphExporter() as exporter:
         hotel_data = exporter.export()
         exporter.save(hotel_data, "graphceylon_hotels.pt")
+    
+    with TransportGraphExporter() as exporter:
+        transport_data = exporter.export_with_temporal_features()
+        exporter.save(transport_data, "graphceylon_transport.pt")
+    
+    with EventGraphExporter() as exporter:
+        event_data = exporter.export()
+        exporter.save(event_data, "graphceylon_events.pt")
     
     print("\n✅ All exports complete!")

@@ -54,7 +54,10 @@ def check_dependencies():
 
 def export_graph(output_dir: str = "data/gnn"):
     """Export Neo4j graph to PyTorch Geometric format"""
-    from gnn.export_graph import GraphExporter, TrainScheduleGraphExporter, HotelGraphExporter
+    from gnn.export_graph import (
+        GraphExporter, TrainScheduleGraphExporter, HotelGraphExporter,
+        TransportGraphExporter, EventGraphExporter
+    )
     
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -64,22 +67,34 @@ def export_graph(output_dir: str = "data/gnn"):
     print("=" * 60)
     
     # Full graph export
-    print("\n[1/3] Exporting full graph...")
+    print("\n[1/5] Exporting full graph...")
     with GraphExporter() as exporter:
         data = exporter.export()
         exporter.save(data, str(output_path / "graphceylon_full.pt"))
     
-    # Train schedule subgraph
-    print("\n[2/3] Exporting train schedule subgraph...")
+    # Train schedule subgraph (backward compat)
+    print("\n[2/5] Exporting train schedule subgraph...")
     with TrainScheduleGraphExporter() as exporter:
         train_data = exporter.export_with_temporal_features()
         exporter.save(train_data, str(output_path / "graphceylon_trains.pt"))
     
-    # Hotel subgraph
-    print("\n[3/3] Exporting hotel subgraph...")
+    # Hotel subgraph (now includes SubAttraction edges)
+    print("\n[3/5] Exporting hotel subgraph...")
     with HotelGraphExporter() as exporter:
         hotel_data = exporter.export()
         exporter.save(hotel_data, str(output_path / "graphceylon_hotels.pt"))
+    
+    # Transport subgraph (trains + buses)
+    print("\n[4/5] Exporting transport subgraph...")
+    with TransportGraphExporter() as exporter:
+        transport_data = exporter.export_with_temporal_features()
+        exporter.save(transport_data, str(output_path / "graphceylon_transport.pt"))
+    
+    # Event subgraph
+    print("\n[5/5] Exporting event subgraph...")
+    with EventGraphExporter() as exporter:
+        event_data = exporter.export()
+        exporter.save(event_data, str(output_path / "graphceylon_events.pt"))
     
     print("\n✅ Export complete!")
     print(f"   Files saved to: {output_path}")
@@ -100,7 +115,7 @@ def train_hotel(data_path: str = "data/gnn/graphceylon_hotels.pt"):
     
     # Load data
     print(f"\nLoading data from {data_path}...")
-    data, node_mappings, cat_encodings = GraphExporter.load(data_path)
+    data, node_mappings, cat_encodings, name_mappings = GraphExporter.load(data_path)
     
     # Get metadata
     metadata = (list(data.node_types), list(data.edge_types))
@@ -131,9 +146,9 @@ def train_hotel(data_path: str = "data/gnn/graphceylon_hotels.pt"):
     
     # Train with reporting enabled
     train_config = TrainingConfig(
-        epochs=50,
+        epochs=150,
         learning_rate=0.001,
-        patience=10,
+        patience=20,
         log_interval=5,
         generate_report=True,
         report_dir="reports",
@@ -159,7 +174,7 @@ def train_route(data_path: str = "data/gnn/graphceylon_trains.pt"):
     
     # Load data
     print(f"\nLoading data from {data_path}...")
-    data, node_mappings, cat_encodings = GraphExporter.load(data_path)
+    data, node_mappings, cat_encodings, name_mappings = GraphExporter.load(data_path)
     
     metadata = (list(data.node_types), list(data.edge_types))
     
@@ -216,7 +231,7 @@ def evaluate_hotel(
     print("=" * 60)
     
     # Load data and model
-    data, node_mappings, cat_encodings = GraphExporter.load(data_path)
+    data, node_mappings, cat_encodings, name_mappings = GraphExporter.load(data_path)
     metadata = (list(data.node_types), list(data.edge_types))
     
     in_channels_dict = {}
@@ -258,7 +273,7 @@ def evaluate_route(
     print("📊 EVALUATING ROUTE OPTIMIZER")
     print("=" * 60)
     
-    data, node_mappings, cat_encodings = GraphExporter.load(data_path)
+    data, node_mappings, cat_encodings, name_mappings = GraphExporter.load(data_path)
     metadata = (list(data.node_types), list(data.edge_types))
     
     in_channels_dict = {}
