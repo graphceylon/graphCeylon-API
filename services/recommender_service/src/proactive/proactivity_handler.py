@@ -265,16 +265,16 @@ def _fetch_nearby_hotels(
 def _fetch_nearby_restaurants(
     city: str | None,
     *,
-    limit: int = 10,
-    timeout: float = 15.0,
+    limit: int = 5,
+    timeout: float = 3.0,
 ) -> List[Dict[str, Any]]:
     """
-    Best-effort fetch of restaurants in the resolved city from the
-    restaurant search endpoint.  Returns an empty list on failure so
-    the handler degrades gracefully.
+    Fast-fail restaurant fetch for proactive heartbeat.
+    Never block the whole context-check for too long.
     """
     if not city:
         return []
+
     try:
         import httpx
 
@@ -289,6 +289,7 @@ def _fetch_nearby_restaurants(
             "session_id": "proactive-heartbeat",
             "query": f"What are the best restaurants in {city}?",
         }
+
         with httpx.Client(timeout=timeout) as client:
             r = client.post(url, json=body)
             r.raise_for_status()
@@ -296,7 +297,11 @@ def _fetch_nearby_restaurants(
 
         items = data.get("items") or data.get("restaurants") or []
         logger.info("Fetched %d restaurants for city=%s", len(items), city)
-        return items
+        return items[:limit]
+
+    except httpx.TimeoutException:
+        logger.warning("Restaurant fetch for '%s' timed out after %.1fs", city, timeout)
+        return []
     except Exception as exc:
         logger.warning("Restaurant fetch for '%s' failed: %s", city, exc)
         return []
