@@ -42,10 +42,9 @@ CREATE INDEX poi_group_name_idx IF NOT EXISTS FOR (g:POIGroup) ON (g.name);
 // Vector index for embedding-based semantic search
 // Using cosine similarity for normalized embeddings
 // Dimension 768 matches sentence-transformers/all-mpnet-base-v2
-CALL db.index.vector.createNodeIndex(
-'sub_attraction_embeddings',
-'SubAttraction',
-'embedding',
-768,
-'cosine'
-);
+CREATE VECTOR INDEX sub_attraction_embeddings IF NOT EXISTS
+FOR (s:SubAttraction) ON (s.embedding)
+OPTIONS {indexConfig: {
+  `vector.dimensions`: 768,
+  `vector.similarity_function`: 'cosine'
+}};

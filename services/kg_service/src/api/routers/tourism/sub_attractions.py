@@ -692,7 +692,8 @@ def vector_search_sub_attractions(
         results = embedding_service.vector_search(
             query=query,
             limit=limit,
-            similarity_threshold=similarity_threshold
+            similarity_threshold=similarity_threshold,
+            rejected_categories=REJECTED_POI_CATEGORIES,
         )
         
         return {

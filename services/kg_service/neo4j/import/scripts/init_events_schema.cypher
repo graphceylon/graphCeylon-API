@@ -22,5 +22,13 @@ CREATE INDEX event_visibility IF NOT EXISTS FOR (e:Event) ON (e.visibility);
 
 CREATE INDEX event_venue IF NOT EXISTS FOR (e:Event) ON (e.venue);
 
+// Vector index for semantic event search (768 dimensions, cosine similarity)
+CREATE VECTOR INDEX event_embeddings IF NOT EXISTS
+FOR (e:Event) ON (e.embedding)
+OPTIONS {indexConfig: {
+  `vector.dimensions`: 768,
+  `vector.similarity_function`: 'cosine'
+}};
+
 // Performance indexes — Venue
 CREATE INDEX venue_city IF NOT EXISTS FOR (v:Venue) ON (v.city);

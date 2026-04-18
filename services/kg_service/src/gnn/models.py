@@ -107,16 +107,25 @@ class HeterogeneousGNN(nn.Module):
         x_dict: Dict[str, torch.Tensor], 
         edge_index_dict: Dict
     ) -> Dict[str, torch.Tensor]:
-        """Forward pass"""
+        """Forward pass with skip connections to prevent over-smoothing"""
         # Project inputs
         h_dict = {}
         for node_type in self.node_types:
             if node_type in x_dict and x_dict[node_type] is not None:
                 h_dict[node_type] = self.input_projections[node_type](x_dict[node_type])
         
+        # Save initial projected features for skip connection
+        h_init = {nt: h.clone() for nt, h in h_dict.items()}
+        
         # Message passing
         for _ in range(self.config.num_layers):
             h_dict = self._message_passing_layer(h_dict, edge_index_dict)
+        
+        # Skip connection: combine initial features with GNN output
+        # This preserves node-specific information lost through over-smoothing
+        for node_type in h_dict:
+            if node_type in h_init:
+                h_dict[node_type] = h_dict[node_type] + h_init[node_type]
         
         # Output projection
         out_dict = {}
@@ -228,9 +237,15 @@ class HotelRecommenderGNN(nn.Module):
         self.encoder = HeterogeneousGNN(metadata, in_channels_dict, config)
         self.config = config
         
-        # Hotel-specific layers
+        # Learnable per-hotel node embeddings to prevent over-smoothing
+        # Hotels sharing the same neighborhood get unique identity features
+        num_hotels = 200  # Upper bound, will be sliced at runtime
+        self.hotel_node_emb = nn.Embedding(num_hotels, config.out_channels)
+        nn.init.normal_(self.hotel_node_emb.weight, std=0.5)
+        
+        # Hotel-specific layers — takes GNN output + node identity
         self.hotel_mlp = nn.Sequential(
-            nn.Linear(config.out_channels, config.out_channels),
+            nn.Linear(config.out_channels * 2, config.out_channels),
             nn.ReLU(),
             nn.Dropout(config.dropout),
             nn.Linear(config.out_channels, config.out_channels),
@@ -266,9 +281,16 @@ class HotelRecommenderGNN(nn.Module):
         
         embeddings = self.encoder(x_dict, edge_index_dict)
         
-        # Apply hotel-specific transformation
+        # Apply hotel-specific transformation with node identity
         if 'Hotel' in embeddings:
-            embeddings['Hotel'] = self.hotel_mlp(embeddings['Hotel'])
+            num_hotels = embeddings['Hotel'].shape[0]
+            node_ids = torch.arange(num_hotels, device=embeddings['Hotel'].device)
+            # Clamp to embedding table size
+            node_ids = node_ids.clamp(max=self.hotel_node_emb.num_embeddings - 1)
+            identity = self.hotel_node_emb(node_ids)
+            # Concatenate GNN output with unique node identity
+            combined = torch.cat([embeddings['Hotel'], identity], dim=-1)
+            embeddings['Hotel'] = self.hotel_mlp(combined)
         
         return embeddings
     

@@ -390,7 +390,8 @@ class SubAttractionEmbeddingService:
         self,
         query: str,
         limit: int = 10,
-        similarity_threshold: float = 0.7
+        similarity_threshold: float = 0.7,
+        rejected_categories: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Perform vector similarity search using Neo4j vector index.
@@ -406,15 +407,47 @@ class SubAttractionEmbeddingService:
         try:
             # Generate query embedding
             query_embedding = self.generate_query_embedding(query)
+
+            category_fields = (
+                "node.groups",
+                "node.amenityType",
+                "node.shopType",
+                "node.tourismType",
+                "node.naturalType",
+                "node.historicType",
+                "node.primaryType",
+                "node.placeTypes",
+                "node.religion",
+            )
+
+            params: Dict[str, Any] = {
+                "queryEmbedding": query_embedding.tolist(),
+                "limit": limit,
+                "threshold": similarity_threshold,
+            }
+
+            rejection_clauses = []
+            for idx, rejected in enumerate(rejected_categories or []):
+                reject_param = f"rejected{idx}"
+                reject_conditions = " OR ".join(
+                    f"toLower({field}) CONTAINS toLower(${reject_param})"
+                    for field in category_fields
+                )
+                rejection_clauses.append(f"NOT ({reject_conditions})")
+                params[reject_param] = rejected
+
+            rejection_where = "\n            AND ".join(rejection_clauses)
+            rejection_where = f"\n            AND {rejection_where}" if rejection_where else ""
             
             # Use Neo4j vector index for efficient similarity search
-            cypher = """
+            cypher = f"""
             CALL db.index.vector.queryNodes(
                 'sub_attraction_embeddings',
                 $limit,
                 $queryEmbedding
             ) YIELD node, score
             WHERE score >= $threshold
+            {rejection_where}
             MATCH (node)-[:SUB_ATTRACTION_OF]->(a:Attraction)
             OPTIONAL MATCH (node)-[:LOCATED_IN]->(d:District)
             OPTIONAL MATCH (d)-[:IN_PROVINCE]->(p:Province)
@@ -439,12 +472,7 @@ class SubAttractionEmbeddingService:
             """
             
             with self.driver.session() as session:
-                result = session.run(
-                    cypher,
-                    queryEmbedding=query_embedding.tolist(),
-                    limit=limit,
-                    threshold=similarity_threshold
-                )
+                result = session.run(cypher, params)
                 results = [record.data() for record in result]
             
             logger.info(f"Vector search returned {len(results)} results for query: '{query}'")

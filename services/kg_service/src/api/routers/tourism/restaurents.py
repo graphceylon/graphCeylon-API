@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/restaurants", tags=["restaurants"])
 
 # POI group this router is scoped to
-PREFERRED_POI_CATEGORY: str = "Food & Markets"
+PREFERRED_POI_CATEGORY: str = "Food & Dining"
 
 # No rejections needed — we are already locking to a single preferred category
 REJECTED_POI_CATEGORIES: list[str] = []

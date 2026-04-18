@@ -17,7 +17,7 @@ from api import dependencies as api_deps
 
 # --- Router imports (grouped by domain) ---
 from api.routers.core import kg_operations, domains, semantic
-from api.routers.tourism import attractions, holidays, hotels, news, projects, sub_attractions, events, restaurents, recommender
+from api.routers.tourism import attractions, holidays, hotels, news, projects, sub_attractions, events, restaurents, recommender, event_intelligence
 from api.routers.transport import railway_stations, train_schedules, bus_terminals, bus_schedules
 from api.routers.intelligence import agent, ail_enhanced, graphrag, research, gnn
 
@@ -106,6 +106,7 @@ app.include_router(attractions.router)
 app.include_router(sub_attractions.router)
 app.include_router(restaurents.router)
 app.include_router(events.router)
+app.include_router(event_intelligence.router)  # Advanced AI event intelligence
 app.include_router(holidays.router)
 app.include_router(hotels.router)
 app.include_router(news.router)
@@ -124,6 +125,9 @@ app.include_router(ail_enhanced.router)
 app.include_router(graphrag.router)
 app.include_router(research.router)
 app.include_router(gnn.router)
+
+# Backward-compatible versioned mount for clients that call /api/v1/* paths.
+app.include_router(gnn.router, prefix="/api/v1")
 
 
 # --- App-level endpoints ---

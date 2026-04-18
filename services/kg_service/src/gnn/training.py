@@ -14,7 +14,9 @@ Features:
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
+import random
 from torch.utils.data import DataLoader, Dataset
 from typing import Dict, List, Optional, Tuple, Callable, Any
 from dataclasses import dataclass, field
@@ -224,6 +226,9 @@ def train_hotel_recommender(
         'epoch_times': [],
         'rating_mse': [],
         'rating_mae': [],
+        'contrastive_loss': [],
+        'uniformity_loss': [],
+        'avg_cross_similarity': [],
     }
     
     best_loss = float('inf')
@@ -247,24 +252,125 @@ def train_hotel_recommender(
         
         # Forward pass
         results = model(data)
+        embeddings = results['embeddings']
         
-        # Compute loss (rating prediction)
+        # ===== Loss 1: Rating Prediction (MSE) =====
         if 'Hotel' in data.node_types and hasattr(data['Hotel'], 'y'):
             true_ratings = data['Hotel'].y
             pred_ratings = results['predicted_ratings']
-            loss = nn.MSELoss()(pred_ratings, true_ratings)
+            rating_loss = nn.MSELoss()(pred_ratings, true_ratings)
         else:
-            # Self-supervised: use actual ratings from features
             hotel_features = data['Hotel'].x
-            # Assume rating is first feature (normalized)
-            true_ratings = hotel_features[:, 0] * 5.0  # Denormalize
+            true_ratings = hotel_features[:, 0] * 5.0
             pred_ratings = results['predicted_ratings']
-            loss = nn.MSELoss()(pred_ratings, true_ratings)
+            rating_loss = nn.MSELoss()(pred_ratings, true_ratings)
+        
+        # ===== Loss 2: Contrastive Loss on Hotel Embeddings =====
+        contrastive_loss = torch.tensor(0.0, device=device)
+        if 'Hotel' in embeddings:
+            hotel_emb = embeddings['Hotel']
+            hotel_emb_norm = F.normalize(hotel_emb, dim=1)
+            num_hotels = hotel_emb.shape[0]
+            
+            # Build positive pairs from ALL edge types connecting hotels to shared neighbors
+            positive_pairs = set()
+            edge_types_for_contrastive = [
+                ('Hotel', 'OFFERS_AMENITY', 'Amenity'),
+                ('Hotel', 'NEAR_ATTRACTION', 'Attraction'),
+                ('Hotel', 'LOCATED_IN_DISTRICT', 'District'),
+                ('Hotel', 'NEARBY_POI', 'PointOfInterest'),
+                ('Hotel', 'BELONGS_TO_DOMAIN', 'Domain'),
+            ]
+            
+            for edge_type in edge_types_for_contrastive:
+                if edge_type in data.edge_types:
+                    edge_index = data[edge_type].edge_index
+                    # Hotels sharing the same target node are positive pairs
+                    target_to_hotels = {}
+                    for i in range(edge_index.shape[1]):
+                        hotel_idx = edge_index[0, i].item()
+                        target_idx = edge_index[1, i].item()
+                        target_to_hotels.setdefault(target_idx, []).append(hotel_idx)
+                    
+                    for hotels in target_to_hotels.values():
+                        if len(hotels) >= 2:
+                            # Sample pairs (cap to avoid O(n^2) for large groups)
+                            import random
+                            sampled = hotels if len(hotels) <= 10 else random.sample(hotels, 10)
+                            for i in range(len(sampled)):
+                                for j in range(i + 1, len(sampled)):
+                                    positive_pairs.add((sampled[i], sampled[j]))
+            
+            if positive_pairs:
+                pos_list = list(positive_pairs)
+                # Cap at 2000 pairs per epoch for efficiency
+                if len(pos_list) > 2000:
+                    import random
+                    pos_list = random.sample(pos_list, 2000)
+                
+                pos_src = torch.tensor([p[0] for p in pos_list], device=device)
+                pos_dst = torch.tensor([p[1] for p in pos_list], device=device)
+                
+                # Positive similarity (hotels sharing neighbors)
+                pos_sim = F.cosine_similarity(
+                    hotel_emb_norm[pos_src], hotel_emb_norm[pos_dst], dim=1
+                )
+                
+                # Negative sampling: random hotel pairs
+                neg_dst = torch.randint(0, num_hotels, pos_dst.shape, device=device)
+                neg_sim = F.cosine_similarity(
+                    hotel_emb_norm[pos_src], hotel_emb_norm[neg_dst], dim=1
+                )
+                
+                # Margin ranking loss: positive pairs should be more similar than negative
+                margin_target = torch.ones_like(pos_sim)
+                contrastive_loss = nn.MarginRankingLoss(margin=0.5)(
+                    pos_sim, neg_sim, margin_target
+                )
+        
+        # ===== Loss 3: Embedding Uniformity + Variance Regularization =====
+        # Prevents all embeddings from collapsing to same point
+        uniformity_loss = torch.tensor(0.0, device=device)
+        if 'Hotel' in embeddings:
+            # Part A: Hard negative mining — find high-similarity pairs and push apart
+            n_sample = min(256, num_hotels)
+            idx_a = torch.randint(0, num_hotels, (n_sample,), device=device)
+            idx_b = torch.randint(0, num_hotels, (n_sample,), device=device)
+            rand_sim = F.cosine_similarity(
+                hotel_emb_norm[idx_a], hotel_emb_norm[idx_b], dim=1
+            )
+            # Stronger penalty for high-similarity pairs (exponential weighting)
+            sim_penalty = (torch.exp(rand_sim * 2) * rand_sim ** 2).mean()
+            
+            # Part B: Variance regularization (VICReg-inspired)
+            # Each embedding dimension should have non-trivial variance
+            emb_std = hotel_emb.std(dim=0)  # std per dimension on raw embeddings
+            # Hinge loss: penalize dimensions with std < 1.0
+            var_loss = torch.clamp(1.0 - emb_std, min=0).mean()
+            
+            # Part C: Covariance regularization
+            # Off-diagonal covariance should be zero (decorrelate dimensions)
+            emb_centered = hotel_emb - hotel_emb.mean(dim=0)
+            cov = (emb_centered.T @ emb_centered) / max(num_hotels - 1, 1)
+            # Zero out diagonal and penalize off-diagonal
+            cov_loss = (cov.fill_diagonal_(0) ** 2).sum() / hotel_emb.shape[1]
+            
+            uniformity_loss = sim_penalty + var_loss + 0.04 * cov_loss
+        
+        # ===== Combined Loss =====
+        loss = 0.1 * rating_loss + 0.3 * contrastive_loss + 0.6 * uniformity_loss
         
         # Calculate additional metrics
         with torch.no_grad():
             mse = nn.MSELoss()(pred_ratings, true_ratings).item()
             mae = nn.L1Loss()(pred_ratings, true_ratings).item()
+            avg_cross_sim = 0.0
+            if 'Hotel' in embeddings:
+                # Measure embedding spread
+                sim_sample = F.cosine_similarity(
+                    hotel_emb_norm[idx_a], hotel_emb_norm[idx_b], dim=1
+                )
+                avg_cross_sim = sim_sample.mean().item()
         
         # Backward pass
         optimizer.zero_grad()
@@ -286,9 +392,12 @@ def train_hotel_recommender(
         history['epoch_times'].append(epoch_time)
         history['rating_mse'].append(mse)
         history['rating_mae'].append(mae)
+        history['contrastive_loss'].append(contrastive_loss.item())
+        history['uniformity_loss'].append(uniformity_loss.item())
+        history['avg_cross_similarity'].append(avg_cross_sim)
         
         if (epoch + 1) % config.log_interval == 0:
-            print(f"Epoch {epoch + 1:3d}/{config.epochs} | Loss: {loss.item():.6f} | MSE: {mse:.6f} | MAE: {mae:.6f} | LR: {history['lr'][-1]:.6f} | Time: {epoch_time:.2f}s")
+            print(f"Epoch {epoch + 1:3d}/{config.epochs} | Loss: {loss.item():.6f} | Rating: {rating_loss.item():.6f} | Contrastive: {contrastive_loss.item():.4f} | Uniformity: {uniformity_loss.item():.4f} | AvgSim: {avg_cross_sim:.4f} | LR: {history['lr'][-1]:.6f}")
         
         # Save best model
         if config.save_best and loss.item() < best_loss:
