@@ -36,10 +36,7 @@ DATA_CLEAN_DIR.mkdir(parents=True, exist_ok=True)
 KG_RAW_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---- 8. API Key ----
-OPENWEATHER_API_KEY = os.getenv(
-    "OPENWEATHER_API_KEY",
-    "ff502027d162a931f067c5ee2fe56e02",  # default fallback
-)
+OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "")
 
 # ---- 9. Deprecated paths (kept for compatibility, not used) ----
 RESEARCH_ROOT_DIR = REPO_ROOT

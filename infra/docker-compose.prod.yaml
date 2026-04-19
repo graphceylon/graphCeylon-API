@@ -1,0 +1,290 @@
+services:
+  # ============================================================
+  # Reverse Proxy
+  # ============================================================
+  nginx:
+    build:
+      context: ../docker/nginx
+      dockerfile: Dockerfile
+    container_name: graphceylon-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN}
+    volumes:
+      - certbot_conf:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    depends_on:
+      - orchestrator
+    networks:
+      - graphceylon-network
+    restart: always
+
+  # ============================================================
+  # Databases
+  # ============================================================
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: graphceylon-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - graphceylon-network
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  redis:
+    image: redis:7-alpine
+    container_name: graphceylon-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      - graphceylon-network
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  neo4j:
+    image: neo4j:5.26
+    container_name: graphceylon-neo4j
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
+      NEO4J_PLUGINS: '["apoc", "n10s"]'
+      NEO4J_dbms_security_procedures_allowlist: "apoc.*,n10s.*"
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*,n10s.*"
+      NEO4J_apoc_import_file_enabled: "true"
+      NEO4J_apoc_import_file_use__neo4j__config: "true"
+      NEO4J_server_memory_pagecache_size: 512M
+      NEO4J_server_memory_heap_initial__size: 512M
+      NEO4J_server_memory_heap_max__size: 1G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+      - ../data/kg_service:/var/lib/neo4j/import
+    networks:
+      - graphceylon-network
+    restart: always
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "${NEO4J_USER}", "-p", "${NEO4J_PASSWORD}", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # ============================================================
+  # Node.js Services
+  # ============================================================
+  auth_service:
+    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/auth-service:${IMAGE_TAG}
+    container_name: graphceylon-auth-service
+    environment:
+      - NODE_ENV=production
+      - PORT=8004
+      - API_PREFIX=/api/auth
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+      - JWT_REFRESH_EXPIRES_IN=${JWT_REFRESH_EXPIRES_IN}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - FRONTEND_URL=${FRONTEND_URL}
+      - CORS_ORIGIN=${CORS_ORIGIN}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - graphceylon-network
+    restart: always
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8004/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  user_service:
+    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/user-service:${IMAGE_TAG}
+    container_name: graphceylon-user-service
+    environment:
+      - NODE_ENV=production
+      - PORT=8005
+      - API_PREFIX=/api/users
+      - DB_TYPE=postgres
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USERNAME=${POSTGRES_USER}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_DATABASE=${POSTGRES_DB}
+      - DB_SYNCHRONIZE=false
+      - DB_LOGGING=false
+      - JWT_SECRET=${JWT_SECRET}
+      - AUTH_SERVICE_URL=http://auth_service:8004
+      - CORS_ORIGIN=${CORS_ORIGIN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth_service:
+        condition: service_started
+    networks:
+      - graphceylon-network
+    restart: always
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8005/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # ============================================================
+  # Python Services
+  # ============================================================
+  language_service:
+    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/language-service:${IMAGE_TAG}
+    container_name: graphceylon-language-service
+    environment:
+      - SERVICE_NAME=language_service
+      - SERVICE_PORT=8001
+    volumes:
+      - ../models/language_service:/models
+    networks:
+      - graphceylon-network
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  kg_service:
+    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/kg-service:${IMAGE_TAG}
+    container_name: graphceylon-kg-service
+    environment:
+      - SERVICE_NAME=kg_service
+      - SERVICE_PORT=8000
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=${NEO4J_USER}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+      - NEO4J_DATABASE=neo4j
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - DEBUG=false
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+    volumes:
+      - ../models/kg_service:/models
+      - ../data/kg_service:/data
+      - ../services/kg_service/data:/app/src/data
+      - ../services/kg_service/checkpoints:/app/src/checkpoints
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    networks:
+      - graphceylon-network
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+
+  recommender_service:
+    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/recommender-service:${IMAGE_TAG}
+    container_name: graphceylon-recommender-service
+    environment:
+      - SERVICE_NAME=recommender_service
+      - SERVICE_PORT=8003
+      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - ../models/recommender_service:/models
+      - ../data/recommender_service:/app/data/recommender_service
+    networks:
+      - graphceylon-network
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 2.5G
+
+  orchestrator:
+    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/orchestrator:${IMAGE_TAG}
+    container_name: graphceylon-orchestrator
+    environment:
+      - SERVICE_NAME=orchestrator
+      - SERVICE_PORT=8002
+      - LANGUAGE_SERVICE_URL=http://language_service:8001
+      - KG_SERVICE_URL=http://kg_service:8000
+      - RECOMMENDER_SERVICE_URL=http://recommender_service:8003
+      - AUTH_SERVICE_URL=http://auth_service:8004
+      - USER_SERVICE_URL=http://user_service:8005
+      - PROFILE_AGENT_URL=http://profile_agent:8007
+      - INTENT_MODEL_DIR=/models/orchestrator/intent_multilabel_final_v5
+      - SERVICE_TOKEN=${SERVICE_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - PROFILE_DB_URL=postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    volumes:
+      - ../models/orchestrator:/models/orchestrator
+    depends_on:
+      - language_service
+      - kg_service
+      - recommender_service
+      - auth_service
+      - user_service
+    networks:
+      - graphceylon-network
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 2.5G
+
+networks:
+  graphceylon-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  neo4j_plugins:
+    driver: local
+  certbot_conf:
+    driver: local
+  certbot_www:
+    driver: local

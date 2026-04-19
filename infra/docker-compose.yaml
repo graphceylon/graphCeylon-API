@@ -1,5 +1,5 @@
 version: '3.9'
- 
+  
 services:
   # PostgreSQL Database for User Service
   postgres:
@@ -7,7 +7,7 @@ services:
     container_name: graphceylon-postgres
     ports:
       - "5432:5432"
-      # - "5433:5432"
+    # - "5433:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -23,7 +23,7 @@ services:
       timeout: 5s
       retries: 5
 
- 
+        
   # Redis for Auth Service
   redis:
     image: redis:7-alpine
@@ -41,7 +41,7 @@ services:
       timeout: 5s
       retries: 5
 
- 
+        
   # Neo4j Database for Knowledge Graph
   neo4j:
     image: neo4j:5.26
@@ -74,7 +74,7 @@ services:
       timeout: 5s
       retries: 5
 
- 
+        
   # Auth Service (Node.js)
   auth_service:
     build:
@@ -109,7 +109,7 @@ services:
       timeout: 3s
       retries: 3
 
- 
+        
   # User Service (Node.js)
   user_service:
     build:
@@ -124,8 +124,7 @@ services:
       - API_PREFIX=/api/users
       - DB_TYPE=postgres
       - DB_HOST=postgres
-      # - DB_PORT=5432
-      - DB_PORT=5433
+      - DB_PORT=5432
       - DB_USERNAME=postgres
       - DB_PASSWORD=postgres
       - DB_DATABASE=graphceylon_users
@@ -150,7 +149,7 @@ services:
       timeout: 3s
       retries: 3
 
- 
+        
   # Component 1: Language Service
   language_service:
     build:
@@ -168,7 +167,7 @@ services:
     networks:
       - graphceylon-network
     restart: unless-stopped
- 
+      
   # Component 2: Knowledge Graph Service
   kg_service:
     build:
@@ -197,12 +196,12 @@ services:
     networks:
       - graphceylon-network
     restart: unless-stopped
- 
+      
   # Component 3: Recommender Service
   recommender_service:
     build:
-      context: ../services/recommender_service
-      dockerfile: ../../docker/recommender_service/Dockerfile
+      context: ..
+      dockerfile: docker/recommender_service/Dockerfile
     container_name: graphceylon-recommender-service
     ports:
       - "8003:8003"
@@ -215,7 +214,7 @@ services:
     networks:
       - graphceylon-network
     restart: unless-stopped
- 
+      
   # Component 4: Orchestrator
   orchestrator:
     build:
@@ -260,8 +259,7 @@ services:
     environment:
       - SERVICE_NAME=profile_agent
       - SERVICE_PORT=8007
-      # - PROFILE_DB_URL=postgresql+psycopg://postgres:postgres@postgres:5432/graphceylon_users
-      - PROFILE_DB_URL=postgresql+psycopg://postgres:postgres@postgres:5433/graphceylon_users
+      - PROFILE_DB_URL=postgresql+psycopg://postgres:postgres@postgres:5432/graphceylon_users
       - SERVICE_TOKEN=your-internal-service-secret-token-change-in-production
       - USER_SERVICE_URL=http://user_service:8005
     depends_on:
@@ -276,7 +274,7 @@ services:
 networks:
   graphceylon-network:
     driver: bridge
- 
+      
 volumes:
   postgres_data:
     driver: local
@@ -288,5 +286,5 @@ volumes:
     driver: local
   neo4j_plugins:
     driver: local
- 
+      
    # Profile Agent (Phase 1: context + event memory)

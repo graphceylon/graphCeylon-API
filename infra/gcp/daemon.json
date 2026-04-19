@@ -1,0 +1,13 @@
+{
+  "log-driver": "gcplogs",
+  "log-opts": {
+    "gcp-meta-name": "graphceylon-api"
+  },
+  "default-ulimits": {
+    "nofile": {
+      "Name": "nofile",
+      "Hard": 65536,
+      "Soft": 65536
+    }
+  }
+}

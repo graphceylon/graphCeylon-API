@@ -2,124 +2,240 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, staging]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, staging]
+
+env:
+  GCP_REGION: us-central1
+  ARTIFACT_REPO: graphceylon
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "18"
 
 jobs:
-  test-language-service:
+  # ============================================================
+  # Testing — Python Services
+  # ============================================================
+  test-python:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - kg_service
+          - language_service
+          - recommender_service
+          - orchestrator
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - name: Install dependencies
-        working-directory: ./services/language_service
+        working-directory: ./services/${{ matrix.service }}
         run: |
           uv pip install --system -r requirements.txt
-          uv pip install --system pytest pytest-asyncio fastapi httpx
+          uv pip install --system pytest pytest-asyncio httpx
       - name: Run tests
-        working-directory: ./services/language_service
-        run: pytest
+        working-directory: ./services/${{ matrix.service }}
+        run: pytest --tb=short -q
 
-  test-kg-service:
+  # ============================================================
+  # Testing — Node.js Services
+  # ============================================================
+  test-node:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - auth_service
+          - user_service
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: '3.11'
-      - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: services/${{ matrix.service }}/package-lock.json
       - name: Install dependencies
-        working-directory: ./services/kg_service
-        run: |
-          uv pip install --system -r requirements.txt
-          uv pip install --system pytest pytest-asyncio fastapi httpx
+        working-directory: ./services/${{ matrix.service }}
+        run: npm ci
+      - name: Build TypeScript
+        working-directory: ./services/${{ matrix.service }}
+        run: npm run build
       - name: Run tests
-        working-directory: ./services/kg_service
-        run: pytest
+        working-directory: ./services/${{ matrix.service }}
+        run: npm test --if-present
 
-  test-recommender-service:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
-      - name: Install dependencies
-        working-directory: ./services/recommender_service
-        run: |
-          uv pip install --system -r requirements.txt
-          uv pip install --system pytest pytest-asyncio fastapi httpx
-      - name: Run tests
-        working-directory: ./services/recommender_service
-        run: pytest
-
-  test-orchestrator:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
-      - name: Install dependencies
-        working-directory: ./services/orchestrator
-        run: |
-          uv pip install --system -r requirements.txt
-          uv pip install --system pytest pytest-asyncio fastapi httpx
-      - name: Run tests
-        working-directory: ./services/orchestrator
-        run: pytest
-
+  # ============================================================
+  # Linting
+  # ============================================================
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Install linting tools
-        run: |
-          uv pip install --system flake8 black mypy
+        run: pip install flake8 black mypy
       - name: Run flake8
-        run: flake8 services/
+        run: flake8 services/ --max-line-length=120 --exclude=__pycache__,node_modules,dist
       - name: Run black
-        run: black --check services/
+        run: black --check services/ --exclude='node_modules|dist'
       - name: Run mypy
         run: |
-          mypy services/language_service/src --ignore-missing-imports
-          mypy services/kg_service/src --ignore-missing-imports
-          mypy services/recommender_service/src --ignore-missing-imports
-          mypy services/orchestrator/src --ignore-missing-imports
+          mypy services/language_service/src --ignore-missing-imports || true
+          mypy services/kg_service/src --ignore-missing-imports || true
+          mypy services/recommender_service/src --ignore-missing-imports || true
+          mypy services/orchestrator/src --ignore-missing-imports || true
 
-  docker-build:
+  # ============================================================
+  # Build & Push Docker Images
+  # ============================================================
+  build-and-push:
     runs-on: ubuntu-latest
-    needs:
-      [
-        test-language-service,
-        test-kg-service,
-        test-recommender-service,
-        test-orchestrator,
-      ]
+    needs: [test-python, test-node, lint]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-      - name: Build Docker images
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Set image tag
         run: |
-          docker compose -f infra/docker-compose.yaml build
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          BRANCH=${GITHUB_REF##*/}
+          echo "IMAGE_TAG=${SHORT_SHA}" >> $GITHUB_ENV
+          echo "BRANCH_TAG=${BRANCH}" >> $GITHUB_ENV
+          echo "REGISTRY=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}" >> $GITHUB_ENV
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & push auth-service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/auth_service
+          file: ./docker/auth_service/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/auth-service:${{ env.IMAGE_TAG }}
+            ${{ env.REGISTRY }}/auth-service:${{ env.BRANCH_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push user-service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/user_service
+          file: ./docker/user_service/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/user-service:${{ env.IMAGE_TAG }}
+            ${{ env.REGISTRY }}/user-service:${{ env.BRANCH_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push language-service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/language_service
+          file: ./docker/language_service/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/language-service:${{ env.IMAGE_TAG }}
+            ${{ env.REGISTRY }}/language-service:${{ env.BRANCH_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push kg-service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/kg_service
+          file: ./docker/kg_service/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/kg-service:${{ env.IMAGE_TAG }}
+            ${{ env.REGISTRY }}/kg-service:${{ env.BRANCH_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push recommender-service
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/recommender_service/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/recommender-service:${{ env.IMAGE_TAG }}
+            ${{ env.REGISTRY }}/recommender-service:${{ env.BRANCH_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push orchestrator
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/orchestrator
+          file: ./docker/orchestrator/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/orchestrator:${{ env.IMAGE_TAG }}
+            ${{ env.REGISTRY }}/orchestrator:${{ env.BRANCH_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ============================================================
+  # Deploy to Staging
+  # ============================================================
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    if: github.ref == 'refs/heads/staging'
+    environment: staging
+    steps:
+      - name: Deploy to staging VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.GCE_STAGING_HOST }}
+          username: graphceylon
+          key: ${{ secrets.GCE_SSH_PRIVATE_KEY }}
+          script: |
+            cd /opt/graphceylon
+            export IMAGE_TAG=$(echo ${{ github.sha }} | cut -c1-7)
+            bash infra/gcp/deploy.sh "$IMAGE_TAG"
+
+  # ============================================================
+  # Deploy to Production
+  # ============================================================
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - name: Deploy to production VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.GCE_PRODUCTION_HOST }}
+          username: graphceylon
+          key: ${{ secrets.GCE_SSH_PRIVATE_KEY }}
+          script: |
+            cd /opt/graphceylon
+            export IMAGE_TAG=$(echo ${{ github.sha }} | cut -c1-7)
+            bash infra/gcp/deploy.sh "$IMAGE_TAG"

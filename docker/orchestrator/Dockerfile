@@ -18,9 +18,12 @@ RUN uv pip install --system -r requirements.txt
 
 # Copy application code
 COPY src/ ./src/
+COPY static/ ./static/
 
-# Expose port
+# Create non-root user
+RUN addgroup --system app && adduser --system --ingroup app app
+USER app
+
 EXPOSE 8002
 
-# Run the application
 CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8002"]
