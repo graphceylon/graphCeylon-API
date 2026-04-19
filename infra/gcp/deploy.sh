@@ -12,26 +12,15 @@ APP_DIR="/opt/graphceylon"
 COMPOSE_FILE="$APP_DIR/infra/docker-compose.prod.yaml"
 ENV_FILE="$APP_DIR/.env"
 
-# Optional: override IMAGE_TAG from CLI argument
-if [ -n "${1:-}" ]; then
-    export IMAGE_TAG="$1"
-fi
-
-# ---- Validate ----
-if [ ! -f "$ENV_FILE" ]; then
-    echo "ERROR: $ENV_FILE not found. Copy .env.production.template and fill values."
-    exit 1
-fi
-
-if [ ! -f "$COMPOSE_FILE" ]; then
-    echo "ERROR: $COMPOSE_FILE not found. Clone the repo to $APP_DIR first."
-    exit 1
-fi
-
 # Load env vars for image references
 set -a
 source "$ENV_FILE"
 set +a
+
+# CLI argument overrides IMAGE_TAG from .env
+if [ -n "${1:-}" ]; then
+    export IMAGE_TAG="$1"
+fi
 
 echo "=== Deploying GraphCeylon API (tag: ${IMAGE_TAG:-latest}) ==="
 
