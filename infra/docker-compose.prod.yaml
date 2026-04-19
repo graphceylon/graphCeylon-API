@@ -70,7 +70,6 @@ services:
   neo4j:
     image: neo4j:5.26
     container_name: graphceylon-neo4j
-    env_file: ../.env
     environment:
       NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
       NEO4JLABS_PLUGINS: '["apoc", "n10s"]'
