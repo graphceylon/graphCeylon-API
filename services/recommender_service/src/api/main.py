@@ -1,8 +1,22 @@
 # /Users/dev/Desktop/graphCeylon-API/services/recommender_service/src/api/main.py
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
 from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
+
+# Ensure imports work in both execution modes:
+# 1) direct run from src/api (uv run main.py)
+# 2) module import via uvicorn (uvicorn src.api.main:app)
+current_file = Path(__file__).resolve()
+service_root = current_file.parents[2]  # .../services/recommender_service
+repo_root = current_file.parents[4]     # .../graphCeylon-API
+for path in (service_root, repo_root):
+    path_str = str(path)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
 
 from src.db.session import SessionLocal
 
