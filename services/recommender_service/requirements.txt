@@ -32,6 +32,6 @@ torchaudio==2.5.1
 torchvision==0.20.1
 typing_extensions==4.9.0
 tzdata==2025.2
-psycopg2
+psycopg2-binary
 sentence_transformers
 requests
