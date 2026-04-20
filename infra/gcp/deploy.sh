@@ -68,11 +68,7 @@ else
 fi
 
 # ---- 4. Wait for services to be healthy ----
-echo ">>> Waiting for services to start..."
-sleep 15
-
-# ---- 5. Health checks ----
-echo ">>> Running health checks..."
+echo ">>> Waiting for all services to become healthy (timeout 120s)..."
 
 SERVICES=(
     "orchestrator:8002"
@@ -84,12 +80,35 @@ SERVICES=(
 )
 
 FAILED=0
+# 24 iterations * 5 seconds = 120 seconds max wait
+for i in {1..24}; do
+    ALL_UP=1
+    FAILED_SERVICES=""
+    for svc in "${SERVICES[@]}"; do
+        NAME="${svc%%:*}"
+        PORT="${svc##*:}"
+        
+        # Test health natively from the VM network (ports are exposed to localhost)
+        # We do not use 'docker exec' because some containers (like Node/Alpine) don't have curl
+        if ! curl -sf "http://localhost:$PORT/health" > /dev/null 2>&1 && ! curl -sf "http://localhost:$PORT/" > /dev/null 2>&1; then
+            ALL_UP=0
+            FAILED_SERVICES="$FAILED_SERVICES $NAME"
+        fi
+    done
+    
+    if [ "$ALL_UP" = "1" ]; then
+        break
+    fi
+    echo "  [${i}/24] Waiting for services to boot ($FAILED_SERVICES )..."
+    sleep 5
+done
+
+echo ">>> Running Final health checks..."
+FAILED=0
 for svc in "${SERVICES[@]}"; do
     NAME="${svc%%:*}"
     PORT="${svc##*:}"
-    # Use docker exec to check health from inside the network
-    if docker exec "graphceylon-$NAME" curl -sf "http://localhost:$PORT/health" > /dev/null 2>&1 || \
-       docker exec "graphceylon-$NAME" curl -sf "http://localhost:$PORT/" > /dev/null 2>&1; then
+    if curl -sf "http://localhost:$PORT/health" > /dev/null 2>&1 || curl -sf "http://localhost:$PORT/" > /dev/null 2>&1; then
         echo "  ✓ $NAME"
     else
         echo "  ✗ $NAME (unhealthy)"
@@ -97,15 +116,15 @@ for svc in "${SERVICES[@]}"; do
     fi
 done
 
-# ---- 6. Clean up old images and volumes ----
+# ---- 5. Clean up old images and volumes ----
 echo ">>> Pruning unused images and dangling volumes..."
 docker image prune -f
 docker volume prune -f
 
-# ---- 7. Report ----
+# ---- 6. Report ----
 echo ""
 if [ "$FAILED" -gt 0 ]; then
-    echo "WARNING: $FAILED service(s) failed health checks."
+    echo "WARNING: $FAILED service(s) failed health checks after 120s."
     echo "Check logs: docker compose -f $COMPOSE_FILE logs <service_name>"
     exit 1
 else

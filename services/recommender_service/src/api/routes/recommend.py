@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 
-from services.recommender_service.src.itinerary.planner.itinerary_planner import recommend_city_pois_simple
+from src.itinerary.planner.itinerary_planner import recommend_city_pois_simple
 
 router = APIRouter()
 
