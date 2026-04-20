@@ -27,7 +27,7 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: graphceylon-postgres
-    env_file: /opt/graphceylon/.env
+    env_file: .env
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -50,7 +50,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: graphceylon-redis
-    env_file: /opt/graphceylon/.env
+    env_file: .env
     command: redis-server --requirepass ${REDIS_PASSWORD}
     volumes:
       - redis_data:/data
@@ -106,20 +106,20 @@ services:
   auth_service:
     image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/auth-service:${IMAGE_TAG}
     container_name: graphceylon-auth-service
-    env_file: /opt/graphceylon/.env
+    env_file: .env
     environment:
-      - NODE_ENV=production
-      - PORT=8004
-      - API_PREFIX=/api/auth
-      - JWT_SECRET=${JWT_SECRET}
-      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN}
-      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
-      - JWT_REFRESH_EXPIRES_IN=${JWT_REFRESH_EXPIRES_IN}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - FRONTEND_URL=${FRONTEND_URL}
-      - CORS_ORIGIN=${CORS_ORIGIN}
+      NODE_ENV: ${NODE_ENV}
+      PORT: 8004
+      API_PREFIX: /api/auth
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      FRONTEND_URL: ${FRONTEND_URL}
+      CORS_ORIGIN: ${CORS_ORIGIN}
     depends_on:
       redis:
         condition: service_healthy
@@ -135,27 +135,29 @@ services:
       resources:
         limits:
           memory: 256M
+    ports:
+      - "8004:8004"
 
   user_service:
     image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/user-service:${IMAGE_TAG}
     container_name: graphceylon-user-service
-    env_file: /opt/graphceylon/.env
+    env_file: .env
     environment:
-      - NODE_ENV=production
-      - PORT=8005
-      - API_PREFIX=/api/users
-      - DB_TYPE=postgres
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USERNAME=${POSTGRES_USER}
-      - DB_PASSWORD=${POSTGRES_PASSWORD}
-      - DB_DATABASE=${POSTGRES_DB}
-      - DB_SYNCHRONIZE=false
-      - DB_LOGGING=false
-      - DB_SSL=false
-      - JWT_SECRET=${JWT_SECRET}
-      - AUTH_SERVICE_URL=http://auth_service:8004
-      - CORS_ORIGIN=${CORS_ORIGIN}
+      NODE_ENV: ${NODE_ENV}
+      PORT: 8005
+      API_PREFIX: /api/users
+      DB_TYPE: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USERNAME: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_DATABASE: ${POSTGRES_DB}
+      DB_SYNCHRONIZE: false
+      DB_LOGGING: false
+      DB_SSL: false
+      JWT_SECRET: ${JWT_SECRET}
+      AUTH_SERVICE_URL: http://auth_service:8004
+      CORS_ORIGIN: ${CORS_ORIGIN}
     depends_on:
       postgres:
         condition: service_healthy
@@ -173,6 +175,8 @@ services:
       resources:
         limits:
           memory: 256M
+    ports:
+      - "8005:8005"
 
   # ============================================================
   # Python Services
@@ -180,10 +184,10 @@ services:
   language_service:
     image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/language-service:${IMAGE_TAG}
     container_name: graphceylon-language-service
-    env_file: /opt/graphceylon/.env
+    env_file: .env
     environment:
-      - SERVICE_NAME=language_service
-      - SERVICE_PORT=8001
+      SERVICE_NAME: language_service
+      SERVICE_PORT: 8001
     volumes:
       - ../models/language_service:/models
     networks:
@@ -193,28 +197,33 @@ services:
       resources:
         limits:
           memory: 1G
+    ports:
+      - "8001:8001"
 
   kg_service:
     image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/kg-service:${IMAGE_TAG}
     container_name: graphceylon-kg-service
-    env_file: /opt/graphceylon/.env
+    env_file: .env
     environment:
-      - SERVICE_NAME=kg_service
-      - SERVICE_PORT=8000
-      - NEO4J_URI=bolt://neo4j:7687
-      - NEO4J_USER=${NEO4J_USER}
-      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
-      - NEO4J_DATABASE=neo4j
-      - API_HOST=0.0.0.0
-      - API_PORT=8000
-      - DEBUG=false
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
+      SERVICE_NAME: kg_service
+      SERVICE_PORT: 8000
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: ${NEO4J_USER}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      NEO4J_DATABASE: neo4j
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      DEBUG: false
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      TRANSFORMERS_CACHE: /tmp/huggingface_cache
+      HF_HOME: /tmp/huggingface_cache
     volumes:
       - ../models/kg_service:/models
       - ../data/kg_service:/data
       - ../services/kg_service/data:/app/src/data
       - ../services/kg_service/checkpoints:/app/src/checkpoints
+      - kg_service_hf_cache:/tmp/huggingface_cache
     depends_on:
       neo4j:
         condition: service_healthy
@@ -225,16 +234,18 @@ services:
       resources:
         limits:
           memory: 3G
+    ports:
+      - "8000:8000"
 
   recommender_service:
     image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/recommender-service:${IMAGE_TAG}
     container_name: graphceylon-recommender-service
-    env_file: /opt/graphceylon/.env
+    env_file: .env
     environment:
-      - SERVICE_NAME=recommender_service
-      - SERVICE_PORT=8003
-      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      SERVICE_NAME: recommender_service
+      SERVICE_PORT: 8003
+      OPENWEATHER_API_KEY: ${OPENWEATHER_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
     volumes:
       - ../models/recommender_service:/models
       - ../data/recommender_service:/app/data/recommender_service
@@ -245,26 +256,28 @@ services:
       resources:
         limits:
           memory: 2.5G
+    ports:
+      - "8003:8003"
 
   orchestrator:
     image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/orchestrator:${IMAGE_TAG}
     container_name: graphceylon-orchestrator
-    env_file: /opt/graphceylon/.env
+    env_file: .env
     environment:
-      - SERVICE_NAME=orchestrator
-      - SERVICE_PORT=8002
-      - LANGUAGE_SERVICE_URL=http://language_service:8001
-      - KG_SERVICE_URL=http://kg_service:8000
-      - RECOMMENDER_SERVICE_URL=http://recommender_service:8003
-      - AUTH_SERVICE_URL=http://auth_service:8004
-      - USER_SERVICE_URL=http://user_service:8005
-      - PROFILE_AGENT_URL=http://profile_agent:8007
-      - INTENT_MODEL_DIR=/models/orchestrator/intent_multilabel_final_v5
-      - SERVICE_TOKEN=${SERVICE_TOKEN}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - PROFILE_DB_URL=postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      - HF_HOME=/tmp/huggingface_cache
+      SERVICE_NAME: orchestrator
+      SERVICE_PORT: 8002
+      LANGUAGE_SERVICE_URL: http://language_service:8001
+      KG_SERVICE_URL: http://kg_service:8000
+      RECOMMENDER_SERVICE_URL: http://recommender_service:8003
+      AUTH_SERVICE_URL: http://auth_service:8004
+      USER_SERVICE_URL: http://user_service:8005
+      PROFILE_AGENT_URL: http://profile_agent:8007
+      INTENT_MODEL_DIR: /models/orchestrator/intent_multilabel_final_v5
+      SERVICE_TOKEN: ${SERVICE_TOKEN}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      PROFILE_DB_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      HF_HOME: /tmp/huggingface_cache
     volumes:
       - ../models/orchestrator:/models/orchestrator
       - orchestrator_hf_cache:/tmp/huggingface_cache
@@ -281,6 +294,8 @@ services:
       resources:
         limits:
           memory: 2.5G
+    ports:
+      - "8002:8002"
 
 networks:
   graphceylon-network:
@@ -302,4 +317,6 @@ volumes:
   certbot_www:
     driver: local
   orchestrator_hf_cache:
+    driver: local
+  kg_service_hf_cache:
     driver: local
