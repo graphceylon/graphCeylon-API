@@ -16,25 +16,50 @@ server {
         root /var/www/certbot;
     }
 
-    # Main API — Orchestrator
-    location / {
-        proxy_pass http://orchestrator:8002;
-        proxy_read_timeout 120s;
-        proxy_connect_timeout 10s;
-    }
-
-    # Auth Service
+    # ==========================================
+    # Auth & User Services (Node.js)
+    # They inherently listen on /api/auth & /api/users
+    # ==========================================
     location /api/auth/ {
         proxy_pass http://auth_service:8004;
     }
 
-    # User Service
     location /api/users/ {
         proxy_pass http://user_service:8005;
     }
 
-    # Health check endpoint (no auth)
-    location /health {
-        proxy_pass http://orchestrator:8002/health;
+    # ==========================================
+    # Data & AI Services (Python)
+    # Using trailing slashes to strip the prefix
+    # ==========================================
+    
+    # Language Service
+    location /api/language/ {
+        proxy_pass http://language_service:8001/;
+    }
+
+    # KG Service
+    location /api/kg/ {
+        proxy_pass http://kg_service:8000/;
+    }
+
+    # Recommender Service
+    location /api/recommender/ {
+        proxy_pass http://recommender_service:8003/;
+    }
+
+    # ==========================================
+    # Main API — Orchestrator
+    # Root paths explicitly fallback to Orchestrator
+    # ==========================================
+    
+    location /api/orchestrator/ {
+        proxy_pass http://orchestrator:8002/;
+    }
+
+    location / {
+        proxy_pass http://orchestrator:8002;
+        proxy_read_timeout 120s;
+        proxy_connect_timeout 10s;
     }
 }
