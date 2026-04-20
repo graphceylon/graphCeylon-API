@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
     && curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ENV PATH="/root/.local/bin:$PATH"
-ENV PYTHONPATH="/app/src"
+ENV PYTHONPATH="/app:/app/src"
 
 # Copy requirements first for better caching
 COPY services/recommender_service/requirements.txt .

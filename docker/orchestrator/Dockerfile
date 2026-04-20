@@ -20,10 +20,18 @@ RUN uv pip install --system -r requirements.txt
 COPY src/ ./src/
 COPY static/ ./static/
 
-# Create non-root user
-RUN addgroup --system app && adduser --system --ingroup app app
+
+# Create HuggingFace cache dir and set permissions before switching user
+RUN mkdir -p /tmp/huggingface_cache \
+    && chown -R app:app /tmp/huggingface_cache \
+    && addgroup --system app \
+    && adduser --system --ingroup app app
 USER app
 
 EXPOSE 8002
+EXPOSE 9101
 
-CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8002"]
+# Copy and use shell script as entrypoint
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+CMD ["/app/start.sh"]
