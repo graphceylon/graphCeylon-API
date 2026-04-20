@@ -28,7 +28,7 @@ COPY services/ ./services/
 
 # Create non-root user
 RUN addgroup --system app && adduser --system --ingroup app app
-USER app
+# USER app
 
 EXPOSE 8003
 
