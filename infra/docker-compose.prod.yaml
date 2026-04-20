@@ -263,8 +263,10 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GROQ_API_KEY=${GROQ_API_KEY}
       - PROFILE_DB_URL=postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - HF_HOME=/tmp/huggingface_cache
     volumes:
       - ../models/orchestrator:/models/orchestrator
+      - orchestrator_hf_cache:/tmp/huggingface_cache
     depends_on:
       - language_service
       - kg_service
@@ -297,4 +299,6 @@ volumes:
   certbot_conf:
     driver: local
   certbot_www:
+    driver: local
+  orchestrator_hf_cache:
     driver: local
