@@ -69,3 +69,8 @@ def get_db():
 @app.post("/recommend-pois")
 def recommend_pois(payload: dict, db: Session = Depends(get_db)):
     return recommend_pois_from_payload(payload, db)
+
+@app.get("/")
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "service": "recommender_service"}

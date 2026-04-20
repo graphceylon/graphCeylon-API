@@ -63,6 +63,10 @@ def dashboard():
 def root():
     return {"message": "GraphCeylon Orchestrator running", "status": "ok"}
 
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "service": "GraphCeylon Orchestrator"}
+    
 @app.post("/orchestrate", response_model=OrchestrateResponse)
 def orchestrate(req: OrchestrateRequest):
     req = ensure_ids(req)
