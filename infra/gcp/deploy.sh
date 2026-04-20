@@ -10,7 +10,7 @@ set -euo pipefail
 
 APP_DIR="/opt/graphceylon"
 COMPOSE_FILE="$APP_DIR/infra/docker-compose.prod.yaml"
-ENV_FILE="$APP_DIR/.env"
+ENV_FILE="$APP_DIR/.env.production"
 
 # Load env vars for image references
 set -a
