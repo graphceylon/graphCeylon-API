@@ -22,10 +22,6 @@ RUN uv pip install --system -r requirements.txt
 COPY src/ ./src/
 COPY static/ ./static/
 
-# Copy model files for HuggingFace local loading
-COPY models/ ./models/
-
-
 
 # Create app user/group, then HuggingFace cache dir and set permissions
 RUN addgroup --system app \
