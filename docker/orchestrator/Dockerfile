@@ -27,7 +27,6 @@ RUN addgroup --system app \
     && adduser --system --ingroup app app \
     && mkdir -p /tmp/huggingface_cache \
     && chown -R app:app /tmp/huggingface_cache
-USER app
 
 EXPOSE 8002
 EXPOSE 9101
@@ -35,4 +34,5 @@ EXPOSE 9101
 # Copy and use shell script as entrypoint
 COPY start.sh /app/start.sh
 RUN chmod +x /app/start.sh
+USER app
 CMD ["/app/start.sh"]
