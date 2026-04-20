@@ -22,6 +22,14 @@ if [ -n "${1:-}" ]; then
     export IMAGE_TAG="$1"
 fi
 
+# Optional: Only restore DB if RESTORE_DB=1 or --restore-db is passed
+RESTORE_DB="${RESTORE_DB:-0}"
+for arg in "$@"; do
+    if [ "$arg" = "--restore-db" ]; then
+        RESTORE_DB=1
+    fi
+done
+
 echo "=== Deploying GraphCeylon API (tag: ${IMAGE_TAG:-latest}) ==="
 
 # ---- 1. Sync data & models from GCS ----
@@ -41,11 +49,23 @@ docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --remove-orphans
 BACKUP_FILE="$APP_DIR/db-backup.sql"
 POSTGRES_USER="${POSTGRES_USER:-graphceylon}"
 POSTGRES_DB="${POSTGRES_DB:-graphceylon_users}"
-if [ -f "$BACKUP_FILE" ]; then
+if [ "$RESTORE_DB" = "1" ] && [ -f "$BACKUP_FILE" ]; then
     echo ">>> Restoring Postgres backup from $BACKUP_FILE ..."
+    # Stop services that use the DB (optional, but safer)
+    docker compose -f "$COMPOSE_FILE" stop user_service auth_service orchestrator kg_service language_service recommender_service || true
+
+    # Drop and recreate the database from the 'postgres' database
+    docker exec -i graphceylon-postgres psql -U "$POSTGRES_USER" -d postgres <<EOF
+DROP DATABASE IF EXISTS "$POSTGRES_DB";
+CREATE DATABASE "$POSTGRES_DB";
+EOF
+
+    # Restore the backup
     docker cp "$BACKUP_FILE" graphceylon-postgres:/db-backup.sql
     docker exec graphceylon-postgres pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --role="$POSTGRES_USER" /db-backup.sql
     echo ">>> Postgres restore complete."
+else
+    echo ">>> Skipping Postgres restore. Set RESTORE_DB=1 or pass --restore-db to enable."
 fi
 
 # ---- 4. Wait for services to be healthy ----
