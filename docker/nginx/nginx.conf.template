@@ -1,6 +1,31 @@
+# Automatically redirect all HTTP traffic to HTTPS
 server {
     listen 80;
     server_name ${DOMAIN};
+
+    # Allow certbot to renew certificates automatically via port 80
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    # Redirect everything else to HTTPS
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# Secure HTTPS Server
+server {
+    listen 443 ssl;
+    server_name ${DOMAIN};
+
+    # Load the certificates you just generated
+    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    
+    # Modern secure connection settings
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
 
     client_max_body_size 10M;
 
@@ -11,14 +36,8 @@ server {
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
 
-    # ACME challenge for certbot (optional, safe to leave)
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
-
     # ==========================================
     # Auth & User Services (Node.js)
-    # They inherently listen on /api/auth & /api/users
     # ==========================================
     location /api/auth/ {
         proxy_pass http://auth_service:8004;
@@ -30,29 +49,22 @@ server {
 
     # ==========================================
     # Data & AI Services (Python)
-    # Using trailing slashes to strip the prefix
     # ==========================================
-    
-    # Language Service
     location /api/language/ {
         proxy_pass http://language_service:8001/;
     }
 
-    # KG Service
     location /api/kg/ {
         proxy_pass http://kg_service:8000/;
     }
 
-    # Recommender Service
     location /api/recommender/ {
         proxy_pass http://recommender_service:8003/;
     }
 
     # ==========================================
     # Main API — Orchestrator
-    # Root paths explicitly fallback to Orchestrator
     # ==========================================
-    
     location /api/orchestrator/ {
         proxy_pass http://orchestrator:8002/;
     }
