@@ -32,4 +32,4 @@ USER app
 
 EXPOSE 8003
 
-CMD ["python", "-m", "uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8003"]
+CMD ["python", "-m", "uvicorn", "services.recommender_service.src.api.main:app", "--host", "0.0.0.0", "--port", "8003"]

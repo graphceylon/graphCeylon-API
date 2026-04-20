@@ -17,8 +17,13 @@ COPY requirements.txt .
 RUN uv pip install --system -r requirements.txt
 
 # Copy application code
+
+# Copy application code
 COPY src/ ./src/
 COPY static/ ./static/
+
+# Copy model files for HuggingFace local loading
+COPY models/ ./models/
 
 
 
