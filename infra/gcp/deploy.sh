@@ -40,10 +40,11 @@ docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --remove-orphans
 # ---- 3b. Restore Postgres backup if present ----
 BACKUP_FILE="$APP_DIR/db-backup.sql"
 POSTGRES_USER="${POSTGRES_USER:-graphceylon}"
+POSTGRES_DB="${POSTGRES_DB:-graphceylon_users}"
 if [ -f "$BACKUP_FILE" ]; then
     echo ">>> Restoring Postgres backup from $BACKUP_FILE ..."
     docker cp "$BACKUP_FILE" graphceylon-postgres:/db-backup.sql
-    docker exec graphceylon-postgres psql -U "$POSTGRES_USER" -f /db-backup.sql
+    docker exec graphceylon-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /db-backup.sql
     echo ">>> Postgres restore complete."
 fi
 
