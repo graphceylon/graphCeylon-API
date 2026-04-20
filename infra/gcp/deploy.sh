@@ -44,7 +44,7 @@ POSTGRES_DB="${POSTGRES_DB:-graphceylon_users}"
 if [ -f "$BACKUP_FILE" ]; then
     echo ">>> Restoring Postgres backup from $BACKUP_FILE ..."
     docker cp "$BACKUP_FILE" graphceylon-postgres:/db-backup.sql
-    docker exec graphceylon-postgres pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" /db-backup.sql
+    docker exec graphceylon-postgres pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --role="$POSTGRES_USER" /db-backup.sql
     echo ">>> Postgres restore complete."
 fi
 
