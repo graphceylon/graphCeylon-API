@@ -38,12 +38,11 @@ bash "$APP_DIR/infra/gcp/sync-assets.sh"
 
 # ---- 2. Pull latest images ----
 echo ">>> Pulling images..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull --ignore-buildable
-
+docker compose -f "$COMPOSE_FILE" pull --ignore-buildable
 
 # ---- 3. Start/update services ----
 echo ">>> Starting services..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --remove-orphans
+docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
 
 # ---- 3b. Restore Postgres backup if present ----
 BACKUP_FILE="$APP_DIR/db-backup.sql"
