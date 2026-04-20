@@ -660,11 +660,15 @@ class OrchestratorService:
         # self.agentic_loop = AgenticLoop()
         # self.agentic_loop.set_nli(self.nli) 
         self.protocol_mode = protocol_mode
-        MODEL_DIR = (
-            Path(__file__).resolve()
-            .parents[2]  # Adjusted from parents[4] to parents[2] to avoid IndexError
-            / "models" / "orchestrator" / "NLI" / "nli_deberta" / "finalrob"
-        )
+        docker_nli_path = "/models/orchestrator/NLI/nli_deberta/finalrob"
+        if os.path.exists(docker_nli_path):
+            MODEL_DIR = docker_nli_path
+        else:
+            try:
+                # Fallback for local development
+                MODEL_DIR = str(Path(__file__).resolve().parents[4] / "models" / "orchestrator" / "NLI" / "nli_deberta" / "finalrob")
+            except IndexError:
+                MODEL_DIR = docker_nli_path
 
         self.nli = NLIWrapper(model_dir=str(MODEL_DIR))
         self.verifier = VerifierAgent(nli=self.nli)
