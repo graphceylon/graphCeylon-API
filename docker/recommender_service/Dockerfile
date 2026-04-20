@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
     && curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ENV PATH="/root/.local/bin:$PATH"
-ENV PYTHONPATH="/app:/app/src"
+ENV PYTHONPATH="/app:/app/src:/app/services"
 
 # Copy requirements first for better caching
 COPY services/recommender_service/requirements.txt .
@@ -22,6 +22,9 @@ COPY services/recommender_service/src/ ./src/
 
 # Copy configs from repo root (required: service imports configs.recommender_service.config)
 COPY configs/ ./configs/
+
+# Copy the services directory to the container
+COPY services/ ./services/
 
 # Create non-root user
 RUN addgroup --system app && adduser --system --ingroup app app

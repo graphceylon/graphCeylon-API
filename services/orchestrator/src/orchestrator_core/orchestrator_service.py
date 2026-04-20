@@ -662,7 +662,7 @@ class OrchestratorService:
         self.protocol_mode = protocol_mode
         MODEL_DIR = (
             Path(__file__).resolve()
-            .parents[4]  # adjust if needed (explained below)
+            .parents[2]  # Adjusted from parents[4] to parents[2] to avoid IndexError
             / "models" / "orchestrator" / "NLI" / "nli_deberta" / "finalrob"
         )
 
