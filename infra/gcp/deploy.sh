@@ -59,9 +59,9 @@ DROP DATABASE IF EXISTS "$POSTGRES_DB";
 CREATE DATABASE "$POSTGRES_DB";
 EOF
 
-    # Restore the backup
+    # Restore the backup (using psql since it's a plain text .sql file)
     docker cp "$BACKUP_FILE" graphceylon-postgres:/db-backup.sql
-    docker exec graphceylon-postgres pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --role="$POSTGRES_USER" /db-backup.sql
+    docker exec graphceylon-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /db-backup.sql
     echo ">>> Postgres restore complete."
 else
     echo ">>> Skipping Postgres restore. Set RESTORE_DB=1 or pass --restore-db to enable."
