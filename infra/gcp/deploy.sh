@@ -32,9 +32,19 @@ bash "$APP_DIR/infra/gcp/sync-assets.sh"
 echo ">>> Pulling images..."
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull --ignore-buildable
 
+
 # ---- 3. Start/update services ----
 echo ">>> Starting services..."
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --remove-orphans
+
+# ---- 3b. Restore Postgres backup if present ----
+BACKUP_FILE="$APP_DIR/db-backup.sql"
+if [ -f "$BACKUP_FILE" ]; then
+    echo ">>> Restoring Postgres backup from $BACKUP_FILE ..."
+    docker cp "$BACKUP_FILE" graphceylon-postgres:/db-backup.sql
+    docker exec -u postgres graphceylon-postgres psql -f /db-backup.sql
+    echo ">>> Postgres restore complete."
+fi
 
 # ---- 4. Wait for services to be healthy ----
 echo ">>> Waiting for services to start..."
@@ -66,9 +76,10 @@ for svc in "${SERVICES[@]}"; do
     fi
 done
 
-# ---- 6. Clean up old images ----
-echo ">>> Pruning unused images..."
+# ---- 6. Clean up old images and volumes ----
+echo ">>> Pruning unused images and dangling volumes..."
 docker image prune -f
+docker volume prune -f
 
 # ---- 7. Report ----
 echo ""

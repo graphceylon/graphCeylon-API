@@ -32,40 +32,40 @@ echo "=== Syncing assets from ${BUCKET} ==="
 # ---- 1. KG service data (for Neo4j import volume) ----
 echo ">>> Syncing data/kg_service/data/ ..."
 mkdir -p "$APP_DIR/data/kg_service/data"
-gsutil -m rsync -r \
+gsutil -m rsync -c -r \
     "${BUCKET}/data/kg_service/data/" \
     "$APP_DIR/data/kg_service/data/"
 
 # ---- 2. Recommender service clean data ----
 echo ">>> Syncing data/recommender_service/clean/ ..."
 mkdir -p "$APP_DIR/data/recommender_service/clean"
-gsutil -m rsync -r \
+gsutil -m rsync -c -r \
     "${BUCKET}/data/recommender_service/clean/" \
     "$APP_DIR/data/recommender_service/clean/"
 
 # ---- 3. Orchestrator ML models ----
 echo ">>> Syncing models/orchestrator/intent_multilabel_final_v5/ ..."
 mkdir -p "$APP_DIR/models/orchestrator/intent_multilabel_final_v5"
-gsutil -m rsync -r \
+gsutil -m rsync -c -r \
     "${BUCKET}/models/orchestrator/intent_multilabel_final_v5/" \
     "$APP_DIR/models/orchestrator/intent_multilabel_final_v5/"
 
 echo ">>> Syncing models/orchestrator/NLI/ ..."
 mkdir -p "$APP_DIR/models/orchestrator/NLI"
-gsutil -m rsync -r \
+gsutil -m rsync -c -r \
     "${BUCKET}/models/orchestrator/NLI/" \
     "$APP_DIR/models/orchestrator/NLI/"
 
 # ---- 4. KG service data & checkpoints ----
 echo ">>> Syncing services/kg_service/data/ ..."
 mkdir -p "$APP_DIR/services/kg_service/data"
-gsutil -m rsync -r \
+gsutil -m rsync -c -r \
     "${BUCKET}/services/kg_service/data/" \
     "$APP_DIR/services/kg_service/data/"
 
 echo ">>> Syncing services/kg_service/checkpoints/ ..."
 mkdir -p "$APP_DIR/services/kg_service/checkpoints"
-gsutil -m rsync -r \
+gsutil -m rsync -c -r \
     "${BUCKET}/services/kg_service/checkpoints/" \
     "$APP_DIR/services/kg_service/checkpoints/"
 
