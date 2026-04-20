@@ -152,6 +152,7 @@ services:
       - DB_DATABASE=${POSTGRES_DB}
       - DB_SYNCHRONIZE=false
       - DB_LOGGING=false
+      - DB_SSL=false
       - JWT_SECRET=${JWT_SECRET}
       - AUTH_SERVICE_URL=http://auth_service:8004
       - CORS_ORIGIN=${CORS_ORIGIN}
