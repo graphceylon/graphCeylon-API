@@ -12,9 +12,12 @@ from sqlalchemy.orm import Session
 # 2) module import via uvicorn (uvicorn src.api.main:app)
 current_file = Path(__file__).resolve()
 service_root = current_file.parents[2]  # .../services/recommender_service
-repo_root = current_file.parents[4]     # .../graphCeylon-API
-for path in (service_root, repo_root):
-    path_str = str(path)
+path_str = str(service_root)
+if path_str not in sys.path:
+    sys.path.insert(0, path_str)
+if len(current_file.parents) > 4:
+    repo_root = current_file.parents[4]     # .../graphCeylon-API
+    path_str = str(repo_root)
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
 
