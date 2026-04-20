@@ -104,7 +104,7 @@ services:
   # Node.js Services
   # ============================================================
   auth_service:
-    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/auth-service:${IMAGE_TAG}
+    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/auth_service:${IMAGE_TAG}
     container_name: graphceylon-auth-service
     env_file: .env
     environment:
@@ -139,7 +139,7 @@ services:
       - "8004:8004"
 
   user_service:
-    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/user-service:${IMAGE_TAG}
+    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/user_service:${IMAGE_TAG}
     container_name: graphceylon-user-service
     env_file: .env
     environment:
@@ -182,7 +182,7 @@ services:
   # Python Services
   # ============================================================
   language_service:
-    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/language-service:${IMAGE_TAG}
+    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/language_service:${IMAGE_TAG}
     container_name: graphceylon-language-service
     env_file: .env
     environment:
@@ -201,7 +201,7 @@ services:
       - "8001:8001"
 
   kg_service:
-    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/kg-service:${IMAGE_TAG}
+    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/kg_service:${IMAGE_TAG}
     container_name: graphceylon-kg-service
     env_file: .env
     environment:
@@ -238,7 +238,7 @@ services:
       - "8000:8000"
 
   recommender_service:
-    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/recommender-service:${IMAGE_TAG}
+    image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/recommender_service:${IMAGE_TAG}
     container_name: graphceylon-recommender-service
     env_file: .env
     environment:
