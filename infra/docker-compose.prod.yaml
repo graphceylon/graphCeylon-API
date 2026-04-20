@@ -27,7 +27,7 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: graphceylon-postgres
-    env_file: /opt/graphceylon/.env.production
+    env_file: /opt/graphceylon/.env
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -50,7 +50,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: graphceylon-redis
-    env_file: /opt/graphceylon/.env.production
+    env_file: /opt/graphceylon/.env
     command: redis-server --requirepass ${REDIS_PASSWORD}
     volumes:
       - redis_data:/data
@@ -106,7 +106,7 @@ services:
   auth_service:
     image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/auth-service:${IMAGE_TAG}
     container_name: graphceylon-auth-service
-    env_file: /opt/graphceylon/.env.production
+    env_file: /opt/graphceylon/.env
     environment:
       - NODE_ENV=production
       - PORT=8004
@@ -139,7 +139,7 @@ services:
   user_service:
     image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/user-service:${IMAGE_TAG}
     container_name: graphceylon-user-service
-    env_file: /opt/graphceylon/.env.production
+    env_file: /opt/graphceylon/.env
     environment:
       - NODE_ENV=production
       - PORT=8005
@@ -180,7 +180,7 @@ services:
   language_service:
     image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/language-service:${IMAGE_TAG}
     container_name: graphceylon-language-service
-    env_file: /opt/graphceylon/.env.production
+    env_file: /opt/graphceylon/.env
     environment:
       - SERVICE_NAME=language_service
       - SERVICE_PORT=8001
@@ -197,7 +197,7 @@ services:
   kg_service:
     image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/kg-service:${IMAGE_TAG}
     container_name: graphceylon-kg-service
-    env_file: /opt/graphceylon/.env.production
+    env_file: /opt/graphceylon/.env
     environment:
       - SERVICE_NAME=kg_service
       - SERVICE_PORT=8000
@@ -229,7 +229,7 @@ services:
   recommender_service:
     image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/recommender-service:${IMAGE_TAG}
     container_name: graphceylon-recommender-service
-    env_file: /opt/graphceylon/.env.production
+    env_file: /opt/graphceylon/.env
     environment:
       - SERVICE_NAME=recommender_service
       - SERVICE_PORT=8003
@@ -249,7 +249,7 @@ services:
   orchestrator:
     image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/orchestrator:${IMAGE_TAG}
     container_name: graphceylon-orchestrator
-    env_file: /opt/graphceylon/.env.production
+    env_file: /opt/graphceylon/.env
     environment:
       - SERVICE_NAME=orchestrator
       - SERVICE_PORT=8002
