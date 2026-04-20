@@ -21,11 +21,12 @@ COPY src/ ./src/
 COPY static/ ./static/
 
 
-# Create HuggingFace cache dir and set permissions before switching user
-RUN mkdir -p /tmp/huggingface_cache \
-    && chown -R app:app /tmp/huggingface_cache \
-    && addgroup --system app \
-    && adduser --system --ingroup app app
+
+# Create app user/group, then HuggingFace cache dir and set permissions
+RUN addgroup --system app \
+    && adduser --system --ingroup app app \
+    && mkdir -p /tmp/huggingface_cache \
+    && chown -R app:app /tmp/huggingface_cache
 USER app
 
 EXPOSE 8002
