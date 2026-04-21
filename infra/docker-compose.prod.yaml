@@ -220,7 +220,7 @@ services:
       HF_HOME: /tmp/huggingface_cache
     volumes:
       - ../models/kg_service:/models
-      - ../data/kg_service:/data
+      - ../data:/data
       - ../services/kg_service/data:/app/src/data
       - ../services/kg_service/checkpoints:/app/src/checkpoints
       - ../services/kg_service/neo4j:/app/neo4j

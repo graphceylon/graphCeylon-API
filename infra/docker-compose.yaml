@@ -189,7 +189,7 @@ services:
     volumes:
       - ../services/kg_service:/app
       - ../models/kg_service:/models
-      - ../data/kg_service:/data
+      - ../data:/data
     depends_on:
       neo4j:
         condition: service_healthy
