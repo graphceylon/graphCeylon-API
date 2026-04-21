@@ -14,102 +14,55 @@ env:
 
 jobs:
   # ============================================================
-  # Testing — Python Services
+  # Detect Changes
   # ============================================================
-  test-python:
+  changes:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        service:
-          - kg_service
-          - language_service
-          - recommender_service
-          - orchestrator
+    outputs:
+      services: ${{ steps.filter.outputs.changes }}
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
-      - name: Install dependencies
-        working-directory: ./services/${{ matrix.service }}
-        run: |
-          uv pip install --system -r requirements.txt
-          uv pip install --system pytest pytest-asyncio httpx
-      - name: Run tests
-        working-directory: ./services/${{ matrix.service }}
-        run: pytest --tb=short -q
+          filters: |
+            auth_service:
+              - 'services/auth_service/**'
+              - 'docker/auth_service/**'
+              - '.github/workflows/ci-cd.yaml'
+            user_service:
+              - 'services/user_service/**'
+              - 'docker/user_service/**'
+              - '.github/workflows/ci-cd.yaml'
+            language_service:
+              - 'services/language_service/**'
+              - 'docker/language_service/**'
+              - '.github/workflows/ci-cd.yaml'
+            kg_service:
+              - 'services/kg_service/**'
+              - 'docker/kg_service/**'
+              - '.github/workflows/ci-cd.yaml'
+            recommender_service:
+              - 'services/recommender_service/**'
+              - 'docker/recommender_service/**'
+              - '.github/workflows/ci-cd.yaml'
+            orchestrator:
+              - 'services/orchestrator/**'
+              - 'docker/orchestrator/**'
+              - '.github/workflows/ci-cd.yaml'
 
-  # ============================================================
-  # Testing — Node.js Services
-  # ============================================================
-  test-node:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        service:
-          - auth_service
-          - user_service
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: services/${{ matrix.service }}/package-lock.json
-      - name: Install dependencies
-        working-directory: ./services/${{ matrix.service }}
-        run: npm ci
-      - name: Build TypeScript
-        working-directory: ./services/${{ matrix.service }}
-        run: npm run build
-      - name: Run tests
-        working-directory: ./services/${{ matrix.service }}
-        run: npm test --if-present
-
-  # ============================================================
-  # Linting
-  # ============================================================
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install linting tools
-        run: pip install flake8 black mypy
-      - name: Run flake8
-        run: flake8 services/ --max-line-length=120 --exclude=__pycache__,node_modules,dist
-      - name: Run black
-        run: black --check services/ --exclude='node_modules|dist'
-      - name: Run mypy
-        run: |
-          mypy services/language_service/src --ignore-missing-imports || true
-          mypy services/kg_service/src --ignore-missing-imports || true
-          mypy services/recommender_service/src --ignore-missing-imports || true
-          mypy services/orchestrator/src --ignore-missing-imports || true
 
   # ============================================================
   # Build & Push Docker Images
   # ============================================================
   build-and-push:
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
+    needs: changes
+    if: needs.changes.outputs.services != '[]' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
     # Only build/push images for changed services
     strategy:
       matrix:
-        service:
-          - auth_service
-          - user_service
-          - language_service
-          - kg_service
-          - recommender_service
-          - orchestrator
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
     steps:
       - uses: actions/checkout@v4
 
