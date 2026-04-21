@@ -6,10 +6,12 @@ RESTful endpoints for hotel queries, search, recommendations, and ingestion
 
 from typing import List, Optional, Dict, Any
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Depends
 from pydantic import BaseModel, Field
 import json
 import time
+import uuid
+import threading
 from datetime import datetime
 
 from core.config import settings
@@ -36,6 +38,10 @@ router = APIRouter(
     tags=["hotels"],
     responses={404: {"description": "Not found"}}
 )
+
+# In-memory job store for background initialization tasks
+_hotel_init_jobs: Dict[str, Dict[str, Any]] = {}
+_hotel_init_lock = threading.Lock()
 
 
 # ========== Response Models ==========
@@ -739,74 +745,54 @@ async def debug_inspect_hotels(
         }
 
 
-@router.post("/initialize", response_model=Dict[str, Any])
-async def initialize_hotels(
-    force_reset: bool = False,
-    driver = Depends(get_driver)
-):
-    """
-    Initialize hotels from the local hotels.json data file.
-    
-    Reads the hotels dataset from the data directory and ingests all hotels
-    into the knowledge graph. This is the recommended method for KG initialization.
-    
-    - **force_reset**: If True, deletes all existing Hotel nodes before ingesting (clean slate)
-    
-    **Returns:**
-    - Total hotels created
-    - Relationships established
-    - POIs and amenities added
-    - Processing time
-    """
-    from database.utils import DatabasePaths
-    hotels_file = DatabasePaths.get_data_file("hotels.json")
-    
-    if not hotels_file.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Hotels data file not found at: {hotels_file}"
-        )
-    
+def _run_hotel_ingestion(job_id: str, hotels_file, force_reset: bool, neo4j_uri: str, neo4j_user: str, neo4j_password: str):
+    """Background worker: ingests hotels.json into Neo4j and updates the job store."""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    from models.domain.hotel import (
+        HotelIngestionBatch,
+        HotelCreate,
+        GPSCoordinates,
+        NearbyPlace,
+        TransportationOption
+    )
+
+    with _hotel_init_lock:
+        _hotel_init_jobs[job_id]["status"] = "running"
+        _hotel_init_jobs[job_id]["started_at"] = datetime.utcnow().isoformat()
+
+    overall_start = time.time()
+    total_results = {
+        "total_attractions": 0,
+        "total_hotels_created": 0,
+        "total_relationships": 0,
+        "total_pois": 0,
+        "total_amenities": 0,
+        "total_errors": 0,
+        "attraction_results": []
+    }
+
     try:
         with open(hotels_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        
-        # Initialize ingestion service
-        service = HotelIngestionService()
-        
+
+        service = HotelIngestionService(uri=neo4j_uri, user=neo4j_user, password=neo4j_password)
+
         try:
-            overall_start = time.time()
-            
-            # Wipe existing Hotel nodes if requested
             if force_reset:
-                with driver.session() as wipe_session:
-                    wipe_session.run("MATCH (h:Hotel) DETACH DELETE h")
-            
-            total_results = {
-                "total_attractions": 0,
-                "total_hotels_created": 0,
-                "total_relationships": 0,
-                "total_pois": 0,
-                "total_amenities": 0,
-                "total_errors": 0,
-                "attraction_results": []
-            }
-            
-            from models.domain.hotel import (
-                HotelIngestionBatch,
-                HotelCreate,
-                GPSCoordinates,
-                NearbyPlace,
-                TransportationOption
-            )
-            
-            # Process each attraction's hotels
+                from neo4j import GraphDatabase
+                tmp_driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+                with tmp_driver.session() as s:
+                    s.run("MATCH (h:Hotel) DETACH DELETE h")
+                tmp_driver.close()
+                logger.info("Hotel data wiped (force_reset=True)")
+
             for attraction_data in data.get("attractions", []):
                 attraction_name = attraction_data.get("attraction")
                 if not attraction_name or not attraction_data.get("hotels"):
                     continue
-                
-                # Extract authoritative geo data from attraction's geolocation block
+
                 geolocation = attraction_data.get("geolocation", {}) or {}
                 address_info = geolocation.get("address_info", {}) or {}
                 admin_areas = address_info.get("administrative_areas", {}) or {}
@@ -827,30 +813,27 @@ async def initialize_hotels(
                 hotels = []
                 for hotel_data in attraction_data.get("hotels", []):
                     try:
-                        # Build nearby places
                         nearby_places = []
                         for place_data in hotel_data.get("nearby_places", []):
-                            transportations = []
-                            for trans_data in place_data.get("transportations", []):
-                                transportations.append(TransportationOption(**trans_data))
-                            
+                            transportations = [
+                                TransportationOption(**t)
+                                for t in place_data.get("transportations", [])
+                            ]
                             gps = place_data.get("gps_coordinates")
                             gps_coords = GPSCoordinates(**gps) if gps else None
-                            
                             nearby_places.append(
                                 NearbyPlace(
                                     **{**place_data, "transportations": transportations, "gps_coordinates": gps_coords}
                                 )
                             )
-                        
-                        # Handle missing/invalid GPS coordinates
+
                         gps_data = hotel_data.get("gps_coordinates")
                         if isinstance(gps_data, str) or not gps_data:
                             total_results["total_errors"] += 1
                             continue
-                        
+
                         rating = hotel_data.get("rating") or hotel_data.get("overall_rating")
-                        
+
                         hotel = HotelCreate(
                             name=hotel_data.get("name"),
                             description=hotel_data.get("description"),
@@ -868,7 +851,6 @@ async def initialize_hotels(
                             amenities=hotel_data.get("amenities", []),
                             nearby_places=nearby_places,
                             attraction_name=attraction_name,
-                            # Authoritative geo from administrative_areas
                             country=geo_country,
                             country_code=geo_country_code,
                             province=geo_province,
@@ -885,7 +867,7 @@ async def initialize_hotels(
                     except Exception as e:
                         total_results["total_errors"] += 1
                         continue
-                
+
                 if hotels:
                     batch = HotelIngestionBatch(
                         attraction_name=attraction_name,
@@ -895,46 +877,127 @@ async def initialize_hotels(
                         hotels=hotels,
                         metadata=data.get("scrape_metadata", {})
                     )
-                    
                     batch_result = service.ingest_batch(batch)
-                    
+
                     total_results["total_attractions"] += 1
                     total_results["total_hotels_created"] += batch_result.hotels_created
                     total_results["total_relationships"] += batch_result.relationships_created
                     total_results["total_pois"] += batch_result.pois_created
                     total_results["total_amenities"] += batch_result.amenities_created
                     total_results["total_errors"] += len(batch_result.errors)
-                    
                     total_results["attraction_results"].append({
                         "attraction": attraction_name,
                         "hotels_created": batch_result.hotels_created,
                         "relationships": batch_result.relationships_created,
                         "errors": batch_result.errors if batch_result.errors else []
                     })
-            
-            total_results["total_time_seconds"] = time.time() - overall_start
-            
-            return {
-                "success": True,
-                "message": f"Successfully ingested {total_results['total_hotels_created']} hotels from {total_results['total_attractions']} attractions",
-                "results": total_results
-            }
-            
+
+                    # Update live progress in job store
+                    with _hotel_init_lock:
+                        _hotel_init_jobs[job_id]["progress"] = total_results.copy()
+
         finally:
             service.close()
-    
-    except json.JSONDecodeError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid JSON in hotels data file"
+
+        total_results["total_time_seconds"] = time.time() - overall_start
+
+        with _hotel_init_lock:
+            _hotel_init_jobs[job_id].update({
+                "status": "completed",
+                "completed_at": datetime.utcnow().isoformat(),
+                "results": total_results,
+            })
+        logger.info(
+            "Hotel ingestion completed: %d hotels from %d attractions in %.1fs",
+            total_results["total_hotels_created"],
+            total_results["total_attractions"],
+            total_results["total_time_seconds"],
         )
-    except HTTPException:
-        raise
+
     except Exception as e:
+        elapsed = time.time() - overall_start
+        with _hotel_init_lock:
+            _hotel_init_jobs[job_id].update({
+                "status": "failed",
+                "completed_at": datetime.utcnow().isoformat(),
+                "error": str(e),
+                "elapsed_seconds": elapsed,
+            })
+        logger.exception("Hotel ingestion job %s failed", job_id)
+
+
+@router.post("/initialize", status_code=202, response_model=Dict[str, Any])
+async def initialize_hotels(
+    background_tasks: BackgroundTasks,
+    force_reset: bool = False,
+):
+    """
+    Initialize hotels from the local hotels.json data file (non-blocking).
+
+    Returns **202 Accepted** immediately with a `job_id`.
+    Poll **GET /hotels/initialize/status?job_id=<job_id>** to track progress.
+
+    - **force_reset**: If True, deletes all existing Hotel nodes before ingesting
+    """
+    from database.utils import DatabasePaths
+    hotels_file = DatabasePaths.get_data_file("hotels.json")
+
+    if not hotels_file.exists():
         raise HTTPException(
-            status_code=500,
-            detail=f"Hotel initialization failed: {str(e)}"
+            status_code=404,
+            detail=f"Hotels data file not found at: {hotels_file}"
         )
+
+    job_id = str(uuid.uuid4())
+    with _hotel_init_lock:
+        _hotel_init_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "pending",
+            "created_at": datetime.utcnow().isoformat(),
+            "started_at": None,
+            "completed_at": None,
+            "force_reset": force_reset,
+            "progress": None,
+            "results": None,
+            "error": None,
+        }
+
+    background_tasks.add_task(
+        _run_hotel_ingestion,
+        job_id=job_id,
+        hotels_file=hotels_file,
+        force_reset=force_reset,
+        neo4j_uri=settings.neo4j_uri,
+        neo4j_user=settings.neo4j_user,
+        neo4j_password=settings.neo4j_password,
+    )
+
+    return {
+        "accepted": True,
+        "job_id": job_id,
+        "message": "Hotel initialization started in the background. Poll /hotels/initialize/status?job_id={job_id} for progress.",
+        "status_url": f"/hotels/initialize/status?job_id={job_id}",
+    }
+
+
+@router.get("/initialize/status", response_model=Dict[str, Any])
+async def hotel_initialize_status(job_id: str):
+    """
+    Poll the status of a background hotel initialization job.
+
+    Returns one of: `pending`, `running`, `completed`, `failed`.
+    When `completed`, the full ingestion results are included.
+    """
+    with _hotel_init_lock:
+        job = _hotel_init_jobs.get(job_id)
+
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Job '{job_id}' not found. It may have never been created or the service was restarted."
+        )
+
+    return job
 
 
 # ========== Orchestrator Endpoints ==========
