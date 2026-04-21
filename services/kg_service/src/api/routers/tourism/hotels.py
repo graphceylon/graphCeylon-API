@@ -758,8 +758,8 @@ async def initialize_hotels(
     - POIs and amenities added
     - Processing time
     """
-    # Resolve path: hotels.py -> tourism -> routers -> api -> src -> kg_service root
-    hotels_file = Path(__file__).parent.parent.parent.parent.parent / "data" / "hotels.json"
+    from database.utils import DatabasePaths
+    hotels_file = DatabasePaths.get_data_file("hotels.json")
     
     if not hotels_file.exists():
         raise HTTPException(
