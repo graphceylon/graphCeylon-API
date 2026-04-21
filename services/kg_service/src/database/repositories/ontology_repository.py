@@ -47,11 +47,12 @@ class OntologyRepository(BaseRepository):
                 raise FileNotFoundError(f"Ontology file not found: {ontology_path}")
             
             try:
-                # Get path relative to neo4j/import/ to preserve subdirectory structure
-                neo4j_import_dir = DatabasePaths.get_neo4j_import()
-                ontology_relative = ontology_path.relative_to(neo4j_import_dir)
+                with open(ontology_path, 'r', encoding='utf-8') as f:
+                    onto_content = f.read()
+                
                 self.execute_cypher(
-                    f"CALL n10s.onto.import.fetch('file:///var/lib/neo4j/import/{ontology_relative.as_posix()}','Turtle');"
+                    "CALL n10s.onto.import.inline($content, 'Turtle');",
+                    {"content": onto_content}
                 )
                 results["ontology_imported"] = True
             except Exception as e:
@@ -82,11 +83,12 @@ class OntologyRepository(BaseRepository):
                 raise FileNotFoundError(f"Shapes file not found: {shapes_path}")
             
             try:
-                # Get path relative to neo4j/import/ to preserve subdirectory structure
-                neo4j_import_dir = DatabasePaths.get_neo4j_import()
-                shapes_relative = shapes_path.relative_to(neo4j_import_dir)
+                with open(shapes_path, 'r', encoding='utf-8') as f:
+                    shacl_content = f.read()
+                
                 self.execute_cypher(
-                    f"CALL n10s.validation.shacl.import.fetch('file:///var/lib/neo4j/import/{shapes_relative.as_posix()}','Turtle');"
+                    "CALL n10s.validation.shacl.import.inline($content, 'Turtle');",
+                    {"content": shacl_content}
                 )
                 results["shapes_imported"] = True
             except Exception as e:
