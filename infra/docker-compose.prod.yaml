@@ -223,6 +223,7 @@ services:
       - ../data/kg_service:/data
       - ../services/kg_service/data:/app/src/data
       - ../services/kg_service/checkpoints:/app/src/checkpoints
+      - ../services/kg_service/neo4j:/app/neo4j
       - kg_service_hf_cache:/tmp/huggingface_cache
     depends_on:
       neo4j:
