@@ -247,6 +247,8 @@ services:
       SERVICE_PORT: 8003
       OPENWEATHER_API_KEY: ${OPENWEATHER_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      KG_BASE_URL: http://kg_service:8000
+      KG_SERVICE_URL: http://kg_service:8000
     volumes:
       - ../models/recommender_service:/models
       - ../data/recommender_service:/app/data/recommender_service
