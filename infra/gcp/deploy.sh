@@ -59,10 +59,24 @@ DROP DATABASE IF EXISTS "$POSTGRES_DB";
 CREATE DATABASE "$POSTGRES_DB";
 EOF
 
-    # Restore the backup (using psql since it's a plain text .sql file)
+    # Detect format: custom-format dumps start with 'PGDMP' magic bytes
     docker cp "$BACKUP_FILE" graphceylon-postgres:/db-backup.sql
-    docker exec graphceylon-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /db-backup.sql
+    FIRST_BYTES=$(docker exec graphceylon-postgres head -c 5 /db-backup.sql 2>/dev/null || true)
+    if echo "$FIRST_BYTES" | grep -q 'PGDMP'; then
+        echo ">>> Detected custom-format dump — using pg_restore..."
+        docker exec graphceylon-postgres pg_restore \
+            -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+            --no-owner --no-privileges \
+            -v /db-backup.sql 2>&1 | tail -20
+    else
+        echo ">>> Detected plain SQL dump — using psql..."
+        docker exec graphceylon-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /db-backup.sql
+    fi
     echo ">>> Postgres restore complete."
+
+    # Restart services that were stopped for the DB restore
+    echo ">>> Restarting services after DB restore..."
+    docker compose -f "$COMPOSE_FILE" start user_service auth_service orchestrator kg_service language_service recommender_service || true
 else
     echo ">>> Skipping Postgres restore. Set RESTORE_DB=1 or pass --restore-db to enable."
 fi
