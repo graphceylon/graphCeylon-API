@@ -279,7 +279,7 @@ services:
       SERVICE_TOKEN: ${SERVICE_TOKEN}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       GROQ_API_KEY: ${GROQ_API_KEY}
-      PROFILE_DB_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      PROFILE_DB_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       HF_HOME: /tmp/huggingface_cache
     volumes:
       - ../models/orchestrator:/models/orchestrator
