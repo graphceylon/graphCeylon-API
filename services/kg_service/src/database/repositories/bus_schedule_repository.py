@@ -417,7 +417,7 @@ class BusScheduleRepository(BaseRepository):
             MATCH (bs2:BusSchedule)-[:OPERATED_BY_DEPOT]->(d:BusDepot)
             WITH d.name as depot, count(bs2) as cnt
             ORDER BY cnt DESC
-            RETURN count(DISTINCT d.name) as depot_count,
+            RETURN count(DISTINCT depot) as depot_count,
                    collect({depot: depot, count: cnt}) as depot_stats
         }
         CALL {

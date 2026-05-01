@@ -380,3 +380,41 @@ def subscribe_updates():
         "message": "Subscription endpoint active. Use WebSocket at /ws/updates for real-time notifications.",
         "status": "placeholder",
     }
+
+
+@router.get("/overview", response_model=dict)
+def get_kg_overview(db: DatabaseManager = Depends(get_db_manager)):
+    """Get a high-level overview of the knowledge graph."""
+    try:
+        node_counts = db.execute_cypher(
+            """
+            MATCH (n)
+            UNWIND labels(n) AS label
+            RETURN label, count(*) AS count
+            ORDER BY count DESC
+            """
+        )
+        rel_counts = db.execute_cypher(
+            """
+            MATCH ()-[r]->()
+            RETURN type(r) AS relationship, count(r) AS count
+            ORDER BY count DESC
+            """
+        )
+        totals = db.execute_cypher(
+            """
+            MATCH (n) WITH count(n) AS nodes
+            MATCH ()-[r]->() WITH nodes, count(r) AS relationships
+            RETURN nodes, relationships
+            """
+        )
+        total_row = totals[0] if totals else {"nodes": 0, "relationships": 0}
+        return {
+            "total_nodes": total_row.get("nodes", 0),
+            "total_relationships": total_row.get("relationships", 0),
+            "node_types": node_counts,
+            "relationship_types": rel_counts,
+        }
+    except Exception as e:
+        logger.error(f"Failed to get KG overview: {e}")
+        raise HTTPException(status_code=500, detail=f"Overview query failed: {str(e)}")

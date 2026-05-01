@@ -127,7 +127,7 @@ class GraphRAGService:
                 # Get sample chunks
                 sample_result = session.run("""
                     MATCH (c:Chunk)-[:BELONGS_TO]->(d:Domain {name: $domain_name})
-                    RETURN c.text AS text, c.source AS source, c.chunk_id AS chunk_id
+                    RETURN c.text AS text, c.source AS source, c.id AS chunk_id
                     LIMIT 3
                 """, {"domain_name": domain_name})
                 sample_chunks = [
