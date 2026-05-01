@@ -19,6 +19,9 @@ server {
     listen 443 ssl;
     server_name ${DOMAIN};
 
+    # Use Docker's internal DNS so upstreams are re-resolved after container restarts
+    resolver 127.0.0.11 valid=30s ipv6=off;
+
     # Load the certificates you just generated
     ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
@@ -45,37 +48,44 @@ server {
     # Auth & User Services (Node.js)
     # ==========================================
     location /api/auth/ {
-        proxy_pass http://auth_service:8004;
+        set $upstream_auth http://auth_service:8004;
+        proxy_pass $upstream_auth;
     }
 
     location /api/users/ {
-        proxy_pass http://user_service:8005;
+        set $upstream_users http://user_service:8005;
+        proxy_pass $upstream_users;
     }
 
     # ==========================================
     # Data & AI Services (Python)
     # ==========================================
     location /api/language/ {
-        proxy_pass http://language_service:8001/;
+        set $upstream_language http://language_service:8001;
+        proxy_pass $upstream_language/;
     }
 
     location /api/kg/ {
-        proxy_pass http://kg_service:8000/;
+        set $upstream_kg http://kg_service:8000;
+        proxy_pass $upstream_kg/;
     }
 
     location /api/recommender/ {
-        proxy_pass http://recommender_service:8003/;
+        set $upstream_recommender http://recommender_service:8003;
+        proxy_pass $upstream_recommender/;
     }
 
     # ==========================================
     # Main API — Orchestrator
     # ==========================================
     location /api/orchestrator/ {
-        proxy_pass http://orchestrator:8002/;
+        set $upstream_orchestrator http://orchestrator:8002;
+        proxy_pass $upstream_orchestrator/;
     }
 
     location / {
-        proxy_pass http://orchestrator:8002;
+        set $upstream_orchestrator http://orchestrator:8002;
+        proxy_pass $upstream_orchestrator;
         proxy_read_timeout 120s;
         proxy_connect_timeout 10s;
     }
