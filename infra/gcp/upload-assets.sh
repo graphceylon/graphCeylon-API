@@ -60,6 +60,12 @@ gsutil -m rsync -r -d \
     "${REPO_ROOT}/services/kg_service/checkpoints/" \
     "${BUCKET}/services/kg_service/checkpoints/"
 
+# ---- 6. Upload language service Sinhala TTS model ----
+echo ">>> Uploading models/language_service/sinhala_tts/ ..."
+gsutil -m rsync -r -d \
+    "${REPO_ROOT}/services/language_service/models/sinhala_tts/" \
+    "${BUCKET}/models/language_service/sinhala_tts/"
+
 echo ""
 echo "=== Upload complete! ==="
 echo "Bucket: ${BUCKET}"
