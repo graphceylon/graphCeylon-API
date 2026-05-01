@@ -1,2 +1,24 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
+# Language Service Dependencies
+# Install with: uv pip install -r requirements.txt
+
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+httpx>=0.24.0
+
+# Google Cloud — Gemini Live (STT + language detection + translation)
+google-genai>=1.0.0
+
+# Google Cloud — Text-to-Speech
+google-cloud-texttospeech>=2.14.0
+
+# Google Cloud — Translation API v3 (reverse translation only)
+google-cloud-translate>=3.11.0
+
+# Sinhala custom VITS TTS (Coqui TTS fine-tune)
+# Install: pip install TTS>=0.22.0
+TTS>=0.22.0
+
+# WAV serialisation for Sinhala VITS output
+scipy>=1.11.0
+numpy>=1.24.0

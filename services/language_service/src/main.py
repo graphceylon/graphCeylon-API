@@ -1,12 +1,20 @@
 """Main application entry point for Language Service."""
 
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Ensure Google credentials are loaded before any client is created
+from . import config as _config  # noqa: F401
+from .voice_routes import router as voice_router
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(name)-30s  %(levelname)-7s  %(message)s")
+
 app = FastAPI(
     title="GraphCeylon Language Service",
-    description="Multilingual NLP service for Sri Lankan tourism",
-    version="0.1.0",
+    description="Multilingual voice pipeline for Sri Lankan tourism — STT (Gemini Live), TTS, Translation",
+    version="0.2.0",
 )
 
 # CORS middleware
@@ -18,6 +26,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Register voice endpoints
+app.include_router(voice_router)
+
 
 @app.get("/")
 async def root():
@@ -25,7 +36,8 @@ async def root():
     return {
         "service": "language_service",
         "status": "running",
-        "version": "0.1.0",
+        "version": "0.2.0",
+        "capabilities": ["voice_pipeline", "stt", "tts", "translation"],
     }
 
 
