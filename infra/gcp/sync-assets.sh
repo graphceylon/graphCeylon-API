@@ -71,3 +71,9 @@ gsutil -m rsync -c -r \
 
 echo ""
 echo "=== Asset sync complete! ==="
+
+# ---- Fix permissions so container app users can read all synced files ----
+echo ">>> Fixing file permissions on synced assets..."
+chmod -R a+rX "$APP_DIR"
+echo ">>> Permissions fixed."
+
