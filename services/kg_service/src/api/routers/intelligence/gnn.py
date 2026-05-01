@@ -9,12 +9,13 @@ RESTful endpoints for Graph Neural Network inference:
 """
 
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field, ConfigDict
 import torch
 import torch.nn.functional as F
 from pathlib import Path
 import time
+import asyncio
 from datetime import datetime
 
 # GNN imports
@@ -284,6 +285,8 @@ async def get_hotel_model_info():
             last_trained=str(checkpoint_info.get('epoch')),
             training_loss=checkpoint_info.get('loss'),
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -309,6 +312,8 @@ async def get_route_model_info():
             last_trained=str(checkpoint_info.get('epoch')),
             training_loss=checkpoint_info.get('loss'),
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -568,6 +573,7 @@ async def get_top_rated_hotels(top_k: int = Query(10, ge=1, le=50)):
 
 
 @router.post("/reload-models", summary="Reload GNN Models")
+@router.post("/reload", summary="Reload GNN Models (alias)", include_in_schema=False)
 async def reload_models():
     """Reload all GNN models from checkpoints."""
     global _model_cache
@@ -639,6 +645,7 @@ async def list_all_stations():
 
 
 @router.get("/graph/stats", summary="Graph Statistics")
+@router.get("/graph-stats", summary="Graph Statistics (alias)", include_in_schema=False)
 async def get_graph_stats():
     """Get statistics about the exported graph data."""
     stats = {}
@@ -672,3 +679,243 @@ async def get_graph_stats():
         stats['route_graph'] = 'not loaded'
     
     return stats
+
+
+# ========== Training State ==========
+
+_training_state: Dict[str, Any] = {
+    'hotel': {'status': 'idle', 'job_id': None, 'started_at': None, 'result': None, 'error': None},
+    'route': {'status': 'idle', 'job_id': None, 'started_at': None, 'result': None, 'error': None},
+}
+
+
+# ========== Training Pydantic Models ==========
+
+class TrainingRequest(BaseModel):
+    epochs: int = Field(100, ge=1, le=2000, description="Number of training epochs")
+    learning_rate: float = Field(0.001, gt=0.0, le=1.0, description="Initial learning rate")
+    weight_decay: float = Field(1e-5, ge=0.0, description="L2 regularisation weight decay")
+    patience: int = Field(10, ge=1, le=200, description="Early stopping patience (epochs)")
+    export_fresh: bool = Field(
+        False, description="Re-export graph data from Neo4j before training"
+    )
+    generate_report: bool = Field(True, description="Generate training report after training")
+
+
+class TrainingStatusResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_type: str
+    status: str
+    job_id: Optional[str]
+    started_at: Optional[str]
+    result: Optional[Dict[str, Any]]
+    error: Optional[str]
+
+
+# ========== Training Helper ==========
+
+def _build_model_for_data(model_class, data, config):
+    """Instantiate a GNN model that matches the feature dimensions in *data*."""
+    metadata = (list(data.node_types), list(data.edge_types))
+    in_channels_dict = {
+        nt: data[nt].x.shape[1] if hasattr(data[nt], 'x') else 1
+        for nt in data.node_types
+    }
+    return model_class(metadata, in_channels_dict, config)
+
+
+def _run_hotel_training(job_id: str, request: TrainingRequest, neo4j_uri: str, neo4j_user: str, neo4j_password: str):
+    """Blocking training job executed in a thread pool."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+
+    from gnn.export_graph import GraphExporter
+    from gnn.models import HotelRecommenderGNN, ModelConfig
+    from gnn.training import TrainingConfig, train_hotel_recommender
+
+    state = _training_state['hotel']
+    state.update({'status': 'running', 'job_id': job_id, 'error': None, 'result': None})
+
+    try:
+        data_path = GNN_DATA_DIR / "graphceylon_hotels.pt"
+
+        if request.export_fresh or not data_path.exists():
+            state['status'] = 'exporting'
+            GNN_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            exporter = GraphExporter(uri=neo4j_uri, user=neo4j_user, password=neo4j_password)
+            data = exporter.export()
+            exporter.save(data, str(data_path))
+            node_mappings = exporter.node_mappings
+        else:
+            data, node_mappings, _, _ = GraphExporter.load(str(data_path))
+
+        state['status'] = 'training'
+
+        gnn_config = ModelConfig(hidden_channels=64, out_channels=32, num_layers=2)
+        model = _build_model_for_data(HotelRecommenderGNN, data, gnn_config)
+
+        train_cfg = TrainingConfig(
+            epochs=request.epochs,
+            learning_rate=request.learning_rate,
+            weight_decay=request.weight_decay,
+            patience=request.patience,
+            checkpoint_dir=str(CHECKPOINT_DIR),
+            generate_report=request.generate_report,
+            model_name="Hotel Recommender GNN",
+        )
+
+        result = train_hotel_recommender(model, data, node_mappings, config=train_cfg)
+
+        # Clear cached model so the next request loads the fresh checkpoint
+        _model_cache['hotel'] = None
+
+        state['status'] = 'completed'
+        state['result'] = {
+            'best_loss': result['best_loss'],
+            'best_epoch': result['best_epoch'],
+            'total_epochs': len(result['history']['train_loss']),
+            'total_time_seconds': result['total_time'],
+            'final_loss': result['history']['train_loss'][-1],
+            'report_paths': result.get('report_paths'),
+        }
+
+    except Exception as exc:
+        state['status'] = 'failed'
+        state['error'] = str(exc)
+
+
+def _run_route_training(job_id: str, request: TrainingRequest, neo4j_uri: str, neo4j_user: str, neo4j_password: str):
+    """Blocking training job executed in a thread pool."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+
+    from gnn.export_graph import TrainScheduleGraphExporter, GraphExporter
+    from gnn.models import RouteOptimizerGNN, ModelConfig
+    from gnn.training import TrainingConfig, train_route_optimizer
+
+    state = _training_state['route']
+    state.update({'status': 'running', 'job_id': job_id, 'error': None, 'result': None})
+
+    try:
+        data_path = GNN_DATA_DIR / "graphceylon_trains.pt"
+
+        if request.export_fresh or not data_path.exists():
+            state['status'] = 'exporting'
+            GNN_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            exporter = TrainScheduleGraphExporter(uri=neo4j_uri, user=neo4j_user, password=neo4j_password)
+            data = exporter.export()
+            exporter.save(data, str(data_path))
+            node_mappings = exporter.node_mappings
+        else:
+            data, node_mappings, _, _ = GraphExporter.load(str(data_path))
+
+        state['status'] = 'training'
+
+        gnn_config = ModelConfig(hidden_channels=64, out_channels=32, num_layers=2)
+        model = _build_model_for_data(RouteOptimizerGNN, data, gnn_config)
+
+        train_cfg = TrainingConfig(
+            epochs=request.epochs,
+            learning_rate=request.learning_rate,
+            weight_decay=request.weight_decay,
+            patience=request.patience,
+            checkpoint_dir=str(CHECKPOINT_DIR),
+            generate_report=request.generate_report,
+            model_name="Route Optimizer GNN",
+        )
+
+        result = train_route_optimizer(model, data, node_mappings, config=train_cfg)
+
+        # Clear cached model so the next request loads the fresh checkpoint
+        _model_cache['route'] = None
+
+        state['status'] = 'completed'
+        state['result'] = {
+            'best_loss': result['best_loss'],
+            'best_epoch': result['best_epoch'],
+            'total_epochs': len(result['history']['train_loss']),
+            'total_time_seconds': result['total_time'],
+            'final_loss': result['history']['train_loss'][-1],
+            'report_paths': result.get('report_paths'),
+        }
+
+    except Exception as exc:
+        state['status'] = 'failed'
+        state['error'] = str(exc)
+
+
+# ========== Training Endpoints ==========
+
+async def _bg_train_hotel(job_id: str, request: TrainingRequest, uri: str, user: str, password: str):
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _run_hotel_training, job_id, request, uri, user, password)
+
+
+@router.post("/train/hotel", response_model=TrainingStatusResponse, summary="Train Hotel Recommender GNN")
+async def train_hotel_model(request: TrainingRequest, background_tasks: BackgroundTasks):
+    """
+    Start an asynchronous training job for the Hotel Recommender GNN.
+
+    - Optionally re-exports the graph from Neo4j (`export_fresh=true`) before training.
+    - Saves the best checkpoint to `checkpoints/hotel_recommender_best.pt`.
+    - Poll `GET /gnn/train/hotel/status` for progress.
+    """
+    state = _training_state['hotel']
+    if state['status'] in ('running', 'exporting', 'training'):
+        raise HTTPException(status_code=409, detail="Hotel training is already in progress.")
+
+    from core.config import settings
+    job_id = f"hotel-{int(time.time())}"
+    state.update({'status': 'queued', 'job_id': job_id, 'started_at': datetime.now().isoformat(), 'result': None, 'error': None})
+
+    background_tasks.add_task(
+        _bg_train_hotel,
+        job_id, request,
+        settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password,
+    )
+
+    return TrainingStatusResponse(model_type='hotel', **state)
+
+
+@router.get("/train/hotel/status", response_model=TrainingStatusResponse, summary="Hotel Training Status")
+async def get_hotel_training_status():
+    """Get the current status of the hotel GNN training job."""
+    return TrainingStatusResponse(model_type='hotel', **_training_state['hotel'])
+
+
+async def _bg_train_route(job_id: str, request: TrainingRequest, uri: str, user: str, password: str):
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _run_route_training, job_id, request, uri, user, password)
+
+
+@router.post("/train/route", response_model=TrainingStatusResponse, summary="Train Route Optimizer GNN")
+async def train_route_model(request: TrainingRequest, background_tasks: BackgroundTasks):
+    """
+    Start an asynchronous training job for the Route Optimizer GNN.
+
+    - Optionally re-exports the graph from Neo4j (`export_fresh=true`) before training.
+    - Saves the best checkpoint to `checkpoints/route_optimizer_best.pt`.
+    - Poll `GET /gnn/train/route/status` for progress.
+    """
+    state = _training_state['route']
+    if state['status'] in ('running', 'exporting', 'training'):
+        raise HTTPException(status_code=409, detail="Route training is already in progress.")
+
+    from core.config import settings
+    job_id = f"route-{int(time.time())}"
+    state.update({'status': 'queued', 'job_id': job_id, 'started_at': datetime.now().isoformat(), 'result': None, 'error': None})
+
+    background_tasks.add_task(
+        _bg_train_route,
+        job_id, request,
+        settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password,
+    )
+
+    return TrainingStatusResponse(model_type='route', **state)
+
+
+@router.get("/train/route/status", response_model=TrainingStatusResponse, summary="Route Training Status")
+async def get_route_training_status():
+    """Get the current status of the route GNN training job."""
+    return TrainingStatusResponse(model_type='route', **_training_state['route'])

@@ -276,8 +276,10 @@ async def query_visa_policy(
         query_parts.append(f"Nationality: {request.nationality_country}")
         query_parts.append(f"Destination: {request.destination_country}")
         query_parts.append(f"Purpose: {request.purpose}")
-        query_parts.append(f"Passport type: {request.passport_type}")
-        query_parts.append(f"Stay duration: {request.intended_stay_days} days")
+        if request.passport_type:
+            query_parts.append(f"Passport type: {request.passport_type}")
+        if request.intended_stay_days is not None:
+            query_parts.append(f"Stay duration: {request.intended_stay_days} days")
         
         if request.entry_type:
             query_parts.append(f"Entry type: {request.entry_type}")

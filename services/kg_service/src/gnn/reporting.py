@@ -1181,9 +1181,6 @@ $$\\mathcal{{L}}_{{total}} = 0.1 \\cdot \\mathcal{{L}}_{{rating}} + 0.3 \\cdot \
         # Export JSON
         results['json'] = self.export_json()
         
-        # Generate Markdown
-        results['markdown'] = self.generate_markdown_report()
-        
         # List all generated files
         results['figures'] = [str(self.output_dir / f"{self.report.report_id}_{name}.png") 
                             for name in self.figures.keys()]

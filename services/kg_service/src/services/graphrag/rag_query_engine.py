@@ -130,7 +130,7 @@ class RAGQueryEngine:
         domain_name: str, 
         top_k: int
     ) -> List[Dict[str, Any]]:
-        """Retrieve similar chunks using vector similarity.
+        """Retrieve similar chunks using vector index similarity search.
         
         Args:
             query_embedding: Query embedding vector
@@ -143,18 +143,15 @@ class RAGQueryEngine:
         try:
             with self.driver.session() as session:
                 result = session.run("""
-                    MATCH (c:Chunk)-[:BELONGS_TO]->(d:Domain {name: $domain_name})
-                    WHERE c.embedding IS NOT NULL
-                    WITH c, 
-                         vector.similarity.cosine(c.embedding, $query_embedding) AS score
-                    WHERE score > 0.5
+                    CALL db.index.vector.queryNodes('economic_policy_chunk_embeddings', $top_k, $query_embedding)
+                    YIELD node AS c, score
+                    MATCH (c)-[:BELONGS_TO]->(d:Domain {name: $domain_name})
                     RETURN c.text AS text,
                            c.source AS source,
                            c.url AS url,
-                           c.chunk_id AS chunk_id,
+                           c.id AS chunk_id,
                            score
                     ORDER BY score DESC
-                    LIMIT $top_k
                 """, {
                     "query_embedding": query_embedding,
                     "domain_name": domain_name,
@@ -324,11 +321,10 @@ If you're unsure or the context is insufficient, respond with:
         try:
             with self.driver.session() as session:
                 result = session.run("""
-                    MATCH (c:Chunk)-[:BELONGS_TO]->(d:Domain {name: $domain_name})
-                    WHERE c.embedding IS NOT NULL
-                    WITH c, 
-                         vector.similarity.cosine(c.embedding, $query_embedding) AS score
+                    CALL db.index.vector.queryNodes('economic_policy_chunk_embeddings', $oversample_k, $query_embedding)
+                    YIELD node AS c, score
                     WHERE score > $min_score
+                    MATCH (c)-[:BELONGS_TO]->(d:Domain {name: $domain_name})
                     
                     // Get entities mentioned in chunk
                     OPTIONAL MATCH (c)-[:MENTIONS]->(entity)
@@ -352,6 +348,7 @@ If you're unsure or the context is insufficient, respond with:
                 """, {
                     "query_embedding": query_embedding,
                     "domain_name": domain_name,
+                    "oversample_k": top_k * 3,
                     "top_k": top_k,
                     "min_score": min_score
                 })

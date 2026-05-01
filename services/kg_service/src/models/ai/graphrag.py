@@ -97,19 +97,19 @@ class TravelWindow(BaseModel):
 
 class VisaPolicyQueryRequest(BaseModel):
     """Request model for visa policy query without LLM."""
-    intent: str = Field(..., description="Intent type (e.g., 'info_visa_policy')")
-    user_id: str = Field(..., description="User identifier")
-    session_id: str = Field(..., description="Session identifier")
+    intent: str = Field("info_visa_policy", description="Intent type (e.g., 'info_visa_policy')")
+    user_id: str | None = Field(None, description="User identifier")
+    session_id: str | None = Field(None, description="Session identifier")
     raw_text: str = Field(..., description="User's raw question text")
     nationality_country: str = Field(..., description="Nationality/passport country")
     destination_country: str = Field(..., description="Destination country")
-    intended_stay_days: int = Field(..., description="Intended stay duration in days")
-    travel_window: TravelWindow = Field(..., description="Travel date range")
+    intended_stay_days: int | None = Field(None, description="Intended stay duration in days")
+    travel_window: TravelWindow | None = Field(None, description="Travel date range")
     purpose: str = Field(..., description="Purpose of travel (tourism, business, etc.)")
-    passport_type: str = Field(..., description="Type of passport (ordinary, diplomatic, etc.)")
+    passport_type: str | None = Field(None, description="Type of passport (ordinary, diplomatic, etc.)")
     entry_type: str | None = Field(None, description="Entry type (single, multiple, etc.)")
     prior_visa_or_eta: str | None = Field(None, description="Prior visa or ETA status")
-    ask_type: str = Field(..., description="Type of query (eligibility, requirements, etc.)")
+    ask_type: str | None = Field(None, description="Type of query (eligibility, requirements, etc.)")
     extra: Dict[str, Any] = Field(default_factory=dict, description="Extra metadata")
 
 

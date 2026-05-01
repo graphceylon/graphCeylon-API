@@ -349,6 +349,56 @@ class ReasoningOrchestrator:
                 "explanation": {"method": "error", "error": str(e)},
             }
 
+    # ------------------------------------------------------------------
+    # Predictive similarity reasoning
+    # ------------------------------------------------------------------
+
+    def predictive_reason_similar(
+        self, name: str, node_label: str = "District", top_k: int = 5
+    ) -> Dict[str, Any]:
+        """Find nodes similar to the given node using shared graph neighbourhood."""
+        try:
+            logger.info(
+                f"Predictive similarity search for '{name}' (label={node_label}, top_k={top_k})"
+            )
+
+            cypher = """
+            MATCH (target)
+            WHERE target.name = $name AND $label IN labels(target)
+            MATCH (target)--(shared)--(other)
+            WHERE $label IN labels(other) AND other <> target
+            WITH other, count(DISTINCT shared) AS shared_neighbors
+            RETURN other.name AS name,
+                   labels(other)[0] AS label,
+                   shared_neighbors,
+                   toFloat(shared_neighbors) / (shared_neighbors + 1.0) AS similarity_score
+            ORDER BY similarity_score DESC
+            LIMIT $top_k
+            """
+
+            with self.driver.session() as session:
+                result = session.run(cypher, {"name": name, "label": node_label, "top_k": top_k})
+                similar = [record.data() for record in result]
+
+            logger.info(f"Predictive search found {len(similar)} similar nodes for '{name}'")
+            return {
+                "result": similar,
+                "explanation": {
+                    "method": "shared-neighbourhood-similarity",
+                    "query": name,
+                    "label": node_label,
+                    "results_found": len(similar),
+                    "evidence": "Nodes sharing common graph neighbours are considered similar",
+                },
+            }
+
+        except Exception as e:
+            logger.error(f"Predictive reasoning failed: {e}")
+            return {
+                "result": [],
+                "explanation": {"method": "error", "query": name, "error": str(e)},
+            }
+
     def analyze_district_tourism_profile(self, district_name: str) -> Dict[str, Any]:
         """Analyze tourism profile of a district based on its attractions."""
         try:
