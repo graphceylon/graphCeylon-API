@@ -515,7 +515,14 @@ class HotelIngestionService:
     def ingest_from_json_file(self, json_file_path: str) -> Dict[str, Any]:
         """Ingest all hotels from JSON file"""
         overall_start = time.time()
-        
+
+        # Try to refresh from GCS first; fall back to the local file on failure
+        from core.gcs_downloader import refresh_hotels
+        refresh_hotels(json_file_path)
+
+        if not Path(json_file_path).exists():
+            raise FileNotFoundError(f"Hotels JSON file not found: {json_file_path}")
+
         # Load JSON
         with open(json_file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)

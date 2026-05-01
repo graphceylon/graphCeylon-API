@@ -178,13 +178,17 @@ class HolidayRepository(BaseRepository):
         """
         try:
             import json
-            
+            from core.gcs_downloader import refresh_holidays
+
             logger.info("Loading holidays from JSON...")
-            
+
             # Use provided path or default
             if file_path is None:
                 file_path = str(DatabasePaths.get_data_file('holidays.json'))
-            
+
+            # Try to refresh from GCS first; fall back to the local file on failure
+            refresh_holidays(file_path)
+
             if not Path(file_path).exists():
                 raise FileNotFoundError(f"Holidays data file not found: {file_path}")
             

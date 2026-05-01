@@ -73,6 +73,10 @@ class SubAttractionRepository(BaseRepository):
             if dir_path is None:
                 dir_path = str(DatabasePaths.get_data_directory() / "sub-attractions")
 
+            # Try to refresh from GCS first; fall back to the local directory on failure
+            from core.gcs_downloader import refresh_sub_attractions
+            refresh_sub_attractions(dir_path)
+
             data_dir = Path(dir_path)
             if not data_dir.exists():
                 raise FileNotFoundError(f"Sub-attractions directory not found: {data_dir}")

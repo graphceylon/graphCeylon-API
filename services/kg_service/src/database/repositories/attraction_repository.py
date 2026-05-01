@@ -8,6 +8,7 @@ from neo4j import Driver
 
 from .base import BaseRepository
 from ..utils import DatabasePaths
+from core.gcs_downloader import refresh_attractions
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +37,12 @@ class AttractionRepository(BaseRepository):
             # Use provided path or default
             if file_path is None:
                 file_path = str(DatabasePaths.get_data_file('attractions.json'))
-            
+
+            # Try to refresh from GCS first; fall back to the local file on failure
+            refresh_attractions(file_path)
+
             logger.info("Loading attractions from JSON...")
-            
+
             if not Path(file_path).exists():
                 raise FileNotFoundError(f"Attractions data file not found: {file_path}")
             

@@ -309,10 +309,14 @@ def initialize_railway_stations(db: DatabaseManager = Depends(get_db_manager)):
     """
     try:
         logger.info("Initializing railway stations from JSON...")
-        
+
         # Path to the enriched stations file (absolute path from workspace root)
         json_file = str(Path(__file__).parent.parent.parent.parent.parent.parent.parent / "data" / "kg_service" / "data" / "train_schedule" / "railway_stations_enriched.json")
-        
+
+        # Try to refresh from GCS first; fall back to the local file on failure
+        from core.gcs_downloader import refresh_railway_stations
+        refresh_railway_stations(json_file)
+
         result = db.railway.load_stations_from_json(json_file)
         
         if result.get("success"):

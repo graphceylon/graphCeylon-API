@@ -16,6 +16,7 @@ from neo4j import Driver
 
 from .base import BaseRepository
 from ..utils import DatabasePaths
+from core.gcs_downloader import refresh_events
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,9 @@ class EventRepository(BaseRepository):
         try:
             if file_path is None:
                 file_path = str(DatabasePaths.get_data_directory() / "events.json")
+
+            # Try to refresh from GCS first; fall back to the local file on failure
+            refresh_events(file_path)
 
             data_path = Path(file_path)
             if not data_path.exists():

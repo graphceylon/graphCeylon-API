@@ -34,7 +34,11 @@ class NewsRepository(BaseRepository):
         """Load tourism news from JSON file."""
         try:
             logger.info("Loading news from JSON...")
-            
+
+            # Refresh from GCS before APOC reads the file from Neo4j's import mount
+            from core.gcs_downloader import refresh_tourism_news
+            refresh_tourism_news(str(DatabasePaths.get_data_file('tourism_news.json')))
+
             apoc_check = self.execute_cypher("RETURN apoc.version() AS version;")
             if not apoc_check:
                 raise Exception("APOC plugin is not available. Please ensure it's installed.")

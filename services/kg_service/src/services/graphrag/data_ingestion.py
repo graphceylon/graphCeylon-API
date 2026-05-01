@@ -238,10 +238,14 @@ class DataIngestionService:
                 data_dir = str(data_path)
             
             logger.info(f"Processing immigration data from: {data_dir}")
-            
+
+            # Try to refresh from GCS first; fall back to the local directory on failure
+            from core.gcs_downloader import refresh_immigration
+            refresh_immigration(data_dir)
+
             # Get all JSON files
             files = self.chunk_processor.get_files_in_directory(data_dir, "*.json")
-            
+
             if not files:
                 logger.warning(f"No JSON files found in {data_dir}")
                 return {

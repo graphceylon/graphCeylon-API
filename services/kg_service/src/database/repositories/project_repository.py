@@ -34,7 +34,11 @@ class ProjectRepository(BaseRepository):
         """Load tourism projects from JSON file."""
         try:
             logger.info("Loading projects from JSON...")
-            
+
+            # Refresh from GCS before APOC reads the file from Neo4j's import mount
+            from core.gcs_downloader import refresh_sltda_projects
+            refresh_sltda_projects(str(DatabasePaths.get_data_file('sltda_projects.json')))
+
             apoc_check = self.execute_cypher("RETURN apoc.version() AS version;")
             if not apoc_check:
                 raise Exception("APOC plugin is not available. Please ensure it's installed.")
