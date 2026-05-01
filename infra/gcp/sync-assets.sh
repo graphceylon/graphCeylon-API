@@ -69,6 +69,13 @@ gsutil -m rsync -c -r \
     "${BUCKET}/services/kg_service/checkpoints/" \
     "$APP_DIR/services/kg_service/checkpoints/"
 
+# ---- 5. Language service Sinhala TTS model ----
+echo ">>> Syncing models/language_service/sinhala_tts/ ..."
+mkdir -p "$APP_DIR/models/language_service/sinhala_tts"
+gsutil -m rsync -c -r \
+    "${BUCKET}/models/language_service/sinhala_tts/" \
+    "$APP_DIR/models/language_service/sinhala_tts/"
+
 echo ""
 echo "=== Asset sync complete! ==="
 

@@ -137,3 +137,25 @@ component3_service/
 **/frontend/
 **/auth-frontend/
 **/flutter_app/
+
+
+
+# Language service local/runtime files
+services/language_service/.venv/
+services/language_service/.pytest_cache/
+services/language_service/**/__pycache__/
+services/language_service/credentials/
+services/language_service/models/
+services/language_service/sample_audio/
+services/language_service/.env.example
+
+# Language service generated/audio/model artifacts
+services/language_service/**/*.wav
+services/language_service/**/*.mp3
+services/language_service/**/*.flac
+services/language_service/**/*.ogg
+services/language_service/**/*.pt
+services/language_service/**/*.pth
+services/language_service/**/*.pkl
+services/language_service/**/*.joblib
+services/language_service/**/*.safetensors

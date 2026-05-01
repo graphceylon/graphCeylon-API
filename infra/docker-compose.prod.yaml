@@ -188,8 +188,16 @@ services:
     environment:
       SERVICE_NAME: language_service
       SERVICE_PORT: 8001
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials/epic-language-dfcc-8f92b1c7e088.json
+      GEMINI_MODEL: ${GEMINI_MODEL}
+      GEMINI_LOCATION: ${GEMINI_LOCATION}
+      ORCHESTRATOR_URL: ${ORCHESTRATOR_URL}
+      SINHALA_TTS_MODEL_PATH: /app/models/sinhala_tts/sinhala_tts_model.pth
+      SINHALA_TTS_CONFIG_PATH: /app/models/sinhala_tts/config.json
     volumes:
-      - ../models/language_service:/models
+      - ../models/language_service:/app/models
+      - ../services/language_service/credentials:/app/credentials:ro
     networks:
       - graphceylon-network
     restart: always
