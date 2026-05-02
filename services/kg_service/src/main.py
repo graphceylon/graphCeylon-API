@@ -30,7 +30,8 @@ if __name__ == "__main__":
         port=settings.api_port,
         reload=settings.debug,
         log_level="info",
-        timeout_graceful_shutdown=1  # 1 second timeout for graceful shutdown
+        timeout_graceful_shutdown=30,  # 30 second timeout for graceful shutdown
+        timeout_keep_alive=65  # Keep-alive timeout
     )
     
     
