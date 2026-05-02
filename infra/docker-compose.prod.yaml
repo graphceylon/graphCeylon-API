@@ -195,6 +195,8 @@ services:
       ORCHESTRATOR_URL: ${ORCHESTRATOR_URL}
       SINHALA_TTS_MODEL_PATH: /app/models/sinhala_tts/sinhala_tts_model.pth
       SINHALA_TTS_CONFIG_PATH: /app/models/sinhala_tts/config.json
+      NUMBA_CACHE_DIR: /tmp/numba_cache
+      NUMBA_DISABLE_JIT: "1"
     volumes:
       - ../models/language_service:/app/models
       - ../services/language_service/credentials:/app/credentials:ro
