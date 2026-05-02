@@ -7,10 +7,40 @@ Industry best practices:
 - Clear documentation and sensible defaults
 """
 
+import os
+
 from pathlib import Path
 from typing import Optional
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://localhost:5175",
+    "http://localhost:5176",
+]
+
+
+def get_cors_origins() -> list[str]:
+    """Return configured CORS origins with localhost defaults for dev."""
+    configured = os.getenv("KG_CORS_ORIGIN") or os.getenv("CORS_ORIGIN")
+    if not configured:
+        return DEFAULT_CORS_ORIGINS.copy()
+
+    origins = [origin.strip().rstrip("/") for origin in configured.split(",") if origin.strip()]
+    if not origins:
+        return DEFAULT_CORS_ORIGINS.copy()
+
+    for default_origin in DEFAULT_CORS_ORIGINS:
+        if default_origin not in origins:
+            origins.append(default_origin)
+
+    return origins
 
 
 class DatabaseConfig(BaseSettings):
@@ -284,6 +314,11 @@ class Settings(BaseSettings):
     def debug(self) -> bool:
         """Debug mode (backward compatibility)."""
         return self.api.debug
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """Allowed CORS origins for browser clients."""
+        return get_cors_origins()
     
     @property
     def ontology_file(self) -> str:

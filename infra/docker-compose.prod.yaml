@@ -222,6 +222,7 @@ services:
       API_HOST: 0.0.0.0
       API_PORT: 8000
       DEBUG: false
+      CORS_ORIGIN: ${CORS_ORIGIN}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       GROQ_API_KEY: ${GROQ_API_KEY}
       TRANSFORMERS_CACHE: /tmp/huggingface_cache
