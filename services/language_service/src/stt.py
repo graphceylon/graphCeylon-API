@@ -123,8 +123,18 @@ def _to_mono_16khz_wav(audio_bytes: bytes) -> bytes:
         return buf.getvalue()
 
     except Exception:
-        logger.warning("WAV normalisation failed; sending audio as-is")
-        return audio_bytes
+        logger.warning(
+            "WAV normalisation failed; treating as raw PCM16-LE @ %d Hz mono", SEND_SAMPLE_RATE
+        )
+        # Input is raw PCM16-LE — wrap it in a proper WAV container so Gemini
+        # receives valid audio/wav instead of unstructured bytes.
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wout:
+            wout.setnchannels(1)
+            wout.setsampwidth(2)          # 16-bit PCM
+            wout.setframerate(SEND_SAMPLE_RATE)
+            wout.writeframes(audio_bytes)
+        return buf.getvalue()
 
 
 # ── Gemini client (module-level singleton) ────────────────────────────────────
