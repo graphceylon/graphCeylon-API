@@ -56,6 +56,25 @@ _model_cache = {
 }
 
 
+def _load_checkpoint_safely(model: torch.nn.Module, checkpoint_path: Path) -> Dict[str, Any]:
+    """Load a checkpoint into model while guarding against meta-device parameters."""
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    state_dict = checkpoint.get('model_state_dict', checkpoint)
+
+    # If model parameters are on meta device, materialize empty tensors on CPU first.
+    if any(getattr(p, "is_meta", False) for p in model.parameters()):
+        model = model.to_empty(device="cpu")
+
+    try:
+        model.load_state_dict(state_dict, assign=True)
+    except TypeError:
+        # Backward compatibility for torch versions without "assign" kwarg.
+        model.load_state_dict(state_dict)
+
+    model.to("cpu")
+    return checkpoint
+
+
 # ========== Pydantic Models ==========
 
 class HotelRecommendationRequest(BaseModel):
@@ -146,11 +165,11 @@ def load_hotel_model():
         
         config = ModelConfig(hidden_channels=64, out_channels=32, num_layers=2)
         model = HotelRecommenderGNN(metadata, in_channels_dict, config)
+        model = model.to("cpu")
         
         checkpoint_path = CHECKPOINT_DIR / "hotel_recommender_best.pt"
         if checkpoint_path.exists():
-            checkpoint = torch.load(checkpoint_path, weights_only=False)
-            model.load_state_dict(checkpoint['model_state_dict'])
+            checkpoint = _load_checkpoint_safely(model, checkpoint_path)
             model._checkpoint_info = checkpoint
         
         model.eval()
@@ -181,11 +200,11 @@ def load_route_model():
         
         config = ModelConfig(hidden_channels=64, out_channels=32, num_layers=2)
         model = RouteOptimizerGNN(metadata, in_channels_dict, config)
+        model = model.to("cpu")
         
         checkpoint_path = CHECKPOINT_DIR / "route_optimizer_best.pt"
         if checkpoint_path.exists():
-            checkpoint = torch.load(checkpoint_path, weights_only=False)
-            model.load_state_dict(checkpoint['model_state_dict'])
+            checkpoint = _load_checkpoint_safely(model, checkpoint_path)
             model._checkpoint_info = checkpoint
         
         model.eval()

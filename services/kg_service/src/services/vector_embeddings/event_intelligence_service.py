@@ -16,6 +16,7 @@ import re
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 from enum import Enum
+from threading import Lock
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -52,6 +53,9 @@ class EventAudienceType(str, Enum):
 
 class TemporalEventIntelligenceService:
     """
+
+    _MODEL_CACHE: Dict[tuple[str, str], SentenceTransformer] = {}
+    _MODEL_CACHE_LOCK = Lock()
     Advanced AI service for intelligent event discovery and recommendations.
     
     Features:
@@ -85,12 +89,38 @@ class TemporalEventIntelligenceService:
         self._audience_keywords = self._init_audience_keywords()
         
         logger.info(f"Initializing TemporalEventIntelligenceService with model: {model_name}")
+
+    @classmethod
+    def _get_or_load_model(cls, model_name: str, device: str) -> SentenceTransformer:
+        """Load once per process and reuse to avoid repeated heavy initialization."""
+        cache_key = (model_name, device)
+        if cache_key in cls._MODEL_CACHE:
+            return cls._MODEL_CACHE[cache_key]
+
+        with cls._MODEL_CACHE_LOCK:
+            if cache_key in cls._MODEL_CACHE:
+                return cls._MODEL_CACHE[cache_key]
+
+            logger.info(f"Loading sentence transformer model: {model_name}")
+
+            # Force eager CPU weight materialization to avoid meta-tensor copy errors
+            # seen in some containerized torch/transformers combinations.
+            try:
+                model = SentenceTransformer(
+                    model_name,
+                    device=device,
+                    model_kwargs={"low_cpu_mem_usage": False},
+                )
+            except TypeError:
+                model = SentenceTransformer(model_name, device=device)
+
+            cls._MODEL_CACHE[cache_key] = model
+            return model
     
     def _load_model(self):
         """Lazy load the sentence transformer model."""
         if self.model is None:
-            logger.info(f"Loading sentence transformer model: {self.model_name}")
-            self.model = SentenceTransformer(self.model_name, device=self.device)
+            self.model = self._get_or_load_model(self.model_name, self.device)
             logger.info("Model loaded successfully")
     
     # ============================================================

@@ -11,6 +11,7 @@ State-of-the-art (2026) vector embedding service for sub-attractions using:
 import logging
 from typing import List, Dict, Any, Optional
 import json
+from threading import Lock
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -33,6 +34,35 @@ class SubAttractionEmbeddingService:
     # Latest high-performance multilingual model (2026)
     DEFAULT_MODEL = "sentence-transformers/all-mpnet-base-v2"
     EMBEDDING_DIMENSION = 768  # Model-specific dimension
+    _MODEL_CACHE: Dict[tuple[str, str], SentenceTransformer] = {}
+    _MODEL_CACHE_LOCK = Lock()
+
+    @classmethod
+    def _get_or_load_model(cls, model_name: str, device: str) -> SentenceTransformer:
+        """Load model once per process and reuse it across requests."""
+        cache_key = (model_name, device)
+        if cache_key in cls._MODEL_CACHE:
+            return cls._MODEL_CACHE[cache_key]
+
+        with cls._MODEL_CACHE_LOCK:
+            if cache_key in cls._MODEL_CACHE:
+                return cls._MODEL_CACHE[cache_key]
+
+            logger.info(f"Loading embedding model: {model_name} on device={device}")
+
+            # Prevent meta-tensor initialization path that can fail under some
+            # containerized CPU deployments with specific torch/transformers combos.
+            try:
+                model = SentenceTransformer(
+                    model_name,
+                    device=device,
+                    model_kwargs={"low_cpu_mem_usage": False},
+                )
+            except TypeError:
+                model = SentenceTransformer(model_name, device=device)
+
+            cls._MODEL_CACHE[cache_key] = model
+            return model
     
     def __init__(
         self,
@@ -50,9 +80,9 @@ class SubAttractionEmbeddingService:
         """
         self.driver = driver
         self.model_name = model_name or self.DEFAULT_MODEL
-        
-        logger.info(f"Loading embedding model: {self.model_name}")
-        self.model = SentenceTransformer(self.model_name, device=device)
+
+        resolved_device = device or "cpu"
+        self.model = self._get_or_load_model(self.model_name, resolved_device)
         self.embedding_dim = self.model.get_sentence_embedding_dimension()
         
         logger.info(

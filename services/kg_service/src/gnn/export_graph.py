@@ -610,7 +610,7 @@ class GraphExporter:
         Returns:
             (data, node_mappings, categorical_encodings, name_mappings)
         """
-        checkpoint = torch.load(path, weights_only=False)
+        checkpoint = torch.load(path, map_location='cpu', weights_only=False)
         data = checkpoint['data']
         node_mappings = {
             k: NodeMapping(v[0], v[1]) 
