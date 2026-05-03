@@ -1172,6 +1172,92 @@ class OrchestratorService:
     @staticmethod
     def _clean_session_id(req: OrchestrateRequest) -> str:
         return (req.session_id or "no_session").strip()
+    def _force_out_of_scope(self, parsed_intent: ParsedIntent) -> ParsedIntent:
+        scores = dict(parsed_intent.scores or {})
+        scores["out_of_scope"] = max(float(scores.get("out_of_scope", 0.0)), 0.95)
+
+        return parsed_intent.model_copy(update={
+            "intent": "out_of_scope",
+            "domain_category": "out_of_scope",
+            "confidence": 0.95,
+            "secondary_intents": [],
+            "scores": scores,
+        })
+
+
+    def _llm_scope_gate(self, user_text: str, parsed_intent: ParsedIntent) -> Dict[str, Any]:
+        """
+        Meaning-based scope gate.
+        Decides whether the message belongs to GraphCeylon's Sri Lanka tourism scope.
+        No keyword matching.
+        """
+
+        llm = self.response_formatter.llm_client
+
+        # Safe fallback if LLM is unavailable
+        if llm is None:
+            scores = parsed_intent.scores or {}
+            out_score = float(scores.get("out_of_scope", 0.0))
+
+            return {
+                "in_scope": out_score < 0.60,
+                "category": "travel" if out_score < 0.60 else "out_of_scope",
+                "reason": "classifier_out_of_scope_score_fallback",
+            }
+
+        system = """
+    You are a strict scope gate for GraphCeylon.
+
+    GraphCeylon is a Sri Lanka tourism assistant.
+
+    IN SCOPE:
+    - Sri Lanka trip planning and itineraries
+    - Sri Lanka attractions, POIs, restaurants, hotels, accommodation
+    - Sri Lanka transport such as bus, train, taxi, routes
+    - Sri Lanka weather when related to travel
+    - Sri Lanka visa or travel entry questions
+    - Travel preferences, travel safety, and tourism recommendations
+    - Friendly smalltalk that can continue into travel help
+
+    OUT OF SCOPE:
+    - General world facts not related to Sri Lanka tourism
+    - Medical advice
+    - Legal advice unrelated to travel or visa
+    - Coding, schoolwork, politics, personal health, random general chatbot questions
+
+    Return ONLY valid JSON:
+    {
+    "in_scope": true,
+    "category": "travel|smalltalk|out_of_scope",
+    "reason": "short reason"
+    }
+    """
+
+        try:
+            out = llm.chat_json(
+                system_prompt=system,
+                user_prompt=(
+                    f"User message:\n{user_text}\n\n"
+                    f"Parsed intent:\n"
+                    f"{parsed_intent.model_dump_json() if hasattr(parsed_intent, 'model_dump_json') else str(parsed_intent)}"
+                ),
+            )
+
+            return {
+                "in_scope": bool(out.get("in_scope")),
+                "category": str(out.get("category", "out_of_scope")),
+                "reason": str(out.get("reason", "")),
+            }
+
+        except Exception as e:
+            scores = parsed_intent.scores or {}
+            out_score = float(scores.get("out_of_scope", 0.0))
+
+            return {
+                "in_scope": out_score < 0.60,
+                "category": "travel" if out_score < 0.60 else "out_of_scope",
+                "reason": f"scope_gate_failed_fallback: {e}",
+            }
 
     @staticmethod
     def _clean_user_id(req: OrchestrateRequest) -> Optional[str]:
@@ -2404,7 +2490,14 @@ class OrchestratorService:
                     session_state.slots.pop("pending_domain", None)
     
         parsed_intent: ParsedIntent = self._run_intent_parser(req)
-        parsed_intent = self._llm_routing_fallback(parsed_intent, req.input_text)  # ← ADD THIS LINE
+        parsed_intent = self._llm_routing_fallback(parsed_intent, req.input_text)
+
+        # ✅ NEW: Scope gate must run BEFORE session context / slot merge / task graph
+        scope = self._llm_scope_gate(req.input_text, parsed_intent)
+        scope_blocked = not scope.get("in_scope", True)
+
+        if not scope.get("in_scope", True):
+            parsed_intent = self._force_out_of_scope(parsed_intent)  # ← ADD THIS LINE
         # ✅ INTENT LOCK: if we are waiting for follow-up fields, keep same intent/domain
         # if session_state and session_state.slots.get("pending_fields"):
         #     locked_intent = session_state.slots.get("pending_intent")
@@ -2615,21 +2708,20 @@ class OrchestratorService:
             )
         # active_trip = bool(active_trip_id)
         # parsed_intent = resolve_intent(parsed_intent, req.input_text, active_trip)
-        parsed_intent = apply_intent_policy(parsed_intent, req.input_text, session_state)
-        # ✅ NEW: domain-based override (generic_fact_query -> real capability)
-        parsed_intent = apply_domain_overrides(parsed_intent)
-        # ✅ if edit context was passed (e.g. from booking edit sheet), merge into entities
-        # ✅ if edit context was passed (e.g. from booking edit sheet), force book_hotel + merge entities
-        parsed_intent = self.conversation_manager.repair_intent_with_context(
-            parsed_intent=parsed_intent,
-            session_state=session_state,
-            user_text=req.input_text or "",
-        )
+        if not scope_blocked:
+            parsed_intent = apply_intent_policy(parsed_intent, req.input_text, session_state)
+            parsed_intent = apply_domain_overrides(parsed_intent)
 
-        parsed_intent = self.conversation_manager.merge_session_slots_into_entities(
-            parsed_intent=parsed_intent,
-            session_state=session_state,
-        )
+            parsed_intent = self.conversation_manager.repair_intent_with_context(
+                parsed_intent=parsed_intent,
+                session_state=session_state,
+                user_text=req.input_text or "",
+            )
+
+            parsed_intent = self.conversation_manager.merge_session_slots_into_entities(
+                parsed_intent=parsed_intent,
+                session_state=session_state,
+            )
         
 
         self.conversation_manager.update_session_from_turn(
