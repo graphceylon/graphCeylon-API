@@ -213,11 +213,17 @@ class ResponseFormatter:
             }
 
         if not has_any_result:
-            # ALWAYS use LLM for smooth conversation
+            intent0 = (parsed_intent.get("intent") or "").strip().lower()
+            domain0 = (parsed_intent.get("domain_category") or "").strip().lower()
+
+            # ✅ Out-of-scope must not use the normal GraphCeylon general answer path
+            if intent0 == "out_of_scope" or domain0 == "out_of_scope":
+                return self._answer_out_of_scope_with_llm(user_text, parsed_intent)
+
+            # ✅ Normal fallback only for in-scope/vague travel conversations
             if self.llm_client is not None:
                 return self._answer_general_with_llm(user_text, parsed_intent)
 
-            # fallback only if LLM fails
             return {
                 "text": "I can help you explore Sri Lanka, plan trips, find hotels, transport, and travel tips. What would you like to do?",
                 "followups": ["Plan a trip", "Find hotels", "Explore places", "Travel tips"],
@@ -325,6 +331,72 @@ class ResponseFormatter:
             return {
                 "text": "I can help you plan trips, find places, hotels, transport, or travel tips in Sri Lanka. What would you like to do?",
                 "followups": ["Plan a trip", "Find hotels", "Explore places", "Travel tips"],
+            }
+    def _answer_out_of_scope_with_llm(self, user_text, parsed_intent):
+        if self.llm_client is None:
+            return {
+                "text": (
+                    "I’m mainly designed for Sri Lanka tourism, including trips, hotels, "
+                    "transport, weather, restaurants, attractions, and itinerary planning. "
+                    "This question is outside my main scope."
+                ),
+                "followups": [
+                    "Plan a Sri Lanka trip",
+                    "Find hotels",
+                    "Check transport",
+                    "Explore places"
+                ],
+            }
+
+        system = """
+    You are GraphCeylon, a Sri Lanka tourism assistant.
+
+    The user asked something outside GraphCeylon's main tourism scope.
+
+    Rules:
+    - Be friendly.
+    - Say GraphCeylon mainly helps with Sri Lanka travel.
+    - If the question is simple and safe, give a very brief general answer.
+    - For medical/legal/emergency/personal health topics, do not give detailed advice. Recommend appropriate professional help.
+    - Redirect back to Sri Lanka travel help.
+    - Do not mention tools, DAGs, classifiers, or internal routing.
+
+    Return ONLY JSON:
+    {
+    "text": "...",
+    "followups": ["...", "...", "..."]
+    }
+    """
+
+        try:
+            out = self.llm_client.chat_json(
+                system_prompt=system,
+                user_prompt=f"User: {user_text}",
+            )
+
+            return {
+                "text": str(out.get("text", "")).strip(),
+                "followups": out.get("followups", []) or [
+                    "Plan a Sri Lanka trip",
+                    "Find hotels",
+                    "Check transport",
+                    "Explore places"
+                ],
+            }
+
+        except Exception:
+            return {
+                "text": (
+                    "I’m mainly designed for Sri Lanka tourism. This question is outside my main scope, "
+                    "but I can help with trips, hotels, transport, weather, restaurants, attractions, "
+                    "and travel planning in Sri Lanka."
+                ),
+                "followups": [
+                    "Plan a Sri Lanka trip",
+                    "Find hotels",
+                    "Check transport",
+                    "Explore places"
+                ],
             }
 
     def _as_dict(self, obj: Any) -> Dict[str, Any]:
