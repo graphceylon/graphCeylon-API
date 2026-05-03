@@ -55,6 +55,7 @@ coverage.xml
 Thumbs.db
 services/orchestrator/.venv_orchestrator/
 scripts/output/
+services/language_service/.venv_language/
 
 # Jupyter Notebook
 .ipynb_checkpoints
