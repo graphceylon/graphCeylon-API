@@ -63,6 +63,7 @@ class EventIntelligenceItem(BaseModel):
     time_end: Optional[str] = Field(None, alias="timeEnd")
     hashtags: Optional[str] = None
     event_detail_url: Optional[str] = Field(None, alias="eventDetailUrl")
+    image_url: Optional[str] = Field(None, alias="imageUrl")
     
     # AI-powered fields
     similarity_score: Optional[float] = Field(None, alias="score", description="Semantic similarity score (0-1)")

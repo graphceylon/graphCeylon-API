@@ -36,6 +36,34 @@ class SubAttractionRepository(BaseRepository):
     def __init__(self, driver: Driver):
         super().__init__(driver)
 
+    @staticmethod
+    def _merge_full_sub_attraction_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge raw node properties with query-level metadata fields."""
+        merged_rows: List[Dict[str, Any]] = []
+        for row in rows:
+            node_props = row.get("nodeProperties") or {}
+            merged = {
+                **node_props,
+                "elementId": row.get("elementId"),
+                "id": row.get("id"),
+                "parentAttraction": row.get("parentAttraction"),
+                "districtNode": row.get("districtNode"),
+                "provinceNode": row.get("provinceNode"),
+                "poiGroups": row.get("poiGroups", []),
+            }
+
+            # Keep convenience aliases when available from joined nodes.
+            if row.get("district") is not None:
+                merged["district"] = row.get("district")
+            if row.get("province") is not None:
+                merged["province"] = row.get("province")
+            if row.get("poiGroup") is not None:
+                merged["poiGroup"] = row.get("poiGroup")
+
+            merged_rows.append(merged)
+
+        return merged_rows
+
     # ------------------------------------------------------------------
     # Schema
     # ------------------------------------------------------------------
@@ -611,40 +639,19 @@ class SubAttractionRepository(BaseRepository):
         OPTIONAL MATCH (s)-[:LOCATED_IN]->(dist:District)
         OPTIONAL MATCH (dist)-[:IN_PROVINCE]->(prov:Province)
         OPTIONAL MATCH (s)-[:BELONGS_TO_GROUP]->(grp:POIGroup)
-        RETURN s.name AS name,
-               s.googlePlaceId AS googlePlaceId,
-               s.parentLocation AS parentLocation,
-               parent.title AS parentAttraction,
-               s.latitude AS latitude,
-               s.longitude AS longitude,
-               s.amenityType AS amenityType,
-               s.shopType AS shopType,
-               s.tourismType AS tourismType,
-               s.primaryType AS primaryType,
-               s.rating AS rating,
-               s.userRatingsTotal AS userRatingsTotal,
-               s.formattedAddress AS formattedAddress,
-               s.website AS website,
-               s.phone AS phone,
-               s.businessStatus AS businessStatus,
-               s.editorialSummary AS editorialSummary,
-               s.googleMapsUrl AS googleMapsUrl,
-               s.weekdayText AS weekdayText,
-               s.photos AS photos,
-               s.religion AS religion,
-               s.cuisine AS cuisine,
-               s.brand AS brand,
-               s.groups AS groups,
-               s.priceLevel AS priceLevel,
-               s.vicinity AS vicinity,
-               dist.name AS districtNode,
-               prov.name AS provinceNode,
-               collect(DISTINCT grp.name) AS poiGroups
-        ORDER BY s.rating DESC, s.name
+         RETURN elementId(s) AS elementId,
+             id(s) AS id,
+             properties(s) AS nodeProperties,
+             parent.title AS parentAttraction,
+             dist.name AS districtNode,
+             prov.name AS provinceNode,
+             collect(DISTINCT grp.name) AS poiGroups
+         ORDER BY coalesce(nodeProperties.rating, 0) DESC, nodeProperties.name
         LIMIT {limit}
         """
 
-        result = self.execute_query(full_query, params)
+        raw_result = self.execute_query(full_query, params)
+        result = self._merge_full_sub_attraction_rows(raw_result)
         logger.info(f"Found {len(result)} sub-attractions")
         return result
 
@@ -661,35 +668,17 @@ class SubAttractionRepository(BaseRepository):
         WHERE toLower(a.title) = toLower($parent)
         OPTIONAL MATCH (s)-[:BELONGS_TO_GROUP]->(g:POIGroup)
         OPTIONAL MATCH (s)-[:LOCATED_IN]->(d:District)
-        RETURN s.name AS name,
-               s.googlePlaceId AS googlePlaceId,
-               s.parentLocation AS parentLocation,
-               a.title AS parentAttraction,
-               s.latitude AS latitude,
-               s.longitude AS longitude,
-               s.primaryType AS primaryType,
-               s.amenityType AS amenityType,
-               s.rating AS rating,
-               s.userRatingsTotal AS userRatingsTotal,
-               s.formattedAddress AS formattedAddress,
-               s.website AS website,
-               s.phone AS phone,
-               s.businessStatus AS businessStatus,
-               s.editorialSummary AS editorialSummary,
-               s.googleMapsUrl AS googleMapsUrl,
-               s.weekdayText AS weekdayText,
-               s.photos AS photos,
-               s.religion AS religion,
-               s.cuisine AS cuisine,
-               s.brand AS brand,
-               s.groups AS groups,
-               s.priceLevel AS priceLevel,
-               d.name AS district,
-               collect(DISTINCT g.name) AS poiGroups
-        ORDER BY s.rating DESC, s.name
+         RETURN elementId(s) AS elementId,
+             id(s) AS id,
+             properties(s) AS nodeProperties,
+             a.title AS parentAttraction,
+             d.name AS district,
+             collect(DISTINCT g.name) AS poiGroups
+         ORDER BY coalesce(nodeProperties.rating, 0) DESC, nodeProperties.name
         """
 
-        return self.execute_query(cypher, {"parent": parent_attraction})
+        rows = self.execute_query(cypher, {"parent": parent_attraction})
+        return self._merge_full_sub_attraction_rows(rows)
 
     def get_by_group(self, group_name: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Get all sub-attractions belonging to a specific POI group.
@@ -704,30 +693,18 @@ class SubAttractionRepository(BaseRepository):
         MATCH (s:SubAttraction)-[:BELONGS_TO_GROUP]->(g:POIGroup {name: $group})
         OPTIONAL MATCH (s)-[:SUB_ATTRACTION_OF]->(a:Attraction)
         OPTIONAL MATCH (s)-[:LOCATED_IN]->(d:District)
-        RETURN s.name AS name,
-               s.googlePlaceId AS googlePlaceId,
-               s.parentLocation AS parentLocation,
+        RETURN elementId(s) AS elementId,
+               id(s) AS id,
+               properties(s) AS nodeProperties,
                a.title AS parentAttraction,
-               s.latitude AS latitude,
-               s.longitude AS longitude,
-               s.primaryType AS primaryType,
-               s.rating AS rating,
-               s.userRatingsTotal AS userRatingsTotal,
-               s.formattedAddress AS formattedAddress,
-               s.website AS website,
-               s.phone AS phone,
-               s.businessStatus AS businessStatus,
-               s.googleMapsUrl AS googleMapsUrl,
-               s.weekdayText AS weekdayText,
-               s.religion AS religion,
-               s.cuisine AS cuisine,
                d.name AS district,
                g.name AS poiGroup
-        ORDER BY s.rating DESC, s.name
+         ORDER BY coalesce(nodeProperties.rating, 0) DESC, nodeProperties.name
         LIMIT $limit
         """
 
-        return self.execute_query(cypher, {"group": group_name, "limit": limit})
+        rows = self.execute_query(cypher, {"group": group_name, "limit": limit})
+        return self._merge_full_sub_attraction_rows(rows)
 
     def get_nearby_hotels(self, place_id: str) -> List[Dict[str, Any]]:
         """Get hotels near a specific sub-attraction.

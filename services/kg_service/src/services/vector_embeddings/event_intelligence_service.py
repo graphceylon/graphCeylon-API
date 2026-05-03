@@ -53,9 +53,6 @@ class EventAudienceType(str, Enum):
 
 class TemporalEventIntelligenceService:
     """
-
-    _MODEL_CACHE: Dict[tuple[str, str], SentenceTransformer] = {}
-    _MODEL_CACHE_LOCK = Lock()
     Advanced AI service for intelligent event discovery and recommendations.
     
     Features:
@@ -66,6 +63,9 @@ class TemporalEventIntelligenceService:
     - Trend analysis and pattern recognition
     - Context understanding (vibe, audience, best time to visit)
     """
+
+    _MODEL_CACHE: Dict[tuple[str, str], SentenceTransformer] = {}
+    _MODEL_CACHE_LOCK = Lock()
 
     def __init__(
         self,
@@ -516,6 +516,7 @@ class TemporalEventIntelligenceService:
                e.timeEnd AS timeEnd,
                e.hashtags AS hashtags,
                e.eventDetailUrl AS eventDetailUrl,
+             e.imageUrl AS imageUrl,
                score
         ORDER BY score DESC
         """
@@ -568,6 +569,7 @@ class TemporalEventIntelligenceService:
                e.dateEnd AS dateEnd,
                e.dateStartIso AS dateStartIso,
                e.hashtags AS hashtags,
+             e.imageUrl AS imageUrl,
                e.embedding AS embedding
         """
         
@@ -798,6 +800,7 @@ class TemporalEventIntelligenceService:
                    e.eventType AS eventType,
                    e.venue AS venue,
                    e.dateStartIso AS dateStartIso,
+                     e.imageUrl AS imageUrl,
                    finalScore AS score
             ORDER BY finalScore DESC
             LIMIT $topK
@@ -813,6 +816,7 @@ class TemporalEventIntelligenceService:
                    e.eventType AS eventType,
                    e.venue AS venue,
                    e.dateStartIso AS dateStartIso,
+                     e.imageUrl AS imageUrl,
                    score
             ORDER BY score DESC
             """
